@@ -27,7 +27,7 @@ Server Start
 ```
 FastAPI (app.main)
   |
-  |-- Scheduler (APScheduler, runs every POLL_INTERVAL_MINUTES)
+  |-- Scheduler (APScheduler, runs every POLL_INTERVAL_SECONDS)
   |     -> discovers files, enqueues them
   |     -> never uploads, never touches the database
   |
@@ -140,13 +140,14 @@ CREATE DATABASE edp_cbos;
 |---|---|---|
 | `FILE_ROOT_PATH` | Root folder the scheduler scans | `C:/Users/you/mofsl/edpb` |
 | `DATE_FOLDER_FORMAT` | strftime format for date folders | `%d-%m-%Y` |
-| `POLL_INTERVAL_MINUTES` | How often the scheduler scans | `5` |
+| `POLL_INTERVAL_SECONDS` | How often the scheduler scans | `30` |
 | `SCAN_DAYS_BACK` | How many days back to also scan besides today | `1` |
 | `LOG_LEVEL` | Log verbosity (`INFO` for milestones, `DEBUG` for full per-step trace) | `INFO` |
 | `CBOS_BASE_URL` | Shared host for all 5 CBOS trade-upload endpoints | `https://cbos-host/api` |
 | `CBOS_LOGIN_ID` | LOGINID sent on every CBOS call | `CV0001` |
 | `CBOS_TIMEOUT_SECONDS` | HTTP timeout per CBOS call | `30` |
-| `CBOS_CHUNK_SIZE_BYTES` | Chunk size for Step 4 file upload | `1048576` |
+| `CHUNK_SIZE_KB` | Chunk size for Step 4 file upload, in KB | `51200` (50 MB) |
+| `CBOS_CHUNK_RETRY_ATTEMPTS` | Max retries for a single failed chunk before aborting the upload | `3` |
 | `CBOS_POLL_INTERVAL_SECONDS` | Delay between Step 7 polls | `2` |
 | `CBOS_POLL_MAX_ATTEMPTS` | Max Step 7 polls before treating it as a failed/timed-out upload | `30` |
 | `DATABASE_URL` | Postgres connection string | `postgresql://user:pass@host:5432/db` |

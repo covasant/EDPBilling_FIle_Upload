@@ -17,6 +17,7 @@ logger = logging.getLogger("main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    
     # Server Start -> Initialize DB -> Start Queue Worker -> Start Scheduler
     # -> Begin File Processing. No manual startup step is required for
     # either the scheduler or the worker.

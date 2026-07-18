@@ -32,6 +32,9 @@ def init_db() -> None:
             "process_id": "VARCHAR",
             "guid": "VARCHAR",
             "request_log": "TEXT",
+            "matched_pattern": "VARCHAR",
+            "validation_error": "TEXT",
+            "cbos_upload_settings": "TEXT",
         }
         for column_name, column_type in missing_columns.items():
             if column_name in columns:

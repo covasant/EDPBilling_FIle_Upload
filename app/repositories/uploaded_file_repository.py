@@ -28,8 +28,9 @@ class UploadedFileRepository:
         return record
 
     def create_audit_record(self, file_path, folder_date: str, segment: str, exchange: str) -> UploadedFile:
-        """Called at the start of process_task - one fresh 'pending' audit
-        row per processing attempt, no lookup/reuse of prior rows."""
+        """Called once per file at the start of batch processing - one
+        fresh 'pending' audit row per processing attempt, no lookup/reuse
+        of prior rows."""
         return self.insert(
             file_name=Path(file_path).name,
             file_path=str(file_path),

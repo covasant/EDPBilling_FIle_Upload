@@ -24,10 +24,13 @@ class UploadedFile(Base):
     cbos_response = Column(String, nullable=True)   # final outcome (Step 7 result, or the error that failed the sequence)
     retry_count = Column(Integer, nullable=False, default=0)
 
-    # CBOS trade-upload API tracking (see cbos_client.py Steps 2/3/4/6/7)
-    process_id = Column(String, nullable=True)      # PROCESSID from getNewTradeProcess (Step 2)
-    cbos_upload_id = Column(String, nullable=True)  # UPLOADID selected from Table2 (Step 3)
-    guid = Column(String, nullable=True)            # upload folder GUID used for chunking (Step 4) + registration (Step 6)
+    # CBOS trade-upload API tracking (see cbos_client.py Steps 1-9)
+    process_id = Column(String, nullable=True)      # PROCESSID from getNewTradeProcess (Step 2), shared by every file in the batch
+    cbos_upload_id = Column(String, nullable=True)  # UPLOADID resolved for THIS file by upload_matching.match_file (Step 4)
+    matched_pattern = Column(String, nullable=True)  # the UploadID's NAME/pattern this file matched against, for audit
+    cbos_upload_settings = Column(Text, nullable=True)  # full raw Step 4 (GetNewTradeProcessPromodalUploadSettings) response for the matched UploadID
+    guid = Column(String, nullable=True)            # upload folder GUID used for chunking (Step 5) + registration (Step 7)
+    validation_error = Column(Text, nullable=True)  # why upload_matching rejected this file (no match / column mismatch), if applicable
     request_log = Column(Text, nullable=True)       # JSON list of {step, request/response} for every CBOS call made
 
     uploaded_at = Column(DateTime, nullable=True)

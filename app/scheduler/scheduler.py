@@ -27,14 +27,14 @@ def start_scheduler() -> BackgroundScheduler:
     scheduler.add_job(
         _scan_job,
         "interval",
-        minutes=settings.poll_interval_minutes,
+        seconds=settings.poll_interval_seconds,
         id="file_upload_scan",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
     scheduler.start()
-    logger.info("Scheduler started, running every %s minute(s)", settings.poll_interval_minutes)
+    logger.info("Scheduler started, running every %s second(s)", settings.poll_interval_seconds)
     return scheduler
 
 
