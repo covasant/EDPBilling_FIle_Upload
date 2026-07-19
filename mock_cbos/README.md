@@ -22,8 +22,11 @@ CBOS_LOGIN_ID=CV0001
 CBOS_PASSWORD=anything
 ```
 
-A Postman collection covering every endpoint is in
-[`docs/postman/`](../docs/postman/).
+Postman collections in [`docs/postman/`](../docs/postman/):
+- **`EDP_CBOS_MCX_FullBatch`** — hit **Run** and the whole MCX handshake plays in
+  one pass (reserve → 3 files × Steps 4/5/7 → Step 8 → poll to TRUE → trigger).
+  No files to attach; `process_id`/`guid` are captured automatically.
+- **`EDP_Trade_Process_API_v4`** — per-endpoint reference for every step.
 
 ## What it models (and why)
 
