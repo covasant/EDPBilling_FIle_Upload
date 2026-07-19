@@ -1,0 +1,156 @@
+{
+  "info": {
+    "name": "EDP CBOS - MCX Full Batch (one-click)",
+    "description": "Runs the WHOLE MCX upload handshake in a single Collection Runner pass against the local mock (mock_cbos on :8009): reset -> reserve PROCESSID -> for each of the 3 MCX files run Steps 4/5/7 -> mark the no-file Physical slot optional (Step 8) -> poll FILEUPLOAD until TRUE (Step 9) -> trigger (Step 10).\n\nSETUP: start the mock with `uv run uvicorn mock_cbos.app:app --port 8009`, then hit Run on this collection. No files to attach - the mock's Step 5 accepts form fields alone. process_id and guid are captured automatically between steps.\n\nThis simulates the CBOS *side* (the API handshake). Choosing which file goes to which UploadID is the uploader's job (see scripts/e2e_upload.py).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {"key": "core_base", "value": "http://localhost:8009"},
+    {"key": "gtg_base", "value": "http://localhost:8009"},
+    {"key": "loginid", "value": "CV0001"},
+    {"key": "password", "value": "changeme"},
+    {"key": "segment", "value": "MCX"},
+    {"key": "trade_date", "value": "2026-07-17"},
+    {"key": "process_id", "value": "0"},
+    {"key": "guid", "value": ""},
+    {"key": "gtg_tries", "value": "0"}
+  ],
+  "item": [
+    {
+      "name": "0 - Reset mock state",
+      "item": [
+        {
+          "name": "Reset",
+          "request": {"method": "POST", "header": [], "url": {"raw": "{{core_base}}/__mock/reset", "host": ["{{core_base}}"], "path": ["__mock", "reset"]}}
+        }
+      ]
+    },
+    {
+      "name": "1 - Open the job",
+      "item": [
+        {
+          "name": "Step 2 - Reserve process (PROCESSID=0)",
+          "event": [{"listen": "test", "script": {"exec": [
+            "const j = pm.response.json();",
+            "const pid = j.Result.Table1[0].PROCESSID;",
+            "pm.collectionVariables.set('process_id', String(pid));",
+            "pm.collectionVariables.set('gtg_tries', '0');",
+            "console.log('PROCESSID =', pid);",
+            "pm.test('reserved PROCESSID', () => pm.expect(pid).to.exist);"
+          ]}}],
+          "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}],
+            "url": {"raw": "{{core_base}}/v1/api/process/getNewTradeProcess", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "getNewTradeProcess"]},
+            "body": {"mode": "raw", "raw": "{\n  \"GROUPNAME\": \"{{segment}}\",\n  \"LOGINID\": \"{{loginid}}\",\n  \"PASSWORD\": \"{{password}}\",\n  \"TRADEDATE\": \"{{trade_date}}\",\n  \"PROCESSID\": \"0\"\n}", "options": {"raw": {"language": "json"}}}}
+        },
+        {
+          "name": "Step 3 - Check process id exists",
+          "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}],
+            "url": {"raw": "{{gtg_base}}/api/edp/file_process_status", "host": ["{{gtg_base}}"], "path": ["api", "edp", "file_process_status"]},
+            "body": {"mode": "raw", "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"ProcessName\": \"CheckProcessIDExist\",\n  \"UserID\": \"{{loginid}}\"\n}", "options": {"raw": {"language": "json"}}}}
+        }
+      ]
+    },
+    {
+      "name": "2 - Put each file in its slot",
+      "item": [
+        {
+          "name": "Step 4 - settings [127 ProductMaster]",
+          "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": {"raw": "{{core_base}}/v1/api/process/GetNewTradeProcessPromodalUploadSettings", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "GetNewTradeProcessPromodalUploadSettings"]}, "body": {"mode": "raw", "raw": "{ \"UPLOADID\": \"127\" }", "options": {"raw": {"language": "json"}}}}
+        },
+        {
+          "name": "Step 5 - upload [127]",
+          "event": [
+            {"listen": "prerequest", "script": {"exec": ["pm.collectionVariables.set('guid', 'g127-' + (Math.random()*1e9|0));"]}},
+            {"listen": "test", "script": {"exec": ["pm.test('uploaded', () => pm.expect(pm.response.json().Status).to.eql('ChunkUploaded'));"]}}
+          ],
+          "request": {"method": "POST", "header": [], "url": {"raw": "{{core_base}}/v1/api/process/SaveTradePromodalUploadChunkFile", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "SaveTradePromodalUploadChunkFile"]},
+            "body": {"mode": "formdata", "formdata": [
+              {"key": "CurrentChunk", "value": "0", "type": "text"},
+              {"key": "TotalChunks", "value": "1", "type": "text"},
+              {"key": "Guid", "value": "{{guid}}", "type": "text"},
+              {"key": "FileName", "value": "MCX_ProductMaster.csv", "type": "text"},
+              {"key": "UPLOADID", "value": "127", "type": "text"}
+            ]}}
+        },
+        {
+          "name": "Step 7 - attach [127]",
+          "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": {"raw": "{{core_base}}/v1/api/process/SaveNewTradeProcessPromodalUploadFile", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "SaveNewTradeProcessPromodalUploadFile"]}, "body": {"mode": "raw", "raw": "{\n  \"uploadid\": \"127\",\n  \"uploadfoldername\": \"{{guid}}\",\n  \"uploadfilename\": \"MCX_ProductMaster.csv\",\n  \"paraM9\": \"{{process_id}}\",\n  \"chunkFileUpload\": \"YES\"\n}", "options": {"raw": {"language": "json"}}}}
+        },
+        {
+          "name": "Step 4 - settings [534 Position]",
+          "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": {"raw": "{{core_base}}/v1/api/process/GetNewTradeProcessPromodalUploadSettings", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "GetNewTradeProcessPromodalUploadSettings"]}, "body": {"mode": "raw", "raw": "{ \"UPLOADID\": \"534\" }", "options": {"raw": {"language": "json"}}}}
+        },
+        {
+          "name": "Step 5 - upload [534]",
+          "event": [
+            {"listen": "prerequest", "script": {"exec": ["pm.collectionVariables.set('guid', 'g534-' + (Math.random()*1e9|0));"]}},
+            {"listen": "test", "script": {"exec": ["pm.test('uploaded', () => pm.expect(pm.response.json().Status).to.eql('ChunkUploaded'));"]}}
+          ],
+          "request": {"method": "POST", "header": [], "url": {"raw": "{{core_base}}/v1/api/process/SaveTradePromodalUploadChunkFile", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "SaveTradePromodalUploadChunkFile"]},
+            "body": {"mode": "formdata", "formdata": [
+              {"key": "CurrentChunk", "value": "0", "type": "text"},
+              {"key": "TotalChunks", "value": "1", "type": "text"},
+              {"key": "Guid", "value": "{{guid}}", "type": "text"},
+              {"key": "FileName", "value": "Position_MCXCCL_CO_0_CM_55930_20260717_F_0000.csv", "type": "text"},
+              {"key": "UPLOADID", "value": "534", "type": "text"}
+            ]}}
+        },
+        {
+          "name": "Step 7 - attach [534]",
+          "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": {"raw": "{{core_base}}/v1/api/process/SaveNewTradeProcessPromodalUploadFile", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "SaveNewTradeProcessPromodalUploadFile"]}, "body": {"mode": "raw", "raw": "{\n  \"uploadid\": \"534\",\n  \"uploadfoldername\": \"{{guid}}\",\n  \"uploadfilename\": \"Position_MCXCCL_CO_0_CM_55930_20260717_F_0000.csv\",\n  \"paraM9\": \"{{process_id}}\",\n  \"chunkFileUpload\": \"YES\"\n}", "options": {"raw": {"language": "json"}}}}
+        },
+        {
+          "name": "Step 4 - settings [535 Trade]",
+          "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": {"raw": "{{core_base}}/v1/api/process/GetNewTradeProcessPromodalUploadSettings", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "GetNewTradeProcessPromodalUploadSettings"]}, "body": {"mode": "raw", "raw": "{ \"UPLOADID\": \"535\" }", "options": {"raw": {"language": "json"}}}}
+        },
+        {
+          "name": "Step 5 - upload [535]",
+          "event": [
+            {"listen": "prerequest", "script": {"exec": ["pm.collectionVariables.set('guid', 'g535-' + (Math.random()*1e9|0));"]}},
+            {"listen": "test", "script": {"exec": ["pm.test('uploaded', () => pm.expect(pm.response.json().Status).to.eql('ChunkUploaded'));"]}}
+          ],
+          "request": {"method": "POST", "header": [], "url": {"raw": "{{core_base}}/v1/api/process/SaveTradePromodalUploadChunkFile", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "SaveTradePromodalUploadChunkFile"]},
+            "body": {"mode": "formdata", "formdata": [
+              {"key": "CurrentChunk", "value": "0", "type": "text"},
+              {"key": "TotalChunks", "value": "1", "type": "text"},
+              {"key": "Guid", "value": "{{guid}}", "type": "text"},
+              {"key": "FileName", "value": "Trade_MCX_CO_0_CM_55930_20260717_F_0000.csv", "type": "text"},
+              {"key": "UPLOADID", "value": "535", "type": "text"}
+            ]}}
+        },
+        {
+          "name": "Step 7 - attach [535]",
+          "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": {"raw": "{{core_base}}/v1/api/process/SaveNewTradeProcessPromodalUploadFile", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "SaveNewTradeProcessPromodalUploadFile"]}, "body": {"mode": "raw", "raw": "{\n  \"uploadid\": \"535\",\n  \"uploadfoldername\": \"{{guid}}\",\n  \"uploadfilename\": \"Trade_MCX_CO_0_CM_55930_20260717_F_0000.csv\",\n  \"paraM9\": \"{{process_id}}\",\n  \"chunkFileUpload\": \"YES\"\n}", "options": {"raw": {"language": "json"}}}}
+        }
+      ]
+    },
+    {
+      "name": "3 - Close out the job",
+      "item": [
+        {
+          "name": "Step 8 - mark Physical slot optional (STEPNO 4)",
+          "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": {"raw": "{{core_base}}/v1/api/process/UpdateNewTradeProcessProcessDetailsIsMandatory", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "UpdateNewTradeProcessProcessDetailsIsMandatory"]}, "body": {"mode": "raw", "raw": "{\n  \"PROCESSID\": \"{{process_id}}\",\n  \"STEPNO\": 4,\n  \"ISOPTIONAL\": \"0\"\n}", "options": {"raw": {"language": "json"}}}}
+        },
+        {
+          "name": "Step 9 - FILEUPLOAD (poll to TRUE)",
+          "event": [{"listen": "test", "script": {"exec": [
+            "const j = pm.response.json();",
+            "const msg = (j.Data && j.Data[0] && j.Data[0].MSG) || '';",
+            "let tries = parseInt(pm.collectionVariables.get('gtg_tries') || '0', 10) + 1;",
+            "pm.collectionVariables.set('gtg_tries', String(tries));",
+            "console.log('FILEUPLOAD poll ' + tries + ' -> ' + msg);",
+            "if (msg !== 'TRUE' && tries < 12) {",
+            "  postman.setNextRequest('Step 9 - FILEUPLOAD (poll to TRUE)');",
+            "}",
+            "pm.test('good-to-go reached', () => pm.expect(msg === 'TRUE' || tries >= 12).to.be.true);"
+          ]}}],
+          "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": {"raw": "{{gtg_base}}/api/edp/file_process_status", "host": ["{{gtg_base}}"], "path": ["api", "edp", "file_process_status"]}, "body": {"mode": "raw", "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"ProcessName\": \"FILEUPLOAD\",\n  \"UserID\": \"{{loginid}}\"\n}", "options": {"raw": {"language": "json"}}}}
+        },
+        {
+          "name": "Step 10 - Trigger processing (PROCESSID=real)",
+          "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": {"raw": "{{core_base}}/v1/api/process/getNewTradeProcess", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "getNewTradeProcess"]}, "body": {"mode": "raw", "raw": "{\n  \"GROUPNAME\": \"{{segment}}\",\n  \"LOGINID\": \"{{loginid}}\",\n  \"PASSWORD\": \"{{password}}\",\n  \"TRADEDATE\": \"{{trade_date}}\",\n  \"PROCESSID\": \"{{process_id}}\"\n}", "options": {"raw": {"language": "json"}}}}
+        }
+      ]
+    }
+  ]
+}

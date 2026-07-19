@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import os
 
-from fastapi import FastAPI, Form, Request, UploadFile
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 
 from mock_cbos import data
@@ -106,16 +106,18 @@ async def get_upload_settings(payload: dict):
 
 @app.post("/v1/api/process/SaveTradePromodalUploadChunkFile")
 async def upload_chunk(
-    file: UploadFile,
     CurrentChunk: str = Form(...),
     TotalChunks: str = Form(...),
     Guid: str = Form(...),
     FileName: str = Form(...),
     UPLOADID: str = Form(default=""),
+    file: UploadFile | None = File(default=None),
 ):
     """Step 5 - accepts a chunk (or a whole single-chunk file) and files it
-    under the GUID folder. The folder stays orphaned until Step 7 registers it."""
-    body = await file.read()
+    under the GUID folder. The folder stays orphaned until Step 7 registers it.
+    The file part is optional: the mock only tracks the handshake, so a Postman
+    Runner can drive the flow with form fields alone (no file to attach)."""
+    body = await file.read() if file is not None else b""
     folder = STATE.add_chunk(Guid, FileName, len(body))
     return _ok(
         Status="ChunkUploaded",
