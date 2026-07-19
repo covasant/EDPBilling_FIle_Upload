@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     # CBOS trade-upload API (Steps 2/3/4/6/7 in cbos_client.py).
     # MOCK -> MockCBOSClient (no network calls, no CBOS_BASE_URL/CBOS_LOGIN_ID needed).
-    # REAL -> RealCBOSClient (talks to the actual CBOS host).
+    # REAL -> CBOSClient (talks to the actual CBOS host).
     cbos_mode: str = "MOCK"
     # LOG_LEVEL: str=DEBUG
 
