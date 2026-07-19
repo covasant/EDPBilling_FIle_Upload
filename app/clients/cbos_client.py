@@ -337,15 +337,11 @@ class MockCBOSClient(BaseCBOSClient):
     def get_new_trade_process(self, segment: str, login_id: str, trade_date: str) -> dict:
         process_id = self._next_process_id
         self._next_process_id += 1
-        table2 = [
-            {"STEPNO": 3, "NAME": "BSE Scrip Upload", "STATUS": "PENDING", "UPLOADID": 81},
-            {"STEPNO": 4, "NAME": "NSE Scrip Upload", "STATUS": "PENDING", "UPLOADID": 82},
-            {"STEPNO": 9, "NAME": "BSE Trade File Upload", "STATUS": "PENDING", "UPLOADID": 85},
-            {"STEPNO": 7, "NAME": "STT not to Charge Upload", "STATUS": "PENDING", "UPLOADID": 94},
-            {"STEPNO": 33, "NAME": "Position Variation Upload", "STATUS": "PENDING", "UPLOADID": 172},
-            {"STEPNO": 40, "NAME": "Billing Workbook Upload", "STATUS": "PENDING", "UPLOADID": 201},
-            {"STEPNO": 41, "NAME": "Legacy Scrip Master Upload", "STATUS": "PENDING", "UPLOADID": 202},
-        ]
+        # Table2 is sourced from the shared mock dataset (mock_cbos/data.py), so
+        # the in-process mock and the standalone mock server agree on each
+        # segment's pipeline - MCX yields 127/534/535/320, EQ its 12 steps, etc.
+        from mock_cbos import data
+        table2 = data.table2_for(segment)
         response = {
             "Status": "Success",
             "Result": {
@@ -363,10 +359,10 @@ class MockCBOSClient(BaseCBOSClient):
         return {"Status": "Success", "Data": [{"MSG": f"PROCESS ID ALREADY GENERATED : {pid}"}]}
 
     def get_upload_settings(self, upload_id: str) -> dict:
-        setting = _MOCK_UPLOAD_SETTINGS.get(str(upload_id))
-        if setting is None:
-            setting = {"NAME": f"UPLOAD {upload_id}", "FILE NAME": f"UPLOAD{upload_id}", "FILEEXTENSION": "TXT", "NO. OF COLUMNS": None}
-        result = [{"ID": int(upload_id), **setting}]
+        from mock_cbos import data
+        setting = data.upload_setting(str(upload_id))
+        uid = int(upload_id) if str(upload_id).isdigit() else upload_id
+        result = [{"ID": uid, **setting}]
         logger.info("[MOCK] Upload settings fetched: UPLOADID=%s -> %s", upload_id, setting)
         return {"Status": "Success", "Result": result}
 

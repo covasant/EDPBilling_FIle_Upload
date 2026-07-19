@@ -32,3 +32,6 @@ Thumbs.db
 # Local planning artifacts (kept out of the repo for now)
 .scratch/
 docs/adr/
+
+# e2e runner scratch staging
+.e2e_work/
