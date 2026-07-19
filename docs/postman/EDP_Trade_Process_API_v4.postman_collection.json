@@ -1,0 +1,190 @@
+{
+  "info": {
+    "name": "EDP Trade Process API v4",
+    "description": "CBOS v4 trade-process API (per docs/EDP_Trade_Process_API_Documentation_v4.docx). Works out of the box against the local mock (mock_cbos) with the default variables; switch core_base/gtg_base to the real hosts for CBOS. The core upload path (Steps 1-10) is ordered so Runner executes it top-to-bottom: Step 2 captures process_id, Step 5 generates+captures guid, Step 7 registers it.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {"key": "core_base", "value": "http://localhost:8009", "type": "string"},
+    {"key": "gtg_base", "value": "http://localhost:8009", "type": "string"},
+    {"key": "loginid", "value": "CV0001", "type": "string"},
+    {"key": "password", "value": "changeme", "type": "string"},
+    {"key": "segment", "value": "MCX", "type": "string"},
+    {"key": "trade_date", "value": "2026-07-14", "type": "string"},
+    {"key": "member", "value": "55930", "type": "string"},
+    {"key": "uploadid", "value": "534", "type": "string"},
+    {"key": "filename", "value": "Position_MCXCCL_CO_0_CM_55930_20260714_F_0000.csv", "type": "string"},
+    {"key": "process_id", "value": "0", "type": "string"},
+    {"key": "guid", "value": "", "type": "string"}
+  ],
+  "item": [
+    {
+      "name": "Core Upload Path (Steps 1-10)",
+      "item": [
+        {
+          "name": "Step 1 - Holiday Check (GTG BeginFileUpload)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "url": {"raw": "{{gtg_base}}/api/edp/file_process_status", "host": ["{{gtg_base}}"], "path": ["api", "edp", "file_process_status"]},
+            "body": {"mode": "raw", "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"ProcessName\": \"BeginFileUpload\",\n  \"UserID\": \"{{loginid}}\"\n}", "options": {"raw": {"language": "json"}}}
+          }
+        },
+        {
+          "name": "Step 2 - Reserve Process (getNewTradeProcess, PROCESSID=0)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": [
+            "const j = pm.response.json();",
+            "const pid = j.Result && j.Result.Table1 && j.Result.Table1[0] && j.Result.Table1[0].PROCESSID;",
+            "if (pid) { pm.collectionVariables.set('process_id', String(pid)); }",
+            "pm.test('reserved a PROCESSID', () => pm.expect(pid).to.exist);"
+          ]}}],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "url": {"raw": "{{core_base}}/v1/api/process/getNewTradeProcess", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "getNewTradeProcess"]},
+            "body": {"mode": "raw", "raw": "{\n  \"GROUPNAME\": \"{{segment}}\",\n  \"LOGINID\": \"{{loginid}}\",\n  \"PASSWORD\": \"{{password}}\",\n  \"TRADEDATE\": \"{{trade_date}}\",\n  \"PROCESSID\": \"0\"\n}", "options": {"raw": {"language": "json"}}}
+          }
+        },
+        {
+          "name": "Step 3 - CheckProcessIDExist (GTG)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "url": {"raw": "{{gtg_base}}/api/edp/file_process_status", "host": ["{{gtg_base}}"], "path": ["api", "edp", "file_process_status"]},
+            "body": {"mode": "raw", "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"ProcessName\": \"CheckProcessIDExist\",\n  \"UserID\": \"{{loginid}}\"\n}", "options": {"raw": {"language": "json"}}}
+          }
+        },
+        {
+          "name": "Step 4 - Get Upload Settings",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "url": {"raw": "{{core_base}}/v1/api/process/GetNewTradeProcessPromodalUploadSettings", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "GetNewTradeProcessPromodalUploadSettings"]},
+            "body": {"mode": "raw", "raw": "{\n  \"UPLOADID\": \"{{uploadid}}\"\n}", "options": {"raw": {"language": "json"}}}
+          }
+        },
+        {
+          "name": "Step 5 - Chunk Upload (multipart)",
+          "event": [
+            {"listen": "prerequest", "script": {"type": "text/javascript", "exec": [
+              "// fresh GUID per upload (as the real client does)",
+              "const g = (typeof require === 'function') ? require('uuid').v4() : ('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random()*16|0; return (c==='x'?r:(r&0x3|0x8)).toString(16); }));",
+              "pm.collectionVariables.set('guid', g);"
+            ]}},
+            {"listen": "test", "script": {"type": "text/javascript", "exec": [
+              "const j = pm.response.json();",
+              "pm.test('chunk uploaded', () => pm.expect(j.Status).to.eql('ChunkUploaded'));",
+              "if (j.Guid) { pm.collectionVariables.set('guid', j.Guid); }"
+            ]}}
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {"raw": "{{core_base}}/v1/api/process/SaveTradePromodalUploadChunkFile", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "SaveTradePromodalUploadChunkFile"]},
+            "body": {"mode": "formdata", "formdata": [
+              {"key": "file", "type": "file", "src": [], "description": "select the CSV/TXT file to upload"},
+              {"key": "CurrentChunk", "value": "0", "type": "text"},
+              {"key": "TotalChunks", "value": "1", "type": "text"},
+              {"key": "Guid", "value": "{{guid}}", "type": "text"},
+              {"key": "FileName", "value": "{{filename}}", "type": "text"},
+              {"key": "UPLOADID", "value": "{{uploadid}}", "type": "text", "description": "extra field this repo's client sends; ignored by spec Step 5"}
+            ]}
+          }
+        },
+        {
+          "name": "Step 6 - Get Existing Process ID (getdropdown)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "url": {"raw": "{{core_base}}/v1/api/brokerage/getdropdown", "host": ["{{core_base}}"], "path": ["v1", "api", "brokerage", "getdropdown"]},
+            "body": {"mode": "raw", "raw": "{\n  \"TAG\": \"EXISTINGPROCESSID\",\n  \"LOGINID\": \"{{loginid}}\",\n  \"FILTER1\": \"{{segment}}\",\n  \"FILTER2\": \"{{trade_date}}\",\n  \"extraoption2\": \"\",\n  \"extraoption3\": \"\"\n}", "options": {"raw": {"language": "json"}}}
+          }
+        },
+        {
+          "name": "Step 7 - Register File (SaveNewTradeProcessPromodalUploadFile)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": [
+            "const j = pm.response.json();",
+            "pm.test('file registered', () => pm.expect(j.Status).to.eql('Success'));"
+          ]}}],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "url": {"raw": "{{core_base}}/v1/api/process/SaveNewTradeProcessPromodalUploadFile", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "SaveNewTradeProcessPromodalUploadFile"]},
+            "body": {"mode": "raw", "raw": "{\n  \"uploadid\": \"{{uploadid}}\",\n  \"loginid\": \"{{loginid}}\",\n  \"uploadfoldername\": \"{{guid}}\",\n  \"uploadfilename\": \"{{filename}}\",\n  \"ipaddress\": \"127.0.0.1\",\n  \"file\": \"\",\n  \"paraM1\": \"{{trade_date}}\",\n  \"paraM2\": \"\", \"paraM3\": \"\", \"paraM4\": \"\", \"paraM5\": \"\",\n  \"paraM6\": \"\", \"paraM7\": \"\", \"paraM8\": \"\",\n  \"paraM9\": \"{{process_id}}\",\n  \"chunkFileUpload\": \"YES\"\n}", "options": {"raw": {"language": "json"}}}
+          }
+        },
+        {
+          "name": "Step 8 - Mark Subprocess Optional (UpdateNewTradeProcessProcessDetailsIsMandatory)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "url": {"raw": "{{core_base}}/v1/api/process/UpdateNewTradeProcessProcessDetailsIsMandatory", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "UpdateNewTradeProcessProcessDetailsIsMandatory"]},
+            "body": {"mode": "raw", "raw": "{\n  \"PROCESSID\": \"{{process_id}}\",\n  \"STEPNO\": 4,\n  \"ISOPTIONAL\": \"0\"\n}", "options": {"raw": {"language": "json"}}}
+          }
+        },
+        {
+          "name": "Step 9 - FILEUPLOAD Status (GTG, poll until TRUE)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": [
+            "const j = pm.response.json();",
+            "const msg = j.Data && j.Data[0] && j.Data[0].MSG;",
+            "pm.test('FILEUPLOAD msg present', () => pm.expect(msg).to.exist);",
+            "console.log('FILEUPLOAD =', msg, '(poll again until TRUE before Step 10)');"
+          ]}}],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "url": {"raw": "{{gtg_base}}/api/edp/file_process_status", "host": ["{{gtg_base}}"], "path": ["api", "edp", "file_process_status"]},
+            "body": {"mode": "raw", "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"ProcessName\": \"FILEUPLOAD\",\n  \"UserID\": \"{{loginid}}\"\n}", "options": {"raw": {"language": "json"}}}
+          }
+        },
+        {
+          "name": "Step 10 - Trigger Process (getNewTradeProcess, PROCESSID=real)",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "url": {"raw": "{{core_base}}/v1/api/process/getNewTradeProcess", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "getNewTradeProcess"]},
+            "body": {"mode": "raw", "raw": "{\n  \"GROUPNAME\": \"{{segment}}\",\n  \"LOGINID\": \"{{loginid}}\",\n  \"PASSWORD\": \"{{password}}\",\n  \"TRADEDATE\": \"{{trade_date}}\",\n  \"PROCESSID\": \"{{process_id}}\"\n}", "options": {"raw": {"language": "json"}}}
+          }
+        }
+      ]
+    },
+    {
+      "name": "Downstream Triggers (Steps 17-36)",
+      "item": [
+        {
+          "name": "Collateral Valuation - Check (BUTTONNAME=REFRESH)",
+          "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": {"raw": "{{core_base}}/v1/api/process/GetCollateralValuation", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "GetCollateralValuation"]}, "body": {"mode": "raw", "raw": "{\n  \"BUTTONNAME\": \"REFRESH\",\n  \"LOGINID\": \"{{loginid}}\"\n}", "options": {"raw": {"language": "json"}}}}
+        },
+        {
+          "name": "Collateral Valuation - Trigger",
+          "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": {"raw": "{{core_base}}/v1/api/process/GetCollateralValuation", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "GetCollateralValuation"]}, "body": {"mode": "raw", "raw": "{\n  \"BUTTONNAME\": \"COLLATERAL_VALUATION_DATEWISE\",\n  \"LOGINID\": \"{{loginid}}\",\n  \"MARGINDATE\": \"14-JUL-2026\"\n}", "options": {"raw": {"language": "json"}}}}
+        },
+        {
+          "name": "MTF Trade Process (BUY PROCESS)",
+          "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": {"raw": "{{core_base}}/v1/api/process/MTFTradeProcess", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "MTFTradeProcess"]}, "body": {"mode": "raw", "raw": "{\n  \"LOGINID\": \"{{loginid}}\",\n  \"TRADEDATE\": \"14-JUL-2026\",\n  \"TYPE\": \"BUY PROCESS\"\n}", "options": {"raw": {"language": "json"}}}}
+        },
+        {
+          "name": "Combined Margin - Trigger",
+          "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": {"raw": "{{core_base}}/v1/api/process/CombinedMarginProcess", "host": ["{{core_base}}"], "path": ["v1", "api", "process", "CombinedMarginProcess"]}, "body": {"mode": "raw", "raw": "{\n  \"BUTTONNAME\": \"COMBINEDMARGIN_PROCESS\",\n  \"LOGINID\": \"{{loginid}}\",\n  \"MARGINDATE\": \"14-JUL-2026\"\n}", "options": {"raw": {"language": "json"}}}}
+        }
+      ]
+    },
+    {
+      "name": "Utilities & Mock Helpers",
+      "item": [
+        {
+          "name": "Step 39 - Get Expected Filename (GTG)",
+          "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "url": {"raw": "{{gtg_base}}/api/edp/get_expected_filename", "host": ["{{gtg_base}}"], "path": ["api", "edp", "get_expected_filename"]}, "body": {"mode": "raw", "raw": "{\n  \"segment\": \"{{segment}}\",\n  \"uploadid\": \"{{uploadid}}\"\n}", "options": {"raw": {"language": "json"}}}}
+        },
+        {
+          "name": "MOCK - Reset State",
+          "request": {"method": "POST", "header": [], "url": {"raw": "{{core_base}}/__mock/reset", "host": ["{{core_base}}"], "path": ["__mock", "reset"]}}
+        },
+        {
+          "name": "MOCK - Inspect State (why is FILEUPLOAD false?)",
+          "request": {"method": "GET", "header": [], "url": {"raw": "{{core_base}}/__mock/state", "host": ["{{core_base}}"], "path": ["__mock", "state"]}}
+        }
+      ]
+    }
+  ]
+}
