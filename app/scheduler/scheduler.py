@@ -2,11 +2,10 @@ import logging
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from app.core.config import get_settings
+from app.core.config import settings
 from app.services.upload_service import discover_and_enqueue
 
 logger = logging.getLogger("scheduler")
-settings = get_settings()
 
 scheduler = BackgroundScheduler()
 

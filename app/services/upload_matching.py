@@ -23,10 +23,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.clients import cbos_client
-from app.core.config import get_settings
+from app.core.config import settings
 
 logger = logging.getLogger("upload_matching")
-settings = get_settings()
 
 
 @dataclass(frozen=True)

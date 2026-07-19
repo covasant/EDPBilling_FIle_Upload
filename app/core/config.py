@@ -73,3 +73,21 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+class _SettingsProxy:
+    """Lazy accessor for the cached settings.
+
+    Modules do ``from app.core.config import settings`` and read ``settings.x``
+    without instantiating ``Settings`` at import time (which requires a full
+    ``.env``). Every attribute access goes through the cached ``get_settings()``,
+    so a test can set env vars and call ``get_settings.cache_clear()`` to have
+    the change take effect - impossible when the settings object was captured
+    once in a module global at import.
+    """
+
+    def __getattr__(self, name: str):
+        return getattr(get_settings(), name)
+
+
+settings = _SettingsProxy()

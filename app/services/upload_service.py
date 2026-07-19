@@ -28,15 +28,14 @@ from pathlib import Path
 
 from app.clients import cbos_client
 from app.clients.cbos_client import CBOSUploadError
-from app.core.config import get_settings
-from app.core.database import SessionLocal
+from app.core.config import settings
+from app.core.database import get_sessionmaker
 from app.core.queue import SegmentBatchTask, enqueue
 from app.repositories.uploaded_file_repository import UploadedFileRepository
 from app.services import file_service, upload_matching
 from app.services.upload_matching import FileRejected
 
 logger = logging.getLogger("upload_service")
-settings = get_settings()
 
 
 # --------------------------------------------------------------------------
@@ -192,7 +191,7 @@ def process_batch(task: SegmentBatchTask) -> None:
     trade_date = task.folder_date
     logger.info("Processing batch %s: %d file(s)", task.key, len(file_paths))
 
-    session = SessionLocal()
+    session = get_sessionmaker()()
     try:
         repo = UploadedFileRepository(session)
 

@@ -7,10 +7,9 @@ import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from app.core.config import get_settings
+from app.core.config import settings
 
 logger = logging.getLogger("file_service")
-settings = get_settings()
 
 UPLOAD_SUBFOLDER = "uploaded"
 FAILED_SUBFOLDER = "uploadFailed"
