@@ -48,10 +48,9 @@ from pathlib import Path
 
 import requests
 
-from app.core.config import get_settings
+from app.core.config import settings
 
 logger = logging.getLogger("cbos_client")
-settings = get_settings()
 
 # GTG host paths (settings.cbos_gtg_base_url).
 FILE_PROCESS_STATUS_PATH = "/api/edp/file_process_status"
@@ -439,6 +438,20 @@ def get_cbos_client() -> BaseCBOSClient:
             raise CBOSUploadError(f"Invalid CBOS_MODE '{settings.cbos_mode}' - must be MOCK or REAL")
         logger.info("cbos_client: using %s (CBOS_MODE=%s)", type(_client).__name__, mode)
     return _client
+
+
+def set_cbos_client(client: BaseCBOSClient | None) -> None:
+    """Inject a specific client (e.g. a MockCBOSClient in a test), bypassing the
+    CBOS_MODE factory. Pass None via reset_cbos_client() to clear it."""
+    global _client
+    _client = client
+
+
+def reset_cbos_client() -> None:
+    """Clear the cached client so the next get_cbos_client() rebuilds from
+    CBOS_MODE. Call between tests."""
+    global _client
+    _client = None
 
 
 # --------------------------------------------------------------------------

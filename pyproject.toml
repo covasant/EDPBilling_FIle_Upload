@@ -1,0 +1,70 @@
+[project]
+name = "edpbilling-file-upload"
+version = "0.1.0"
+description = "EDP billing file uploader for CBOS"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.30.6",
+    "APScheduler==3.10.4",
+    "SQLAlchemy==2.0.35",
+    "psycopg2-binary==2.9.9",
+    "python-dotenv==1.0.1",
+    "requests==2.32.3",
+    "pydantic==2.9.2",
+    "pydantic-settings==2.5.2",
+    "python-multipart==0.0.12",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-cov",
+    "httpx",
+    "ruff",
+    "mypy",
+    "types-requests",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app", "mock_cbos"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["app", "mock_cbos", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "RUF"]
+ignore = ["B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "mock_cbos"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+disallow_any_generics = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["apscheduler.*", "uvicorn.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
+markers = ["integration: needs a real Postgres / external service"]
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+
+[tool.coverage.report]
+fail_under = 50
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]

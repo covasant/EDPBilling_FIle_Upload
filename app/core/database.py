@@ -1,21 +1,34 @@
 import logging
+from functools import lru_cache
 
 from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.core.config import get_settings
 
 logger = logging.getLogger("database")
-settings = get_settings()
 
-engine = create_engine(settings.database_url, pool_pre_ping=True)
-SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
+
+
+@lru_cache
+def get_engine() -> Engine:
+    """The SQLAlchemy engine, built lazily on first use (not at import time),
+    so importing this module never requires DATABASE_URL. Cached, so it's still
+    a single engine per process. Tests reset it with get_engine.cache_clear()."""
+    return create_engine(get_settings().database_url, pool_pre_ping=True)
+
+
+@lru_cache
+def get_sessionmaker() -> sessionmaker:
+    return sessionmaker(bind=get_engine(), autocommit=False, autoflush=False)
 
 
 def init_db() -> None:
     from app.models import uploaded_file  # noqa: F401 - registers models before create_all
 
+    engine = get_engine()
     logger.debug("init_db: creating tables (create_all) against %s", engine.url)
     Base.metadata.create_all(bind=engine)
     logger.debug("init_db: create_all complete")
@@ -48,7 +61,7 @@ def init_db() -> None:
 
 def get_db_session():
     """FastAPI dependency: yields a request-scoped session, closed afterwards."""
-    db = SessionLocal()
+    db = get_sessionmaker()()
     logger.debug("DB session opened")
     try:
         yield db

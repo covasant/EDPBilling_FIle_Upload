@@ -10,14 +10,15 @@ from app.core.logging import configure_logging
 from app.scheduler.scheduler import start_scheduler, stop_scheduler
 from app.workers.upload_worker import run as run_worker
 
-configure_logging()
-
 logger = logging.getLogger("main")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    
+    # Configure logging at startup (not at import) so importing app.main never
+    # instantiates Settings - keeps the module import-safe and test-friendly.
+    configure_logging()
+
     # Server Start -> Initialize DB -> Start Queue Worker -> Start Scheduler
     # -> Begin File Processing. No manual startup step is required for
     # either the scheduler or the worker.
