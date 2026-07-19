@@ -25,7 +25,7 @@ One file-upload batch (one segment + one trade date) is an 8-step sequence
 
 Two implementations share one interface (BaseCBOSClient):
 
-  RealCBOSClient - makes the actual HTTP calls against the two CBOS hosts.
+  CBOSClient - makes the actual HTTP calls against the two CBOS hosts.
   MockCBOSClient - returns canned responses with the exact same shape, so
                    upload_service.py's orchestration logic (and everything
                    above it - queue, worker, scheduler) runs unmodified in
@@ -156,10 +156,10 @@ class BaseCBOSClient(ABC):
 
 
 # --------------------------------------------------------------------------
-# RealCBOSClient - the actual HTTP calls against the two CBOS hosts.
+# CBOSClient - the actual HTTP calls against the two CBOS hosts.
 # --------------------------------------------------------------------------
 
-class RealCBOSClient(BaseCBOSClient):
+class CBOSClient(BaseCBOSClient):
     def __init__(self) -> None:
         if not settings.cbos_login_id or not settings.cbos_password:
             raise CBOSUploadError(
@@ -432,7 +432,7 @@ def get_cbos_client() -> BaseCBOSClient:
     if _client is None:
         mode = settings.cbos_mode.strip().upper()
         if mode == "REAL":
-            _client = RealCBOSClient()
+            _client = CBOSClient()
         elif mode == "MOCK":
             _client = MockCBOSClient()
         else:

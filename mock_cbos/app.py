@@ -2,7 +2,7 @@
 
 A standalone FastAPI app that mimics the real CBOS trade-process API
 (EDP_Trade_Process_API_Documentation_v4.docx) closely enough that this repo's
-RealCBOSClient can run end-to-end against it with zero code changes - point both
+CBOSClient can run end-to-end against it with zero code changes - point both
 CBOS base URLs at this server:
 
     CBOS_MODE=REAL
