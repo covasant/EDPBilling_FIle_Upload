@@ -203,7 +203,7 @@ class CBOSClient(BaseCBOSClient):
     def _post_multipart(self, url: str, data: dict, files: dict) -> dict:
         logger.info("Request -> %s: data=%s file=%s", url, data, files.get("file", (None,))[0])
         try:
-            response = requests.post(url, data=data, files=files, timeout=settings.cbos_timeout_seconds)
+            response = requests.post(url, data=data, files=files, timeout=settings.cbos_upload_timeout_seconds)
         except requests.RequestException as exc:
             logger.error("Request -> %s failed: %s", url, exc)
             raise CBOSUploadError(f"Request to {url} failed: {exc}") from exc
@@ -498,19 +498,35 @@ def get_upload_settings(upload_id: str) -> dict:
 
 
 def upload_file_chunks(file_path: Path, upload_id: str, guid: str) -> None:
-    """Step 5. Chunking is disabled - the whole file is always sent as a
-    single chunk (CurrentChunk=0, TotalChunks=1), regardless of file size."""
+    """Step 5. Streams the file to CBOS in chunk_size_kb-sized chunks (0-indexed
+    CurrentChunk, TotalChunks=N, one GUID for the whole file), so a large file is
+    never loaded into memory whole and a slow link isn't bound by the short JSON
+    timeout. Each chunk retries up to cbos_chunk_retry_attempts on a transient
+    CBOSUploadError before failing the file."""
     client = get_cbos_client()
+    chunk_size = max(1, settings.chunk_size_kb) * 1024
+    retries = max(1, settings.cbos_chunk_retry_attempts)
     file_size = file_path.stat().st_size
+    total_chunks = max(1, (file_size + chunk_size - 1) // chunk_size)
     logger.info(
-        "Step 5 - SaveTradePromodalUploadChunkFile: %s (%d bytes) as a single chunk, upload_id=%s guid=%s",
-        file_path.name, file_size, upload_id, guid,
+        "Step 5 - SaveTradePromodalUploadChunkFile: %s (%d bytes) in %d chunk(s) of <=%d KB, upload_id=%s guid=%s",
+        file_path.name, file_size, total_chunks, settings.chunk_size_kb, upload_id, guid,
     )
 
-    file_bytes = file_path.read_bytes()
-    client.upload_chunk(upload_id, guid, file_path.name, file_bytes, 0, 1)
+    with file_path.open("rb") as fh:
+        for current_chunk in range(total_chunks):
+            chunk_bytes = fh.read(chunk_size)
+            for attempt in range(1, retries + 1):
+                try:
+                    client.upload_chunk(upload_id, guid, file_path.name, chunk_bytes, current_chunk, total_chunks)
+                    break
+                except CBOSUploadError as exc:
+                    logger.warning("Step 5: chunk %d/%d of %s failed (attempt %d/%d): %s",
+                                   current_chunk + 1, total_chunks, file_path.name, attempt, retries, exc)
+                    if attempt >= retries:
+                        raise
 
-    logger.info("Step 5 complete: %s uploaded in one chunk", file_path.name)
+    logger.info("Step 5 complete: %s uploaded in %d chunk(s)", file_path.name, total_chunks)
 
 
 def get_existing_process_id(segment: str, login_id: str, trade_date: str) -> dict:

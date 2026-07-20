@@ -31,7 +31,8 @@ class Settings(BaseSettings):
     cbos_core_base_url: str = "http://10.167.202.164:8003"
     cbos_login_id: str = "CV0001"
     cbos_password: str = "Master#123"
-    cbos_timeout_seconds: int = 30
+    cbos_timeout_seconds: int = 30            # JSON calls
+    cbos_upload_timeout_seconds: int = 300    # Step 5 multipart chunk upload - much longer than JSON
     cbos_poll_interval_seconds: int = 2
     cbos_poll_max_attempts: int = 10
 
@@ -41,13 +42,12 @@ class Settings(BaseSettings):
     cbos_max_retries: int = 2
     cbos_retry_delay_seconds: int = 2
 
-    # Step 4 file chunking (upload_file_chunks in cbos_client.py). Files are
-    # read and uploaded chunk_size_kb at a time instead of loading the whole
-    # file into memory; a file smaller than chunk_size_kb still uploads as a
-    # single CurrentChunk=1/TotalChunks=1 call. KB-based (rather than MB) so
-    # small test files can be split into multiple chunks without needing a
-    # huge sample file.
-    chunk_size_kb: int = 51200  # 50 MB
+    # Step 5 file chunking (upload_file_chunks in cbos_client.py). The file is
+    # streamed chunk_size_kb at a time (0-indexed CurrentChunk, TotalChunks=N)
+    # instead of loading it into memory whole; a file <= chunk_size_kb goes as a
+    # single CurrentChunk=0/TotalChunks=1 call. KB-based so small test files can
+    # still be split. Each chunk retries cbos_chunk_retry_attempts times.
+    chunk_size_kb: int = 10240  # 10 MB per chunk
     cbos_chunk_retry_attempts: int = 3
 
     # MockCBOSClient behavior tuning - irrelevant when cbos_mode=REAL.

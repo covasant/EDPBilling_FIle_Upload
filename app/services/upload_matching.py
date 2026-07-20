@@ -70,6 +70,11 @@ class ColumnCountMismatch(FileRejected):
     """File matched a pattern/extension but its column count didn't match."""
 
 
+class AmbiguousUploadRule(FileRejected):
+    """Multiple equally-specific UploadIDs matched and extension + exchange
+    couldn't single one out - reject loudly rather than silently pick wrong."""
+
+
 def fetch_upload_rules(table2: list[dict]) -> list[UploadRule]:
     """Step 4: fetch upload settings for every distinct UploadID in Table2
     (not just the first one), so every candidate's matching rule is known
@@ -143,25 +148,53 @@ def _count_columns(file_path: Path) -> int | None:
     return None
 
 
-def match_file(file_path: Path, rules: list[UploadRule]) -> UploadRule:
+def _disambiguate(tied: list[UploadRule], extension: str, exchange: str | None, file_path: Path) -> UploadRule:
+    """Break a tie between equally-specific pattern matches using extension, then
+    exchange (the exchange folder name usually appears in the CBOS label, e.g.
+    'BSE SCRIP' vs 'NSE SCRIP'). Raises AmbiguousUploadRule if neither singles out
+    one UploadID - a loud rejection beats a silent wrong UploadID."""
+    pool = tied
+    if extension:
+        by_ext = [r for r in pool if r.extension and r.extension == extension]
+        if len(by_ext) == 1:
+            logger.info("Tie broken by extension .%s -> UploadID=%s", extension, by_ext[0].upload_id)
+            return by_ext[0]
+        if by_ext:
+            pool = by_ext
+    if exchange:
+        by_exch = [r for r in pool if exchange.upper() in r.name.upper()]
+        if len(by_exch) == 1:
+            logger.info("Tie broken by exchange %s -> UploadID=%s", exchange, by_exch[0].upload_id)
+            return by_exch[0]
+        if by_exch:
+            pool = by_exch
+    if len(pool) == 1:
+        return pool[0]
+    logger.warning("upload_matching: REJECTED file=%s reason='ambiguous UploadID' candidates=%s",
+                   file_path.name, [(r.upload_id, r.name, r.extension) for r in pool])
+    raise AmbiguousUploadRule(
+        f"'{file_path.name}' matches {len(pool)} equally-specific UploadIDs "
+        f"{[(r.upload_id, r.name, r.extension) for r in pool]} - extension/exchange couldn't disambiguate"
+    )
+
+
+def match_file(file_path: Path, rules: list[UploadRule], exchange: str | None = None) -> UploadRule:
     """Match one discovered file against every known UploadID rule.
 
     Pattern matching is MANDATORY - a rule only qualifies if its pattern is
     contained in the filename (FileNameToCompare / LIKE-style containment).
-    Extension matching is NOT a rejection criterion: a file is never turned
-    away just because its extension differs from what Upload Settings
-    declared for the matched UploadID (SCRIP_123.xlsx still selects
-    UploadID=81 even though 81's settings say TXT) - a mismatch is only
-    logged as a warning, and the file proceeds to upload regardless. CBOS's
-    own Step 5/7/9 responses are the real arbiter of whether that file/
-    extension combination is actually accepted.
+    When several rules match, the longest pattern wins; if several tie on pattern
+    length, the file's extension and its exchange folder break the tie (see
+    _disambiguate). A single unambiguous match is NEVER rejected for a wrong
+    extension - that's only a warning, since CBOS's own Step 5/7/9 responses are
+    the real arbiter (SCRIP_123.xlsx still selects UploadID=81 even if 81 says TXT).
 
-    Raises NoMatchingUploadRule only if NO rule's pattern is found in the
-    filename at all. Raises ColumnCountMismatch if the matched rule's
-    column count is checked and doesn't fit (independent of extension)."""
+    Raises NoMatchingUploadRule if NO pattern matches, AmbiguousUploadRule if a
+    tie can't be broken, ColumnCountMismatch if the matched rule's column count
+    is checked and doesn't fit."""
     name = file_path.stem.upper()
     extension = file_path.suffix.lstrip(".").upper()
-    logger.info("File = %s", file_path.name)
+    logger.info("File = %s (exchange=%s)", file_path.name, exchange)
 
     candidates = [r for r in rules if _pattern_matches(r.file_name_pattern.upper(), r.compare_operator, name)]
 
@@ -176,15 +209,11 @@ def match_file(file_path: Path, rules: list[UploadRule]) -> UploadRule:
             f"checked {len(rules)} rule(s): {[(r.upload_id, r.file_name_pattern, r.extension) for r in rules]}"
         )
 
-    # Longest pattern wins: if a filename satisfies more than one rule's
-    # correct one, not just whichever rule happened to load first.
+    # Longest pattern wins; ties are broken by extension then exchange.
     candidates.sort(key=lambda r: len(r.file_name_pattern), reverse=True)
-    if len(candidates) > 1 and len(candidates[0].file_name_pattern) == len(candidates[1].file_name_pattern):
-        logger.warning(
-            "upload_matching: '%s' matched %d equally-specific UploadID rules (%s) - using UploadID=%s",
-            file_path.name, len(candidates), [c.upload_id for c in candidates], candidates[0].upload_id,
-        )
-    rule = candidates[0]
+    top_len = len(candidates[0].file_name_pattern)
+    tied = [r for r in candidates if len(r.file_name_pattern) == top_len]
+    rule = tied[0] if len(tied) == 1 else _disambiguate(tied, extension, exchange, file_path)
     logger.info("Matched Pattern = %s", rule.file_name_pattern)
 
     if rule.extension and extension and rule.extension != extension:
