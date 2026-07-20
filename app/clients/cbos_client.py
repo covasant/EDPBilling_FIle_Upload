@@ -43,6 +43,7 @@ get_cbos_client() is the factory; it reads settings.cbos_mode once and returns
 the matching singleton.
 """
 
+import json
 import logging
 import random
 import socket
@@ -114,6 +115,42 @@ def _redact(payload: dict) -> dict:
 # unrecognized/absent Status is treated as success, since we don't have a
 # confirmed real-CBOS failure shape yet.
 _FAILURE_STATUSES = {"FAILED", "FAILURE", "ERROR"}
+
+
+def _decode_body(raw, source: str) -> dict:
+    """Normalise a CBOS response into a dict, or raise CBOSUploadError.
+
+    CBOS returns its payload double-encoded: the body is a JSON *string*
+    holding a JSON document, rather than the document itself -
+
+        "{\\"Status\\":\\"Success\\",\\"Result\\":{...}}"
+
+    - which is what a server does when it serialises an already-serialised
+    string. requests' .json() hands back a str for that, and every .get() call
+    downstream then dies with AttributeError. AttributeError is not
+    CBOSUploadError, so it escapes process_batch's setup retry loop, the files
+    are never routed to uploadFailed/, and the next scan rediscovers them
+    forever (the H4 loop).
+
+    Hence both jobs here: unwrap the extra layer, and guarantee callers get a
+    dict or a CBOSUploadError - never a surprise type.
+    """
+    body = raw
+    for _ in range(2):  # at most two layers; a third would be pathological
+        if not isinstance(body, str):
+            break
+        try:
+            body = json.loads(body)
+        except ValueError as exc:
+            raise CBOSUploadError(
+                f"{source} returned a string that is not JSON: {body[:200]}"
+            ) from exc
+
+    if not isinstance(body, dict):
+        raise CBOSUploadError(
+            f"{source} returned {type(body).__name__}, expected a JSON object: {str(body)[:200]}"
+        )
+    return body
 
 
 def _raise_on_failed_status(path: str, body: dict) -> None:
@@ -201,7 +238,7 @@ class BaseCBOSClient(ABC):
         either makes the batch unprocessable.
         """
         logger.info("Step 2 - getNewTradeProcess: segment=%s trade_date=%s", segment, trade_date)
-        response = self._get_new_trade_process(segment, trade_date)
+        response = _decode_body(self._get_new_trade_process(segment, trade_date), "getNewTradeProcess")
         result = response.get("Result") or {}
 
         table1 = result.get("Table1") or []
@@ -239,7 +276,8 @@ class BaseCBOSClient(ABC):
         this only unwraps it.
         """
         logger.info("Step 4 - GetNewTradeProcessPromodalUploadSettings: UPLOADID=%s", upload_id)
-        result = self._get_upload_settings(upload_id).get("Result") or []
+        response = _decode_body(self._get_upload_settings(upload_id), "GetNewTradeProcessPromodalUploadSettings")
+        result = response.get("Result") or []
         if not result:
             logger.warning("No upload settings returned for UPLOADID=%s", upload_id)
             return None
@@ -327,8 +365,8 @@ class BaseCBOSClient(ABC):
         return False
 
     @staticmethod
-    def _gtg_msg(response: dict) -> str:
-        rows = response.get("Data") or []
+    def _gtg_msg(response) -> str:
+        rows = _decode_body(response, "file_process_status").get("Data") or []
         return str(rows[0].get("MSG", "")).strip() if rows else ""
 
 
@@ -358,10 +396,11 @@ class CBOSClient(BaseCBOSClient):
             raise CBOSUploadError(f"{url} failed: {response.status_code} {response.text}")
 
         try:
-            body = response.json()
+            parsed = response.json()
         except ValueError as exc:
             raise CBOSUploadError(f"{url} returned non-JSON response: {response.text}") from exc
 
+        body = _decode_body(parsed, url)
         _raise_on_failed_status(url, body)
         logger.info("Response <- %s: %s", url, body)
         return body
