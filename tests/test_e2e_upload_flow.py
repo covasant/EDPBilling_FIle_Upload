@@ -44,7 +44,7 @@ def test_full_mcx_batch_uploads_all_three(monkeypatch):
     from app.clients import cbos_client
 
     client = cbos_client.get_cbos_client()
-    task = SegmentBatchTask(folder_date=date, segment=segment, exchange=exchange, file_paths=paths)
+    task = SegmentBatchTask(folder_date=date, segment=segment, files=[(p, exchange) for p in paths])
     upload_service.process_batch(task)
 
     session = database.get_sessionmaker()()

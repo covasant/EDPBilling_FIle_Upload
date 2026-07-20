@@ -8,19 +8,23 @@ logger = logging.getLogger("upload_queue")
 
 @dataclass
 class SegmentBatchTask:
-    """One CBOS batch = one segment + one trade date + one exchange folder.
-    Holiday check (Step 1), process-ID creation (Step 2), upload-rule
-    resolution (Step 4), and the trigger (Step 8) all happen ONCE per batch
-    - never once per file - so every file discovered together in the same
-    {date}/{segment}/{exchange}/ folder is processed as a single unit."""
+    """One CBOS batch = one segment + one trade date. Every file for that
+    segment on that date - across ALL its exchange sub-folders - is one unit,
+    because CBOS reserves exactly ONE PROCESSID per segment/date and EDP_Billing
+    reads it back per segment/date via getdropdown (see
+    docs/CBOS_HANDOFF_CONTRACT.md). Slicing by exchange would reserve two PIDs
+    for e.g. EQ's BSE + NSE folders and half the files would never trigger.
+
+    Each file keeps its own exchange (the sub-folder it came from) for matching
+    (upload_matching tie-breaks by exchange) and audit - exchange is per-file
+    metadata, not a partition key."""
     folder_date: str
     segment: str
-    exchange: str
-    file_paths: list[str] = field(default_factory=list)
+    files: list[tuple[str, str]] = field(default_factory=list)  # (file_path, exchange)
 
     @property
     def key(self) -> str:
-        return f"{self.folder_date}|{self.segment}|{self.exchange}"
+        return f"{self.folder_date}|{self.segment}"
 
 
 file_queue: "Queue[SegmentBatchTask]" = Queue()
@@ -46,7 +50,7 @@ def enqueue(task: SegmentBatchTask) -> bool:
         queued_batches.add(task.key)
 
     file_queue.put(task)
-    logger.info("Added to queue: %s (%d file(s))", task.key, len(task.file_paths))
+    logger.info("Added to queue: %s (%d file(s))", task.key, len(task.files))
     logger.info("Queue size: %d", file_queue.qsize())
     return True
 
