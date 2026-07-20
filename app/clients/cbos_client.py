@@ -21,8 +21,9 @@ One file-upload batch (one segment + one trade date):
   Step 4 - GetNewTradeProcessPromodalUploadSettings      -> per-UploadID pattern/extension/column rules
                                                              (called once per Table2 candidate - see
                                                              app/services/upload_matching.py)
-  Step 5 - SaveTradePromodalUploadChunkFile              -> one call per matched file (chunking disabled,
-                                                             sent as a single CurrentChunk=0/TotalChunks=1 call)
+  Step 5 - SaveTradePromodalUploadChunkFile              -> one call per CHUNK_SIZE_KB chunk of a matched file
+                                                             (0-indexed CurrentChunk, one GUID per file; a
+                                                             small file is a single 0/1 call)
   Step 6 - getdropdown(EXISTINGPROCESSID)                -> optional confirmation lookup, not on the critical path
   Step 7 - SaveNewTradeProcessPromodalUploadFile         -> registers each uploaded file
   Step 8 - UpdateNewTradeProcessProcessDetailsIsMandatory-> mark each non-zero Table2 slot that got NO file

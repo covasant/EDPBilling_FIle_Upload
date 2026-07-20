@@ -147,6 +147,43 @@ def test_unconfirmed_upload_goes_to_uploaded_not_failed(monkeypatch):
         session.close()
 
 
+# --- GUID is persisted BEFORE the chunks go out --------------------------------
+
+class _ChunkDiesMidFile(MockCBOSClient):
+    """Fails partway through Step 5, exactly like a link drop mid-file."""
+
+    def upload_chunk(self, upload_id, guid, file_name, chunk_bytes, current_chunk, total_chunks):
+        raise CBOSUploadError("simulated link drop mid-chunk")
+
+
+def test_guid_persisted_even_when_chunk_upload_fails(monkeypatch):
+    """A failed Step 5 leaves inert chunks in a CBOS drop folder. We must have
+    written that folder's GUID down BEFORE uploading, or it is unfindable.
+    Persisting the GUID only after a successful upload loses it exactly when
+    it matters."""
+    _fast(monkeypatch)
+    from app.core import database
+    from app.models.uploaded_file import UploadedFile
+    from app.services import upload_service
+
+    database.init_db()
+    cbos_client.set_cbos_client(_ChunkDiesMidFile())
+
+    folder = _root() / "17-07-2026" / "MCX" / "NA"
+    f = _write(folder, "Position_MCXCCL_CO_0_CM_55930_20260717_F_0000.csv")
+
+    upload_service.process_batch(_batch(files=[str(f)]))
+
+    session = database.get_sessionmaker()()
+    try:
+        row = session.query(UploadedFile).one()
+        assert row.status == "failed"
+        assert row.guid, "GUID of the abandoned CBOS drop folder must be recorded"
+        assert (folder / "uploadFailed" / f.name).exists()
+    finally:
+        session.close()
+
+
 # --- idempotency: a re-dropped, already-uploaded file is not sent twice --------
 
 def test_multi_exchange_segment_reserves_one_pid(monkeypatch):
