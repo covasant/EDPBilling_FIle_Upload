@@ -35,8 +35,9 @@ from app.core.config import settings
 from app.core.database import get_sessionmaker
 from app.core.queue import SegmentBatchTask, enqueue
 from app.repositories.uploaded_file_repository import UploadedFileRepository
-from app.services import file_service, upload_matching
+from app.services import file_service, upload_matching, upload_outcome
 from app.services.upload_matching import FileRejected
+from app.services.upload_outcome import Destination, FileOutcome, Outcome
 
 logger = logging.getLogger("upload_service")
 
@@ -107,94 +108,51 @@ def save_manual_upload(content: bytes, file_name: str, segment: str, exchange: s
 
 
 # --------------------------------------------------------------------------
-# Centralized success/failure/rejection handlers. Every code path in
-# process_batch ends in exactly one of these for a given file.
+# Carrying a decision out. upload_outcome decides which folder a file belongs
+# in and what its audit row should say; apply_outcome is the only thing that
+# acts on that. Every code path in process_batch ends here for a given file.
 # --------------------------------------------------------------------------
 
-def handle_upload_success(repo: UploadedFileRepository, record, file_path: Path, response: dict, request_log: list) -> Path:
-    """Step 9 confirmed processing finished -> move to uploaded/, record the
-    outcome."""
-    dest_path = file_service.move_to_uploaded(file_path)
-    repo.update(
-        record,
-        status="uploaded",
-        cbos_response=str(response),
-        request_log=json.dumps(request_log, default=str),
-        uploaded_at=datetime.utcnow(),
-        file_path=str(dest_path),
-    )
+_OUTCOME_LOG_LEVEL = {
+    Outcome.CONFIRMED: logging.INFO,
+    Outcome.IDEMPOTENT_SKIP: logging.INFO,
+    Outcome.UNCONFIRMED: logging.WARNING,
+    Outcome.REJECTED: logging.WARNING,
+    Outcome.FAILED: logging.ERROR,
+}
+
+
+def apply_outcome(repo: UploadedFileRepository, record, file_path: Path, outcome: FileOutcome,
+                  request_log: list | None = None) -> Path:
+    """Move the file into the folder its outcome calls for, and record what
+    happened. Pass request_log=None when no CBOS call was made for this file
+    (a local rejection), so the column stays empty rather than storing '[]'."""
+    move = (file_service.move_to_uploaded if outcome.destination is Destination.UPLOADED
+            else file_service.move_to_failed)
+    dest_path = move(file_path)
+
+    fields = {
+        "status": outcome.status,
+        "cbos_response": outcome.cbos_response,
+        "file_path": str(dest_path),
+    }
+    if outcome.validation_error is not None:
+        fields["validation_error"] = outcome.validation_error
+    if outcome.counts_as_retry:
+        fields["retry_count"] = (record.retry_count or 0) + 1
+    if outcome.stamp_uploaded_at:
+        fields["uploaded_at"] = datetime.utcnow()
+    if request_log is not None:
+        fields["request_log"] = json.dumps(request_log, default=str)
+
+    repo.update(record, **fields)
     repo.commit()
-    logger.info(
-        "handle_upload_success: file=%s upload_id=%s destination=%s",
-        file_path.name, record.cbos_upload_id, dest_path,
+
+    logger.log(
+        _OUTCOME_LOG_LEVEL[outcome.outcome],
+        "%s: file=%s upload_id=%s destination=%s response=%s",
+        outcome.outcome, file_path.name, record.cbos_upload_id, dest_path, outcome.cbos_response,
     )
-    return dest_path
-
-
-def handle_upload_failure(repo: UploadedFileRepository, record, file_path: Path, error: Exception, request_log: list) -> Path:
-    """Any CBOS-call failure (Steps 5/7) or a batch-level Step 9 rejection
-    -> move to uploadFailed/, record why."""
-    dest_path = file_service.move_to_failed(file_path)
-    repo.update(
-        record,
-        status="failed",
-        cbos_response=str(error),
-        request_log=json.dumps(request_log, default=str),
-        retry_count=(record.retry_count or 0) + 1,
-        file_path=str(dest_path),
-    )
-    repo.commit()
-    logger.error(
-        "handle_upload_failure: file=%s upload_id=%s response=%s destination=%s",
-        file_path.name, record.cbos_upload_id, error, dest_path,
-    )
-    return dest_path
-
-
-def handle_file_rejected(repo: UploadedFileRepository, record, file_path: Path, error: FileRejected) -> Path:
-    """A file was rejected locally (Step 4 checks), before any Step 5/7 CBOS
-    call was made for it. The application never fails/crashes over this -
-    it's a per-file outcome, same as success/failure.
-
-    Every rejection reason (no UploadID pattern/extension matched, a
-    validation failure such as ColumnCountMismatch, etc.) moves the file to
-    uploadFailed/ - there is no separate unmatched-file destination."""
-    dest_path = file_service.move_to_failed(file_path)
-
-    repo.update(
-        record,
-        status="failed",
-        validation_error=str(error),
-        cbos_response=f"Rejected before upload: {error}",
-        retry_count=(record.retry_count or 0) + 1,
-        file_path=str(dest_path),
-    )
-    repo.commit()
-    logger.warning("handle_file_rejected: file=%s reason=%s destination=%s", file_path.name, error, dest_path)
-    return dest_path
-
-
-# --------------------------------------------------------------------------
-# Worker: process one queued segment/date/exchange batch. Steps 2/3/4/8/9
-# run once for the whole batch; Steps 5/6/7 run once per matched file.
-# --------------------------------------------------------------------------
-
-def handle_upload_unconfirmed(repo: UploadedFileRepository, record, file_path: Path, request_log: list) -> Path:
-    """Steps 5+7 succeeded (the file IS in CBOS) but our Step-9 FILEUPLOAD read
-    didn't confirm good-to-go. Move to uploaded/ - re-dropping would duplicate -
-    and flag confirmation as pending. EDP_Billing is the authoritative poller and
-    triggers once CBOS reports TRUE."""
-    dest_path = file_service.move_to_uploaded(file_path)
-    repo.update(
-        record,
-        status="uploaded",
-        cbos_response="Registered in CBOS; FILEUPLOAD good-to-go not confirmed by uploader",
-        request_log=json.dumps(request_log, default=str),
-        uploaded_at=datetime.utcnow(),
-        file_path=str(dest_path),
-    )
-    repo.commit()
-    logger.warning("handle_upload_unconfirmed: file=%s moved to uploaded/ (FILEUPLOAD not yet TRUE)", file_path.name)
     return dest_path
 
 
@@ -204,8 +162,14 @@ def _fail_all_files(repo: UploadedFileRepository, files: list, task: SegmentBatc
     and retried forever."""
     for file_path, exchange in files:
         record = repo.create_audit_record(file_path, task.folder_date, task.segment, exchange)
-        handle_upload_failure(repo, record, file_path, error,
-                              [{"step": "batch_setup_error", "error": str(error)}])
+        apply_outcome(repo, record, file_path, upload_outcome.failed(error),
+                      [{"step": "batch_setup_error", "error": str(error)}])
+
+
+# --------------------------------------------------------------------------
+# Worker: process one queued segment/date batch. Steps 2/3/4/8/9 run once for
+# the whole batch; Steps 5/6/7 run once per matched file.
+# --------------------------------------------------------------------------
 
 
 def process_batch(task: SegmentBatchTask) -> None:
@@ -267,7 +231,7 @@ def process_batch(task: SegmentBatchTask) -> None:
             try:
                 rule = upload_matching.match_file(file_path, rules, exchange=exchange)
             except FileRejected as exc:
-                handle_file_rejected(repo, record, file_path, exc)
+                apply_outcome(repo, record, file_path, upload_outcome.rejected(exc))
                 continue
 
             repo.update(
@@ -286,12 +250,7 @@ def process_batch(task: SegmentBatchTask) -> None:
                 logger.info("Idempotent skip: %s already uploaded (segment=%s date=%s UploadID=%s)",
                             file_path.name, task.segment, task.folder_date, rule.upload_id)
                 request_log.append({"step": "idempotent_skip"})
-                dest_path = file_service.move_to_uploaded(file_path)
-                repo.update(record, status="uploaded",
-                            cbos_response="Skipped - already uploaded (idempotent)",
-                            request_log=json.dumps(request_log, default=str),
-                            file_path=str(dest_path))
-                repo.commit()
+                apply_outcome(repo, record, file_path, upload_outcome.idempotent_skip(), request_log)
                 filled_upload_ids.add(str(rule.upload_id))
                 continue
 
@@ -324,7 +283,7 @@ def process_batch(task: SegmentBatchTask) -> None:
             except Exception as exc:
                 logger.error("Batch %s: upload sequence failed for %s: %s", task.key, file_path.name, exc)
                 request_log.append({"step": "error", "error": str(exc)})
-                handle_upload_failure(repo, record, file_path, exc, request_log)
+                apply_outcome(repo, record, file_path, upload_outcome.failed(exc), request_log)
 
         if not uploaded_candidates:
             logger.info("Batch %s: no files uploaded, skipping mark-optional/poll", task.key)
@@ -358,14 +317,10 @@ def process_batch(task: SegmentBatchTask) -> None:
         # Step 9: our own confirmation that the files landed (EDP_Billing is the
         # authoritative FILEUPLOAD poller + the one that triggers). Per segment.
         succeeded = cbos_client.poll_file_upload_status(task.segment, login_id)
+        outcome = upload_outcome.from_poll_result(succeeded)
         for record, file_path, request_log in uploaded_candidates:
             request_log.append({"step": "file_process_status", "result": succeeded})
-            if succeeded:
-                handle_upload_success(repo, record, file_path, {"MSG": "TRUE"}, request_log)
-            else:
-                # Files ARE in CBOS (Steps 5+7 done); FILEUPLOAD just isn't TRUE
-                # yet. Routing to uploadFailed would invite a duplicate re-upload.
-                handle_upload_unconfirmed(repo, record, file_path, request_log)
+            apply_outcome(repo, record, file_path, outcome, request_log)
 
         logger.info(
             "Batch %s complete: %d file(s) in CBOS (%s)",
