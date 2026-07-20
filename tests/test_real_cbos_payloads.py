@@ -8,7 +8,8 @@ suite, because the mock encoded the same wrong key. Anything captured from the
 real server belongs here.
 """
 
-from app.clients.cbos_client import MockCBOSClient, _parse_upload_rule as parse_upload_rule
+from app.clients.cbos_client import MockCBOSClient
+from app.clients.cbos_client import _parse_upload_rule as parse_upload_rule
 from app.services.upload_matching import match_file
 
 # Verbatim Result[0] from POST /v1/api/process/GetNewTradeProcessPromodalUploadSettings {"UPLOADID":"127"}
