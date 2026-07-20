@@ -33,7 +33,7 @@ from app.clients import cbos_client
 from app.clients.cbos_client import CBOSUploadError
 from app.core.config import settings
 from app.core.database import get_sessionmaker
-from app.core.queue import SegmentBatchTask, enqueue
+from app.core.queue import BatchQueue, SegmentBatchTask
 from app.repositories.uploaded_file_repository import UploadedFileRepository
 from app.services import file_service, upload_matching, upload_outcome
 from app.services.upload_matching import FileRejected
@@ -48,7 +48,7 @@ logger = logging.getLogger("upload_service")
 # task, since that's the unit CBOS's own workflow operates on.
 # --------------------------------------------------------------------------
 
-def discover_and_enqueue() -> None:
+def discover_and_enqueue(queue: BatchQueue) -> None:
     """Walk {FILE_ROOT_PATH}/{date}/{segment}/{exchange}/ for T and the
     configured scan_days_back further, and push every (date, segment,
     exchange) group found as one batch onto the upload queue. Files already
@@ -61,11 +61,11 @@ def discover_and_enqueue() -> None:
                 "matching against CBOS's UploadID rules happens per-batch in process_batch")
 
     for folder_date in dates:
-        _discover_date(root, folder_date)
+        _discover_date(root, folder_date, queue)
     logger.info("discover_and_enqueue: scan complete")
 
 
-def _discover_date(root: Path, folder_date: str) -> None:
+def _discover_date(root: Path, folder_date: str, queue: BatchQueue) -> None:
     logger.info("Processing date: %s", folder_date)
 
     # Group by SEGMENT only - all exchange sub-folders for a segment become one
@@ -79,15 +79,14 @@ def _discover_date(root: Path, folder_date: str) -> None:
         groups[segment].append((str(file_path), exchange))
 
     for segment, files in groups.items():
-        _maybe_enqueue(folder_date, segment, files)
+        _maybe_enqueue(folder_date, segment, files, queue)
 
     logger.info("Found %d file(s) across %d segment batch(es) for %s", files_found, len(groups), folder_date)
 
 
-def _maybe_enqueue(folder_date: str, segment: str, files: list[tuple[str, str]]) -> None:
+def _maybe_enqueue(folder_date: str, segment: str, files: list[tuple[str, str]], queue: BatchQueue) -> None:
     task = SegmentBatchTask(folder_date=folder_date, segment=segment, files=files)
-    added = enqueue(task)
-    if not added:
+    if not queue.enqueue(task):
         logger.debug("Skipping already-queued/in-flight batch %s", task.key)
 
 

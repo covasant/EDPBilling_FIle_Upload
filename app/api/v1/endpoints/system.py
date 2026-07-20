@@ -1,8 +1,7 @@
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
-from app.core.queue import file_queue
 from app.services.upload_service import discover_and_enqueue
 
 logger = logging.getLogger("system_endpoint")
@@ -16,15 +15,15 @@ def health():
 
 
 @router.post("/run-now")
-def run_now():
+def run_now(request: Request):
     logger.info("POST /run-now: manual discovery scan triggered")
-    discover_and_enqueue()
+    discover_and_enqueue(request.app.state.batch_queue)
     logger.info("POST /run-now: discovery scan complete")
     return {"status": "triggered"}
 
 
 @router.get("/queue-status")
-def queue_status():
+def queue_status(request: Request):
     """Lets external tooling (tests, monitoring) observe queue depth without
     reaching into process internals.
 
@@ -34,9 +33,10 @@ def queue_status():
     correct "is everything truly done" signal for callers like the test
     harness that need to know processing has actually finished.
     """
+    queue = request.app.state.batch_queue
     status = {
-        "queue_size": file_queue.qsize(),
-        "unfinished_tasks": file_queue.unfinished_tasks,
+        "queue_size": queue.size,
+        "unfinished_tasks": queue.unfinished,
     }
     logger.debug("GET /queue-status: %s", status)
     return status
