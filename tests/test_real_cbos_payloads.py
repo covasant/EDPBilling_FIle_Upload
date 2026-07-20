@@ -162,3 +162,48 @@ def test_a_non_object_body_raises_cbos_error_not_attribute_error():
 def test_a_string_that_is_not_json_raises_cbos_error():
     with pytest.raises(CBOSUploadError, match="not JSON"):
         _decode_body("<html>502 Bad Gateway</html>", "x")
+
+
+# --- Step 5 chunk upload --------------------------------------------------------
+# Captured from the UAT server. This one arrives TRIPLE-encoded on the wire,
+# where Steps 2 and 4 arrive double-encoded - the depth is not consistent
+# across CBOS endpoints, which is why _decode_body budgets for more than it
+# has so far needed.
+
+# Verbatim HTTP body from POST /v1/api/process/SaveTradePromodalUploadChunkFile
+REAL_CHUNK_WIRE_BODY = (
+    r'"\"{\\\"Status\\\": \\\"ChunkUploaded\\\", '
+    r'\\\"Guid\\\":\\\"62514a44-b632-427e-bec8-70ad91b57185\\\",'
+    r'\\\"FileName\\\":\\\"Trade_MCX_CO_0_CM_55930_20260714_F_0000_chunk_001.CSV\\\",'
+    r'\\\"currentChunk\\\":\\\"0\\\",\\\"totalChunks\\\":\\\"15\\\",\\\"fCount\\\":\\\"1\\\"}\""'
+)
+
+
+def test_real_chunk_response_is_triple_encoded_on_the_wire():
+    """Steps 2 and 4 arrive double-encoded; Step 5 arrives triple. Pinning the
+    difference so nobody 'simplifies' the unwrap back to a single pass."""
+    layers, cur = 0, REAL_CHUNK_WIRE_BODY
+    while isinstance(cur, str):
+        cur = json.loads(cur)
+        layers += 1
+    assert layers == 3
+
+
+def test_real_chunk_response_decodes_after_requests_json():
+    """requests strips one layer; _decode_body must handle what's left."""
+    after_requests = json.loads(REAL_CHUNK_WIRE_BODY)   # what .json() returns
+    assert isinstance(after_requests, str), "still a string - this is the trap"
+
+    body = _decode_body(after_requests, "SaveTradePromodalUploadChunkFile")
+    assert body["Status"] == "ChunkUploaded"
+    assert body["Guid"] == "62514a44-b632-427e-bec8-70ad91b57185"
+    assert body["totalChunks"] == "15"
+
+
+def test_chunkuploaded_is_not_treated_as_a_failure():
+    """Step 5 answers "ChunkUploaded", not "Success". Only FAILED/FAILURE/ERROR
+    may raise - a stricter check here would fail every chunk CBOS accepted."""
+    from app.clients.cbos_client import _raise_on_failed_status
+
+    body = _decode_body(json.loads(REAL_CHUNK_WIRE_BODY), "Step 5")
+    _raise_on_failed_status("Step 5", body)  # must not raise

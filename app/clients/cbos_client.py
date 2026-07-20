@@ -117,6 +117,11 @@ def _redact(payload: dict) -> dict:
 _FAILURE_STATUSES = {"FAILED", "FAILURE", "ERROR"}
 
 
+# How many times a body may be re-encoded before we give up. Steps 2/4 need one
+# pass after requests' .json(); Step 5 needs two. Headroom for the next surprise.
+_MAX_ENCODING_LAYERS = 4
+
+
 def _decode_body(raw, source: str) -> dict:
     """Normalise a CBOS response into a dict, or raise CBOSUploadError.
 
@@ -135,8 +140,12 @@ def _decode_body(raw, source: str) -> dict:
     Hence both jobs here: unwrap the extra layer, and guarantee callers get a
     dict or a CBOSUploadError - never a surprise type.
     """
+    # Observed depths differ per endpoint: Steps 2 and 4 arrive double-encoded,
+    # Step 5 triple-encoded. requests' .json() strips the first layer, so the
+    # budget here is generous rather than exact - each pass is guarded, and a
+    # layer that doesn't decode to a dict still ends in CBOSUploadError.
     body = raw
-    for _ in range(2):  # at most two layers; a third would be pathological
+    for _ in range(_MAX_ENCODING_LAYERS):
         if not isinstance(body, str):
             break
         try:
