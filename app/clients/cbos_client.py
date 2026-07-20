@@ -185,6 +185,103 @@ class ProcessReservation:
     candidates: list[UploadCandidate]
 
 
+@dataclass(frozen=True)
+class UploadRule:
+    """One UploadID's file-name pattern, extension and column count (Step 4),
+    decoded off the wire.
+
+    Every CBOS field name lives on this side of the interface;
+    app/services/upload_matching.py works only with these attributes and never
+    sees a raw settings row. raw_settings keeps the original for the audit log.
+    """
+    upload_id: str
+    name: str
+    file_name_pattern: str
+    compare_operator: str
+    extension: str
+    column_count: int | None
+    raw_settings: dict
+
+
+def _extract_pattern(setting: dict) -> tuple[str, str]:
+    """Find the file-name pattern in a Step-4 row, and any match operator that
+    came with it. Returns (pattern, operator_from_key).
+
+    Real CBOS bakes the semantics into the key name and sends no separate
+    operator field at all:
+
+        "FILE NAME (CONTAINS)": "MCX_PRODUCTMASTER"
+
+    So the parenthetical IS the operator. Any key beginning "FILE NAME" is
+    treated as the pattern field and its parenthetical (if any) as the
+    operator, which covers (CONTAINS) and whatever other variants CBOS uses
+    without needing a code change per variant. The older documented spellings
+    ("FILE NAME", "FileNameToCompare") still work and simply yield no operator
+    hint, falling back to CBOS's default containment behaviour.
+    """
+    for key, value in setting.items():
+        if not str(key).strip().upper().startswith("FILE NAME"):
+            continue
+        pattern = str(value or "").strip()
+        if not pattern:
+            continue
+        operator = ""
+        if "(" in key and ")" in key:
+            operator = key[key.index("(") + 1:key.rindex(")")].strip()
+        return pattern, operator
+
+    # Documented alternate spelling, no operator baked in.
+    return str(setting.get("FileNameToCompare") or "").strip(), ""
+
+
+def _parse_upload_rule(upload_id: str, setting: dict, fallback_name: str = "") -> UploadRule | None:
+    """Decode one raw Step-4 settings row into an UploadRule.
+
+    Returns None if the row can't produce a usable rule, which is a skip and
+    never an error: a slot with no pattern or no extension can't match anything.
+
+    Tolerances that exist because CBOS's rows aren't uniform:
+      - the pattern key carries its own operator - "FILE NAME (CONTAINS)" -
+        and real CBOS sends no separate operator field at all (see
+        _extract_pattern); the documented "FILE NAME" / "FileNameToCompare"
+        spellings still work
+      - the extension as "FILEEXTENSION" or "FileExtension", and may carry a
+        leading dot or any case
+      - an explicit FileNameCompareOperator, if CBOS ever sends one, wins over
+        the key's parenthetical; with neither, CBOS's default containment
+        behaviour (LIKE) applies
+      - the column count may be absent, blank, "-", or non-numeric; any of
+        those means "don't check columns" rather than "reject this slot"
+    """
+    pattern, operator_from_key = _extract_pattern(setting)
+    compare_operator = str(
+        setting.get("FileNameCompareOperator") or operator_from_key or "LIKE"
+    ).strip()
+    extension = str(setting.get("FILEEXTENSION") or setting.get("FileExtension") or "").strip().lstrip(".").upper()
+
+    if not pattern or not extension:
+        logger.warning("Incomplete upload settings for UPLOADID=%s (%s), skipping", upload_id, setting)
+        return None
+
+    raw_columns = setting.get("NO. OF COLUMNS")
+    column_count = None
+    if raw_columns not in (None, "", "-"):
+        try:
+            column_count = int(raw_columns)
+        except (TypeError, ValueError):
+            logger.warning("Non-numeric column count %r for UPLOADID=%s, ignoring", raw_columns, upload_id)
+
+    return UploadRule(
+        upload_id=upload_id,
+        name=str(setting.get("NAME") or fallback_name or ""),
+        file_name_pattern=pattern,
+        compare_operator=compare_operator,
+        extension=extension,
+        column_count=column_count,
+        raw_settings=setting,
+    )
+
+
 # --------------------------------------------------------------------------
 # BaseCBOSClient - the single interface. Adapters supply the eight raw calls;
 # parsing, chunking and polling are implemented once, here.
@@ -268,12 +365,12 @@ class BaseCBOSClient(ABC):
         logger.info("Step 3 - CheckProcessIDExist: segment=%s", segment)
         return self._gtg_msg(self._check_process_id_exist(segment))
 
-    def upload_settings(self, upload_id: str) -> dict | None:
-        """Step 4. The raw settings row for one UploadID, envelope stripped.
-        Returns None if CBOS offered no settings for it.
+    def upload_settings(self, upload_id: str, fallback_name: str = "") -> UploadRule | None:
+        """Step 4. This UploadID's matching rule, decoded. Returns None if CBOS
+        offered no settings for it, or the row can't produce a usable rule.
 
-        The row's fields are interpreted by app/services/upload_matching.py -
-        this only unwraps it.
+        fallback_name is used when the settings row carries no NAME - pass the
+        Table2 slot's label.
         """
         logger.info("Step 4 - GetNewTradeProcessPromodalUploadSettings: UPLOADID=%s", upload_id)
         response = _decode_body(self._get_upload_settings(upload_id), "GetNewTradeProcessPromodalUploadSettings")
@@ -281,7 +378,7 @@ class BaseCBOSClient(ABC):
         if not result:
             logger.warning("No upload settings returned for UPLOADID=%s", upload_id)
             return None
-        return result[0]
+        return _parse_upload_rule(upload_id, result[0], fallback_name)
 
     def upload_file(self, file_path: Path, upload_id: str, guid: str) -> None:
         """Step 5. Stream the file to CBOS in chunk_size_kb-sized chunks

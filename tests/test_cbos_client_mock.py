@@ -48,12 +48,14 @@ def test_candidate_knows_whether_a_file_is_expected():
     assert all(c.upload_id not in ("0", "") for c in expecting)
 
 
-def test_upload_settings_strips_the_envelope():
-    """The key is "FILE NAME (CONTAINS)" - real CBOS bakes the match operator
-    into the key name. See tests/test_real_cbos_payloads.py."""
-    setting = cbos_client.get_cbos_client().upload_settings("81")
-    assert setting["FILE NAME (CONTAINS)"] == "SCRIP"
-    assert "FILEEXTENSION" in setting
+def test_upload_settings_returns_a_decoded_rule():
+    """Callers get an UploadRule, never a raw settings row - every CBOS field
+    name stays inside this module. See tests/test_real_cbos_payloads.py."""
+    rule = cbos_client.get_cbos_client().upload_settings("81")
+    assert rule.upload_id == "81"
+    assert rule.file_name_pattern == "SCRIP"
+    assert rule.extension == "TXT"
+    assert rule.compare_operator == "CONTAINS"
 
 
 def test_upload_settings_returns_none_when_cbos_offers_nothing():

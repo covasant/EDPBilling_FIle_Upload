@@ -10,7 +10,7 @@ from app.services.upload_outcome import Destination, Outcome
 
 
 def test_confirmed_lands_in_uploaded_and_stamps_time():
-    o = upload_outcome.confirmed({"MSG": "TRUE"})
+    o = upload_outcome.confirmed()
     assert o.outcome is Outcome.CONFIRMED
     assert o.destination is Destination.UPLOADED
     assert o.status == "uploaded"
@@ -65,7 +65,7 @@ def test_only_failures_route_to_uploadfailed():
     a file to uploadFailed/."""
     to_failed = {
         o.outcome for o in (
-            upload_outcome.confirmed({}),
+            upload_outcome.confirmed(),
             upload_outcome.unconfirmed(),
             upload_outcome.idempotent_skip(),
             upload_outcome.rejected(ValueError("x")),
@@ -79,6 +79,6 @@ def test_only_failures_route_to_uploadfailed():
 def test_outcomes_are_immutable():
     """Outcomes are values - apply_outcome must not be able to mutate one it
     was handed."""
-    o = upload_outcome.confirmed({})
+    o = upload_outcome.confirmed()
     with pytest.raises(dataclasses.FrozenInstanceError):
         o.status = "tampered"

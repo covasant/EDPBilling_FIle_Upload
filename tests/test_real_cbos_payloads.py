@@ -8,8 +8,8 @@ suite, because the mock encoded the same wrong key. Anything captured from the
 real server belongs here.
 """
 
-from app.clients.cbos_client import MockCBOSClient
-from app.services.upload_matching import match_file, parse_upload_rule
+from app.clients.cbos_client import MockCBOSClient, _parse_upload_rule as parse_upload_rule
+from app.services.upload_matching import match_file
 
 # Verbatim Result[0] from POST /v1/api/process/GetNewTradeProcessPromodalUploadSettings {"UPLOADID":"127"}
 REAL_UPLOAD_SETTINGS_127 = {
@@ -130,8 +130,10 @@ def test_double_encoded_reserve_still_parses():
 
 
 def test_double_encoded_upload_settings_still_parses():
-    setting = _DoubleEncodedClient().upload_settings("127")
-    assert setting["FILE NAME (CONTAINS)"] == "MCX_PRODUCTMASTER"
+    rule = _DoubleEncodedClient().upload_settings("127")
+    assert rule.file_name_pattern == "MCX_PRODUCTMASTER"
+    assert rule.compare_operator == "CONTAINS"
+    assert rule.column_count == 68
 
 
 def test_double_encoded_gtg_still_parses(monkeypatch):
