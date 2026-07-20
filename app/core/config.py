@@ -27,10 +27,13 @@ class Settings(BaseSettings):
     # CORE process/brokerage APIs (getNewTradeProcess, chunk upload, upload
     # settings, file entry, trigger) live on a different host. Kept as two
     # separate settings instead of one shared base URL.
-    cbos_gtg_base_url: str = "http://10.167.202.234:8087"
-    cbos_core_base_url: str = "http://10.167.202.164:8003"
-    cbos_login_id: str = "CV0001"
-    cbos_password: str = "Master#123"
+    # No committed defaults - MOCK mode doesn't need these; REAL mode requires
+    # them from .env and CBOSClient fails fast if any are missing. Never commit
+    # real hosts/credentials here (see docs/CBOS_HANDOFF_CONTRACT.md).
+    cbos_gtg_base_url: str = ""
+    cbos_core_base_url: str = ""
+    cbos_login_id: str = ""
+    cbos_password: str = ""
     cbos_timeout_seconds: int = 30            # JSON calls
     cbos_upload_timeout_seconds: int = 300    # Step 5 multipart chunk upload - much longer than JSON
     cbos_poll_interval_seconds: int = 2
