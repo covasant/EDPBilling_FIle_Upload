@@ -74,13 +74,62 @@ class AmbiguousUploadRule(FileRejected):
     couldn't single one out - reject loudly rather than silently pick wrong."""
 
 
+def parse_upload_rule(upload_id: str, setting: dict, fallback_name: str = "") -> UploadRule | None:
+    """Turn one raw Step-4 settings row into an UploadRule. Pure - takes the
+    row CBOS returned, makes no calls of its own.
+
+    Returns None if the row can't produce a usable rule, which is a skip and
+    never an error: a slot with no pattern or no extension simply can't match
+    anything.
+
+    Tolerances that exist because CBOS's rows aren't uniform:
+      - the pattern arrives as "FILE NAME" or "FileNameToCompare"
+      - the extension as "FILEEXTENSION" or "FileExtension", and may carry a
+        leading dot or any case
+      - the compare operator may be absent, in which case CBOS's default
+        containment behaviour (LIKE) applies
+      - the column count may be absent, blank, "-", or non-numeric; any of
+        those means "don't check columns" rather than "reject this slot"
+    """
+    pattern = str(setting.get("FILE NAME") or setting.get("FileNameToCompare") or "").strip()
+    compare_operator = str(setting.get("FileNameCompareOperator") or "LIKE").strip()
+    extension = str(setting.get("FILEEXTENSION") or setting.get("FileExtension") or "").strip().lstrip(".").upper()
+
+    if not pattern or not extension:
+        logger.warning(
+            "upload_matching: incomplete upload settings for UPLOADID=%s (%s), skipping", upload_id, setting
+        )
+        return None
+
+    raw_columns = setting.get("NO. OF COLUMNS")
+    column_count = None
+    if raw_columns not in (None, "", "-"):
+        try:
+            column_count = int(raw_columns)
+        except (TypeError, ValueError):
+            logger.warning(
+                "upload_matching: non-numeric column count %r for UPLOADID=%s, ignoring", raw_columns, upload_id
+            )
+
+    return UploadRule(
+        upload_id=upload_id,
+        name=str(setting.get("NAME") or fallback_name or ""),
+        file_name_pattern=pattern,
+        compare_operator=compare_operator,
+        extension=extension,
+        column_count=column_count,
+        raw_settings=setting,
+    )
+
+
 def fetch_upload_rules(candidates, client) -> list[UploadRule]:
     """Step 4: fetch upload settings for every distinct UploadID a batch's
     reservation offers (not just the first one), so every candidate's matching
     rule is known before any file is matched.
 
     `candidates` are cbos_client.UploadCandidate values; `client` is the CBOS
-    client the batch is already using."""
+    client the batch is already using. Interpreting each row is
+    parse_upload_rule's job."""
     rules: list[UploadRule] = []
     seen_ids: set[str] = set()
 
@@ -94,35 +143,9 @@ def fetch_upload_rules(candidates, client) -> list[UploadRule]:
         if setting is None:
             continue
 
-        pattern = str(setting.get("FILE NAME") or setting.get("FileNameToCompare") or "").strip()
-        compare_operator = str(setting.get("FileNameCompareOperator") or "LIKE").strip()
-        extension = str(setting.get("FILEEXTENSION") or setting.get("FileExtension") or "").strip().lstrip(".").upper()
-        raw_columns = setting.get("NO. OF COLUMNS")
-
-        if not pattern or not extension:
-            logger.warning(
-                "upload_matching: incomplete upload settings for UPLOADID=%s (%s), skipping", upload_id, setting
-            )
-            continue
-
-        column_count = None
-        if raw_columns not in (None, "", "-"):
-            try:
-                column_count = int(raw_columns)
-            except (TypeError, ValueError):
-                logger.warning(
-                    "upload_matching: non-numeric column count %r for UPLOADID=%s, ignoring", raw_columns, upload_id
-                )
-
-        rules.append(UploadRule(
-            upload_id=upload_id,
-            name=str(setting.get("NAME") or candidate.name or ""),
-            file_name_pattern=pattern,
-            compare_operator=compare_operator,
-            extension=extension,
-            column_count=column_count,
-            raw_settings=setting,
-        ))
+        rule = parse_upload_rule(upload_id, setting, fallback_name=candidate.name)
+        if rule is not None:
+            rules.append(rule)
 
     logger.info("Loaded %d Upload Rules from CBOS", len(rules))
     return rules
