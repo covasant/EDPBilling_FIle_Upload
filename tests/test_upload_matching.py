@@ -2,7 +2,8 @@
 
 import pytest
 
-from app.clients.cbos_client import UploadRule, _parse_upload_rule as parse_upload_rule
+from app.clients.cbos_client import UploadRule
+from app.clients.cbos_client import _parse_upload_rule as parse_upload_rule
 from app.services.upload_matching import (
     AmbiguousUploadRule,
     ColumnCountMismatch,
