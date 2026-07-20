@@ -207,3 +207,60 @@ def test_chunkuploaded_is_not_treated_as_a_failure():
 
     body = _decode_body(json.loads(REAL_CHUNK_WIRE_BODY), "Step 5")
     _raise_on_failed_status("Step 5", body)  # must not raise
+
+
+# --- what the Step 5 failure taught us ------------------------------------------
+# Sending CurrentChunk=14 of 15 under a fresh Guid returned:
+#
+#   "Could not find file 'E:\UploadFiles\EDP\{Guid}\{FileName}.part0'."
+#
+# So CBOS stores each chunk at  E:\UploadFiles\EDP\{Guid}\{FileName}.part{N}
+# and the final chunk triggers reassembly, which reads .part0 upward. Two
+# consequences, both pinned below:
+#   1. every chunk of one file MUST send the same FileName, or the parts land
+#      under different base names and .part0 is never found;
+#   2. CBOS reports this failure as a bare string, not {"Status": "FAILED"}.
+
+REAL_CHUNK_ERROR_WIRE_BODY = (
+    r'''"Could not find file 'E:\\UploadFiles\\EDP\\8f750fb4-a3f1-43c1-bfff-dc62b7d7c597'''
+    r'''\\Trade_MCX_CO_0_CM_55930_20260714_F_0000_chunk_015.CSV.part0'."'''
+)
+
+
+def test_chunk_error_is_a_bare_string_and_still_raises():
+    """CBOS signals this failure as a JSON string, not a Status envelope, so
+    _FAILURE_STATUSES never sees it. _decode_body's "must be a dict" rule is
+    what catches it - without that we would treat the failure as success."""
+    after_requests = json.loads(REAL_CHUNK_ERROR_WIRE_BODY)
+    assert isinstance(after_requests, str)
+
+    with pytest.raises(CBOSUploadError) as exc:
+        _decode_body(after_requests, "SaveTradePromodalUploadChunkFile")
+    assert "Could not find file" in str(exc.value), "CBOS's message must survive"
+
+
+def test_every_chunk_of_a_file_sends_the_same_filename(tmp_path, monkeypatch):
+    """Load-bearing: CBOS names parts {FileName}.part{N} and reassembles from
+    .part0. Varying FileName per chunk scatters the parts and reassembly fails
+    with "Could not find file ... .part0" - the exact UAT error above."""
+    monkeypatch.setenv("CHUNK_SIZE_KB", "1")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    seen = []
+
+    class _Recording(MockCBOSClient):
+        def _upload_chunk(self, upload_id, guid, file_name, chunk_bytes, current_chunk, total_chunks):
+            seen.append((file_name, guid, current_chunk, total_chunks))
+            return {"Status": "ChunkUploaded", "Guid": guid}
+
+    f = tmp_path / "Trade_MCX_CO_0_CM_55930_20260714_F_0000.csv"
+    f.write_bytes(b"x" * 4500)  # 5 chunks at 1 KB
+    _Recording().upload_file(f, "535", "guid-abc")
+
+    assert len(seen) == 5
+    assert {name for name, _, _, _ in seen} == {f.name}, "FileName must not vary per chunk"
+    assert {guid for _, guid, _, _ in seen} == {"guid-abc"}, "one Guid for the whole file"
+    assert [c for _, _, c, _ in seen] == [0, 1, 2, 3, 4], "0-indexed, contiguous"
+    assert {t for _, _, _, t in seen} == {5}, "TotalChunks constant across chunks"
