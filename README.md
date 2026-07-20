@@ -120,12 +120,42 @@ edpb/
 
 ## Setup
 
+The repo ships `pyproject.toml` + `uv.lock`, so uv is the primary path — it
+reads `.python-version` and builds the venv on 3.12 for you:
+
 ```powershell
-cd file_uploader
-python -m venv venv
-venv\Scripts\Activate.ps1
+uv sync
+```
+
+`requirements.txt` is kept in sync with `pyproject.toml`'s runtime pins, so a
+plain venv works too if uv isn't available:
+
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
+
+### Windows / VDI
+
+The VDI images are not uniform — expect one of these:
+
+- **`python` or `pip` "is not recognized".** Python isn't on `PATH`. Use the
+  Windows launcher instead: `py --version`, `py -m pip install uv`. If `python`
+  opens the Microsoft Store, that's the App Execution Alias stub — disable it
+  under Settings -> Apps -> Advanced app settings -> App execution aliases.
+- **`uv` not recognized right after `pip install uv`.** The wheel puts `uv.exe`
+  in a `Scripts\` dir that isn't on `PATH`. Call it as a module: `py -m uv sync`.
+- **`invalid peer certificate: UnknownIssuer` during `uv sync`.** The corporate
+  proxy re-signs HTTPS with an internal root CA that uv's bundled cert store
+  doesn't know. Set `$env:UV_SYSTEM_CERTS = 1` to use the Windows store. (pip on
+  these images is usually already configured for the proxy.)
+- **Build-from-source errors.** Some images ship CPython 3.14+, which has no
+  wheels for parts of this stack, and the VDI has no C toolchain. Both commands
+  above pin 3.12 for exactly this reason — don't drop the pin.
+- **"Failed to hardlink files; falling back to full copy."** Harmless. uv's cache
+  and the checkout sit on different drives (`C:` vs `D:`), so hardlinks aren't
+  possible. Set `$env:UV_LINK_MODE = "copy"` to silence it.
 
 Create the Postgres database referenced by `DATABASE_URL` (tables are
 created automatically by `init_db()` on startup - no migrations needed):
@@ -163,7 +193,13 @@ URL-encode it in `DATABASE_URL` (`@` -> `%40`).
 ## Running the app
 
 ```powershell
-venv\Scripts\Activate.ps1
+uv run uvicorn app.main:app --reload
+```
+
+Or, on the plain-venv path:
+
+```powershell
+.venv\Scripts\Activate.ps1
 python -m uvicorn app.main:app --reload
 ```
 
