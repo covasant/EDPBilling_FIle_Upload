@@ -330,6 +330,7 @@ class MockCBOSClient(BaseCBOSClient):
         self._segment_poll_state: dict[str, dict] = {}  # "segment|date" -> {"attempts": int, "outcome": str|None}
         self._segment_file_names: dict[str, list[str]] = {}
         self.marked_optional: list[tuple] = []  # (process_id, stepno) each Step-8 call, for test assertions
+        self.upload_calls: list[tuple] = []     # (upload_id, file_name) each Step-5 upload, for test assertions
 
     def _decide_outcome(self, file_names: list[str]) -> bool:
         """True = succeed, False = fail. See class docstring for the rules."""
@@ -374,6 +375,7 @@ class MockCBOSClient(BaseCBOSClient):
 
     def upload_chunk(self, upload_id: str, guid: str, file_name: str, chunk_bytes: bytes,
                       current_chunk: int, total_chunks: int) -> dict:
+        self.upload_calls.append((str(upload_id), file_name))
         response = {"Status": "ChunkUploaded", "Guid": guid}
         logger.info("[MOCK] Chunk uploaded: %s chunk %d/%d (upload_id=%s, guid=%s)",
                      file_name, current_chunk, total_chunks, upload_id, guid)

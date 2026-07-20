@@ -1,10 +1,7 @@
 import logging
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
-from app.core.database import get_db_session
-from app.repositories.uploaded_file_repository import UploadedFileRepository
 from app.schemas.upload import UploadResponse
 from app.services import upload_service
 
@@ -12,20 +9,15 @@ logger = logging.getLogger("upload_endpoint")
 router = APIRouter(tags=["upload"])
 
 
-def get_uploaded_file_repository(session: Session = Depends(get_db_session)) -> UploadedFileRepository:
-    return UploadedFileRepository(session)
-
-
 @router.post("/upload", response_model=UploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_file(
     file: UploadFile = File(...),
     segment: str = Form(...),
     exchange: str = Form(...),
-    repo: UploadedFileRepository = Depends(get_uploaded_file_repository),
 ):
     """Manual upload edge-case: saves the file into the standard segment/exchange/date
-    folder and marks it pending, so the scheduler picks it up and queues it
-    for upload on its next run. This endpoint never talks to CBOS directly.
+    folder, so the scheduler picks it up and queues it for upload on its next
+    run. Writes no DB row and never talks to CBOS directly.
     """
     logger.info("POST /upload received: filename=%s segment=%s exchange=%s", file.filename, segment, exchange)
 
@@ -49,7 +41,7 @@ async def upload_file(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty")
 
     logger.debug("POST /upload: read %d bytes from %s", len(content), file.filename)
-    record = upload_service.save_manual_upload(content, file.filename, segment, exchange, repo)
+    dest_path = upload_service.save_manual_upload(content, file.filename, segment, exchange)
 
-    logger.info("POST /upload complete: %s -> record id=%s status=%s", file.filename, record.id, record.status)
-    return UploadResponse(message="File uploaded successfully", status=record.status)
+    logger.info("POST /upload complete: %s -> %s (queued for next scan)", file.filename, dest_path)
+    return UploadResponse(message="File saved; queued for upload on the next scan", status="pending")

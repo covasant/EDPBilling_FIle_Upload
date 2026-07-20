@@ -21,6 +21,7 @@ processing decision."""
 
 import json
 import logging
+import time
 import uuid
 from collections import defaultdict
 from datetime import datetime
@@ -89,21 +90,16 @@ def _maybe_enqueue(folder_date: str, segment: str, exchange: str, file_paths: li
 # Manual upload endpoint support
 # --------------------------------------------------------------------------
 
-def save_manual_upload(content: bytes, file_name: str, segment: str, exchange: str, repo: UploadedFileRepository):
-    """Used by POST /upload: save the file to the standard location and mark
-    it pending. Never talks to CBOS directly - the scheduler's next pass
-    discovers and enqueues it as part of that segment/date/exchange batch,
-    like any other file."""
+def save_manual_upload(content: bytes, file_name: str, segment: str, exchange: str) -> Path:
+    """Used by POST /upload: save the file to the standard location so the
+    scheduler's next scan discovers and enqueues it, like any downloaded file.
+    Deliberately writes NO DB row - the batch's create_audit_record owns the
+    audit record; writing one here would collide with it on the file_path
+    UNIQUE constraint and wedge the file into an endless reprocess loop."""
     logger.info("save_manual_upload: %s (segment=%s, exchange=%s)", file_name, segment, exchange)
     dest_path = file_service.save_uploaded_file(content, file_name, segment, exchange)
-    record = repo.create_pending_record(
-        dest_path,
-        folder_date=file_service.get_today_folder_name(),
-        segment=segment,
-        exchange=exchange,
-    )
-    logger.info("save_manual_upload: record id=%s marked pending at %s", record.id, dest_path)
-    return record
+    logger.info("save_manual_upload: saved %s, awaiting next scan", dest_path)
+    return dest_path
 
 
 # --------------------------------------------------------------------------
@@ -179,9 +175,38 @@ def handle_file_rejected(repo: UploadedFileRepository, record, file_path: Path, 
 # run once for the whole batch; Steps 5/6/7 run once per matched file.
 # --------------------------------------------------------------------------
 
+def handle_upload_unconfirmed(repo: UploadedFileRepository, record, file_path: Path, request_log: list) -> Path:
+    """Steps 5+7 succeeded (the file IS in CBOS) but our Step-9 FILEUPLOAD read
+    didn't confirm good-to-go. Move to uploaded/ - re-dropping would duplicate -
+    and flag confirmation as pending. EDP_Billing is the authoritative poller and
+    triggers once CBOS reports TRUE."""
+    dest_path = file_service.move_to_uploaded(file_path)
+    repo.update(
+        record,
+        status="uploaded",
+        cbos_response="Registered in CBOS; FILEUPLOAD good-to-go not confirmed by uploader",
+        request_log=json.dumps(request_log, default=str),
+        uploaded_at=datetime.utcnow(),
+        file_path=str(dest_path),
+    )
+    repo.commit()
+    logger.warning("handle_upload_unconfirmed: file=%s moved to uploaded/ (FILEUPLOAD not yet TRUE)", file_path.name)
+    return dest_path
+
+
+def _fail_all_files(repo: UploadedFileRepository, file_paths: list, task: SegmentBatchTask, error: Exception) -> None:
+    """Batch setup (reserve / fetch-rules) failed before any upload - route every
+    file to uploadFailed/ so the batch fails cleanly instead of being rediscovered
+    and retried forever."""
+    for file_path in file_paths:
+        record = repo.create_audit_record(file_path, task.folder_date, task.segment, task.exchange)
+        handle_upload_failure(repo, record, file_path, error,
+                              [{"step": "batch_setup_error", "error": str(error)}])
+
+
 def process_batch(task: SegmentBatchTask) -> None:
-    """Attempt CBOS Steps 2->9 for one segment/date/exchange batch. Called
-    by the worker loop for one queue item at a time."""
+    """Attempt the CBOS upload lane (Steps 2->9) for one segment/date/exchange
+    batch. Called by the worker loop for one queue item at a time."""
     file_paths = [Path(p) for p in task.file_paths if Path(p).exists()]
     if not file_paths:
         logger.warning("Batch %s: no files still exist on disk, skipping", task.key)
@@ -195,24 +220,38 @@ def process_batch(task: SegmentBatchTask) -> None:
     try:
         repo = UploadedFileRepository(session)
 
-        # Step 2: create the process ID for this segment/date, shared by
-        # every file in the batch.
-        step2_response = cbos_client.get_new_trade_process(task.segment, login_id, trade_date)
-        process_id = cbos_client.extract_process_id(step2_response)
-        table2 = cbos_client.extract_upload_candidates(step2_response)
+        # Steps 2 + 4: reserve the PROCESSID (shared by every file in the batch)
+        # and fetch each UploadID's matching rule, up front. Bounded retry so a
+        # transient CBOS blip doesn't hot-loop the batch forever - after
+        # cbos_max_retries attempts the files are routed to uploadFailed.
+        process_id = table2 = rules = None
+        for attempt in range(1, settings.cbos_max_retries + 1):
+            try:
+                step2_response = cbos_client.get_new_trade_process(task.segment, login_id, trade_date)
+                process_id = cbos_client.extract_process_id(step2_response)
+                table2 = cbos_client.extract_upload_candidates(step2_response)
+                rules = upload_matching.fetch_upload_rules(table2)
+                break
+            except CBOSUploadError as exc:
+                logger.warning("Batch %s: setup attempt %d/%d failed: %s",
+                               task.key, attempt, settings.cbos_max_retries, exc)
+                if attempt < settings.cbos_max_retries:
+                    time.sleep(settings.cbos_retry_delay_seconds)
+                else:
+                    logger.error("Batch %s: setup exhausted %d attempt(s) - routing files to uploadFailed",
+                                 task.key, settings.cbos_max_retries)
+                    _fail_all_files(repo, file_paths, task, exc)
+                    return
         logger.info("ProcessID = %s (batch=%s, %d UploadID candidate(s))", process_id, task.key, len(table2))
 
-        # Step 3: confirmation check - logged, never blocks the batch (the
-        # doc frames this as a sanity check, not a gate).
+        # Step 3: confirmation check - non-fatal sanity check, never a gate.
         try:
             cbos_client.check_process_id_exist(task.segment, login_id)
         except CBOSUploadError as exc:
             logger.warning("Batch %s: CheckProcessIDExist failed (non-fatal): %s", task.key, exc)
 
-        # Step 4: fetch every UploadID's matching rule ONCE, up front.
-        rules = upload_matching.fetch_upload_rules(table2)
         if not rules:
-            logger.error("Batch %s: no usable UploadID rules resolved from Table2 - failing every file", task.key)
+            logger.error("Batch %s: no usable UploadID rules resolved from Table2 - every file will be rejected", task.key)
 
         uploaded_candidates: list[tuple] = []  # (record, dest_file_path, request_log)
         filled_upload_ids: set[str] = set()    # UploadIDs that actually received a file (Steps 5+7)
@@ -235,6 +274,22 @@ def process_batch(task: SegmentBatchTask) -> None:
                 cbos_upload_settings=json.dumps(rule.raw_settings, default=str),
             )
             repo.commit()
+
+            # Idempotency: if this exact file already reached CBOS for this
+            # segment/date/UploadID (e.g. a re-drop after a Step-9 timeout), it's
+            # already there - skip the re-upload, just move it out of the source.
+            if repo.find_completed(task.segment, task.folder_date, rule.upload_id, file_path.name):
+                logger.info("Idempotent skip: %s already uploaded (segment=%s date=%s UploadID=%s)",
+                            file_path.name, task.segment, task.folder_date, rule.upload_id)
+                request_log.append({"step": "idempotent_skip"})
+                dest_path = file_service.move_to_uploaded(file_path)
+                repo.update(record, status="uploaded",
+                            cbos_response="Skipped - already uploaded (idempotent)",
+                            request_log=json.dumps(request_log, default=str),
+                            file_path=str(dest_path))
+                repo.commit()
+                filled_upload_ids.add(str(rule.upload_id))
+                continue
 
             try:
                 # Step 5: upload the file under its correctly-matched UploadID.
@@ -299,16 +354,14 @@ def process_batch(task: SegmentBatchTask) -> None:
             if succeeded:
                 handle_upload_success(repo, record, file_path, {"MSG": "TRUE"}, request_log)
             else:
-                handle_upload_failure(
-                    repo, record, file_path,
-                    CBOSUploadError("Step 9 file_process_status did not confirm MSG=TRUE"),
-                    request_log,
-                )
+                # Files ARE in CBOS (Steps 5+7 done); FILEUPLOAD just isn't TRUE
+                # yet. Routing to uploadFailed would invite a duplicate re-upload.
+                handle_upload_unconfirmed(repo, record, file_path, request_log)
 
         logger.info(
-            "Batch %s complete: %d uploaded, %d rejected/failed",
-            task.key, len(uploaded_candidates) if succeeded else 0,
-            len(file_paths) - (len(uploaded_candidates) if succeeded else 0),
+            "Batch %s complete: %d file(s) in CBOS (%s)",
+            task.key, len(uploaded_candidates),
+            "FILEUPLOAD confirmed" if succeeded else "FILEUPLOAD not yet confirmed",
         )
 
     finally:
