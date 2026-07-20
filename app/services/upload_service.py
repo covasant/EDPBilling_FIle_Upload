@@ -297,13 +297,18 @@ def process_batch(task: SegmentBatchTask) -> None:
 
             try:
                 # Step 5: upload the file under its correctly-matched UploadID.
-                logger.info("Upload started = %s (UploadID=%s)", file_path.name, rule.upload_id)
+                # The GUID is OURS (client-generated, not returned by CBOS) and is
+                # persisted BEFORE the first chunk goes out. If the upload dies
+                # part-way, the abandoned CBOS drop folder is still named in this
+                # audit row: those chunks are inert (Step 7 never registered the
+                # GUID) but unrecoverable if we never wrote the name down.
                 guid = str(uuid.uuid4())
-                cbos_client.upload_file_chunks(file_path, rule.upload_id, guid)
-                request_log.append({"step": "SaveTradePromodalUploadChunkFile", "upload_id": rule.upload_id, "guid": guid})
                 repo.update(record, guid=guid)
                 repo.commit()
-                logger.info("GUID received = %s (%s)", guid, file_path.name)
+                logger.info("Upload started = %s (UploadID=%s, GUID=%s)",
+                            file_path.name, rule.upload_id, guid)
+                cbos_client.upload_file_chunks(file_path, rule.upload_id, guid)
+                request_log.append({"step": "SaveTradePromodalUploadChunkFile", "upload_id": rule.upload_id, "guid": guid})
 
                 # Step 7: register the uploaded file (Step 6's existing-process
                 # lookup is a non-critical confirmation call, done once per
