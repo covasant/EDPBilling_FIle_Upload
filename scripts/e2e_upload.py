@@ -88,7 +88,7 @@ def main() -> int:
     from app.core import database
     from app.core.config import get_settings
     from app.core.logging import configure_logging
-    from app.core.queue import file_queue, release
+    from app.core.queue import BatchQueue
     from app.models.uploaded_file import UploadedFile
     from app.services import upload_service
     from app.services.file_service import get_root
@@ -102,17 +102,18 @@ def main() -> int:
 
     # Discovery for this specific date (bypassing the scheduler's today/T-1
     # window), then drain the queue exactly as the worker would.
-    upload_service._discover_date(get_root(), args.date)
+    queue = BatchQueue()
+    upload_service._discover_date(get_root(), args.date, queue)
 
     processed = 0
-    while not file_queue.empty():
-        task = file_queue.get()
+    while not queue.empty():
+        task = queue.get()
         try:
             upload_service.process_batch(task)
             processed += 1
         finally:
-            release(task.key)
-            file_queue.task_done()
+            queue.release(task.key)
+            queue.task_done()
 
     # Summary straight from the audit table.
     print("\n" + "=" * 78)

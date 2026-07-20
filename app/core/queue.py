@@ -11,9 +11,9 @@ class SegmentBatchTask:
     """One CBOS batch = one segment + one trade date. Every file for that
     segment on that date - across ALL its exchange sub-folders - is one unit,
     because CBOS reserves exactly ONE PROCESSID per segment/date and EDP_Billing
-    reads it back per segment/date via getdropdown (see
-    docs/CBOS_HANDOFF_CONTRACT.md). Slicing by exchange would reserve two PIDs
-    for e.g. EQ's BSE + NSE folders and half the files would never trigger.
+    reads it back per segment/date via getdropdown (see CONTEXT.md). Slicing by
+    exchange would reserve two PIDs for e.g. EQ's BSE + NSE folders and half the
+    files would never trigger.
 
     Each file keeps its own exchange (the sub-folder it came from) for matching
     (upload_matching tie-breaks by exchange) and audit - exchange is per-file
@@ -27,35 +27,69 @@ class SegmentBatchTask:
         return f"{self.folder_date}|{self.segment}"
 
 
-file_queue: "Queue[SegmentBatchTask]" = Queue()
+class BatchQueue:
+    """Batches waiting to be uploaded, plus the in-flight guard that stops the
+    same batch being queued twice while it is already queued or being
+    processed.
 
-# In-memory guard against enqueuing the same segment/date/exchange batch
-# twice while it's already queued or being processed. Cleared once the
-# worker finishes with a batch.
-queued_batches: set[str] = set()
-_lock = threading.Lock()
+    One instance is created at startup (app/main.py) and handed to the worker,
+    the scheduler and the system endpoints. Deliberately not a module global:
+    ADR 3 removed the other process-wide singletons so tests can supply their
+    own, and this was the last of them. It is also what lets ADR 10's bounded
+    worker pool hand every worker the same queue explicitly.
 
+    Thread-safe: the guard is held under a lock, and the underlying Queue is
+    itself thread-safe.
+    """
 
-def is_queued(batch_key: str) -> bool:
-    with _lock:
-        return batch_key in queued_batches
+    def __init__(self) -> None:
+        self._queue: "Queue[SegmentBatchTask]" = Queue()
+        self._in_flight: set[str] = set()
+        self._lock = threading.Lock()
 
+    def enqueue(self, task: SegmentBatchTask) -> bool:
+        """Add a batch unless that segment/date is already queued or in flight.
+        Returns True if it was added."""
+        with self._lock:
+            if task.key in self._in_flight:
+                return False
+            self._in_flight.add(task.key)
 
-def enqueue(task: SegmentBatchTask) -> bool:
-    """Add a batch to the queue unless that segment/date/exchange is
-    already queued or in flight. Returns True if added."""
-    with _lock:
-        if task.key in queued_batches:
-            return False
-        queued_batches.add(task.key)
+        self._queue.put(task)
+        logger.info("Added to queue: %s (%d file(s))", task.key, len(task.files))
+        logger.info("Queue size: %d", self._queue.qsize())
+        return True
 
-    file_queue.put(task)
-    logger.info("Added to queue: %s (%d file(s))", task.key, len(task.files))
-    logger.info("Queue size: %d", file_queue.qsize())
-    return True
+    def is_queued(self, batch_key: str) -> bool:
+        with self._lock:
+            return batch_key in self._in_flight
 
+    def get(self) -> SegmentBatchTask:
+        """Block until a batch is available, then hand it over."""
+        return self._queue.get()
 
-def release(batch_key: str) -> None:
-    """Call once a queued batch has finished processing (success or failure)."""
-    with _lock:
-        queued_batches.discard(batch_key)
+    def task_done(self) -> None:
+        """Mark the batch just handed out by get() as finished."""
+        self._queue.task_done()
+
+    def release(self, batch_key: str) -> None:
+        """Drop the in-flight guard once a batch has finished processing
+        (success or failure), so it can be discovered again."""
+        with self._lock:
+            self._in_flight.discard(batch_key)
+
+    def empty(self) -> bool:
+        return self._queue.empty()
+
+    @property
+    def size(self) -> int:
+        """Batches still waiting. Drops to 0 as soon as a worker dequeues the
+        last one, which may still be mid-flight - see `unfinished`."""
+        return self._queue.qsize()
+
+    @property
+    def unfinished(self) -> int:
+        """Batches dequeued but not yet marked done. The correct "is everything
+        truly finished" signal, since it only drops once a worker calls
+        task_done()."""
+        return self._queue.unfinished_tasks
