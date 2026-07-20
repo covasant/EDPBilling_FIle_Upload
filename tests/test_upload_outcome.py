@@ -1,6 +1,10 @@
 """The routing decision table, asserted directly - no filesystem, no database,
 no CBOS. See CONTEXT.md's Outcomes table."""
 
+import dataclasses
+
+import pytest
+
 from app.services import upload_outcome
 from app.services.upload_outcome import Destination, Outcome
 
@@ -75,9 +79,6 @@ def test_only_failures_route_to_uploadfailed():
 def test_outcomes_are_immutable():
     """Outcomes are values - apply_outcome must not be able to mutate one it
     was handed."""
-    import dataclasses
-    import pytest
-
     o = upload_outcome.confirmed({})
     with pytest.raises(dataclasses.FrozenInstanceError):
         o.status = "tampered"

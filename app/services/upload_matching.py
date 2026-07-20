@@ -22,7 +22,6 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.clients import cbos_client
 from app.core.config import settings
 
 logger = logging.getLogger("upload_matching")
@@ -75,29 +74,26 @@ class AmbiguousUploadRule(FileRejected):
     couldn't single one out - reject loudly rather than silently pick wrong."""
 
 
-def fetch_upload_rules(table2: list[dict]) -> list[UploadRule]:
-    """Step 4: fetch upload settings for every distinct UploadID in Table2
-    (not just the first one), so every candidate's matching rule is known
-    before any file is matched."""
+def fetch_upload_rules(candidates, client) -> list[UploadRule]:
+    """Step 4: fetch upload settings for every distinct UploadID a batch's
+    reservation offers (not just the first one), so every candidate's matching
+    rule is known before any file is matched.
+
+    `candidates` are cbos_client.UploadCandidate values; `client` is the CBOS
+    client the batch is already using."""
     rules: list[UploadRule] = []
     seen_ids: set[str] = set()
 
-    for candidate in table2:
-        raw_upload_id = candidate.get("UPLOADID")
-        if raw_upload_id is None:
-            continue
-        upload_id = str(raw_upload_id)
+    for candidate in candidates:
+        upload_id = candidate.upload_id
         if upload_id in seen_ids:
             continue
         seen_ids.add(upload_id)
 
-        response = cbos_client.get_upload_settings(upload_id)
-        result = response.get("Result") or []
-        if not result:
-            logger.warning("upload_matching: no upload settings returned for UPLOADID=%s, skipping", upload_id)
+        setting = client.upload_settings(upload_id)
+        if setting is None:
             continue
 
-        setting = result[0]
         pattern = str(setting.get("FILE NAME") or setting.get("FileNameToCompare") or "").strip()
         compare_operator = str(setting.get("FileNameCompareOperator") or "LIKE").strip()
         extension = str(setting.get("FILEEXTENSION") or setting.get("FileExtension") or "").strip().lstrip(".").upper()
@@ -120,7 +116,7 @@ def fetch_upload_rules(table2: list[dict]) -> list[UploadRule]:
 
         rules.append(UploadRule(
             upload_id=upload_id,
-            name=str(setting.get("NAME") or candidate.get("NAME") or ""),
+            name=str(setting.get("NAME") or candidate.name or ""),
             file_name_pattern=pattern,
             compare_operator=compare_operator,
             extension=extension,

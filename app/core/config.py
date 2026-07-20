@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     cbos_max_retries: int = 2
     cbos_retry_delay_seconds: int = 2
 
-    # Step 5 file chunking (upload_file_chunks in cbos_client.py). The file is
+    # Step 5 file chunking (BaseCBOSClient.upload_file in cbos_client.py). The file is
     # streamed chunk_size_kb at a time (0-indexed CurrentChunk, TotalChunks=N)
     # instead of loading it into memory whole; a file <= chunk_size_kb goes as a
     # single CurrentChunk=0/TotalChunks=1 call. KB-based so small test files can

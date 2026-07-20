@@ -86,7 +86,7 @@ def test_manual_upload_then_process_does_not_collide(monkeypatch):
 # --- H4: transient setup failure must not hot-loop -----------------------------
 
 class _ReserveFails(MockCBOSClient):
-    def get_new_trade_process(self, segment, login_id, trade_date):
+    def _get_new_trade_process(self, segment, trade_date):
         raise CBOSUploadError("simulated transient CBOS blip")
 
 
@@ -117,7 +117,7 @@ def test_setup_failure_routes_to_failed_not_loop(monkeypatch):
 # --- H5: FILEUPLOAD FALSE after upload must not route to uploadFailed ----------
 
 class _GtgFalse(MockCBOSClient):
-    def file_upload_status(self, segment, login_id):
+    def _file_upload_status(self, segment):
         return {"Status": "Success", "Data": [{"MSG": "FALSE"}]}
 
 
@@ -152,7 +152,7 @@ def test_unconfirmed_upload_goes_to_uploaded_not_failed(monkeypatch):
 class _ChunkDiesMidFile(MockCBOSClient):
     """Fails partway through Step 5, exactly like a link drop mid-file."""
 
-    def upload_chunk(self, upload_id, guid, file_name, chunk_bytes, current_chunk, total_chunks):
+    def _upload_chunk(self, upload_id, guid, file_name, chunk_bytes, current_chunk, total_chunks):
         raise CBOSUploadError("simulated link drop mid-chunk")
 
 

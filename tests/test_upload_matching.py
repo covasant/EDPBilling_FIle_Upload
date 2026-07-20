@@ -91,6 +91,23 @@ def test_genuine_ambiguity_is_rejected_not_guessed(tmp_path):
 
 def test_fetch_upload_rules_pulls_each_uploadid_via_mock_client():
     """fetch_upload_rules goes through the (mock) CBOS client - proves the
-    settings/client seams work end-to-end without network."""
-    rules = fetch_upload_rules([{"UPLOADID": 81}, {"UPLOADID": 85}])
+    settings lookup works end-to-end without network."""
+    from app.clients import cbos_client
+    from app.clients.cbos_client import UploadCandidate
+
+    candidates = [UploadCandidate(upload_id="81", step_no=1, name="BSE SCRIP"),
+                  UploadCandidate(upload_id="85", step_no=2, name="BSE TRADE FILE")]
+    rules = fetch_upload_rules(candidates, cbos_client.get_cbos_client())
     assert {r.upload_id for r in rules} == {"81", "85"}
+
+
+def test_fetch_upload_rules_deduplicates_repeated_uploadids():
+    """A segment's Table2 can list the same UploadID at more than one step;
+    settings are fetched once per distinct ID."""
+    from app.clients import cbos_client
+    from app.clients.cbos_client import UploadCandidate
+
+    candidates = [UploadCandidate(upload_id="81", step_no=1, name="BSE SCRIP"),
+                  UploadCandidate(upload_id="81", step_no=7, name="BSE SCRIP")]
+    rules = fetch_upload_rules(candidates, cbos_client.get_cbos_client())
+    assert len(rules) == 1
