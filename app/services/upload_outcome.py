@@ -38,13 +38,18 @@ class FileOutcome:
     stamp_uploaded_at: bool = False
 
 
-def confirmed(response: dict) -> FileOutcome:
-    """Step 9 reported FILEUPLOAD TRUE."""
+def confirmed() -> FileOutcome:
+    """Step 9 reported FILEUPLOAD TRUE.
+
+    The audit row records the verdict, not a payload: the client returns a
+    bool, so anything payload-shaped stored here would be fabricated rather
+    than what CBOS actually sent.
+    """
     return FileOutcome(
         outcome=Outcome.CONFIRMED,
         destination=Destination.UPLOADED,
         status="uploaded",
-        cbos_response=str(response),
+        cbos_response="FILEUPLOAD confirmed TRUE",
         stamp_uploaded_at=True,
     )
 
@@ -111,4 +116,4 @@ def failed(error: Exception) -> FileOutcome:
 
 def from_poll_result(succeeded: bool) -> FileOutcome:
     """Step 9's verdict for a file that was uploaded and registered."""
-    return confirmed({"MSG": "TRUE"}) if succeeded else unconfirmed()
+    return confirmed() if succeeded else unconfirmed()

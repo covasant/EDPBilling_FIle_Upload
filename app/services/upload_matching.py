@@ -1,6 +1,9 @@
 """Resolves which CBOS UploadID a discovered file belongs to, and validates
 it against that UploadID's file-name pattern / extension / column-count
-rules fetched from CBOS (Step 4: GetNewTradeProcessPromodalUploadSettings).
+rules fetched from CBOS (Step 4).
+
+CBOS's field names are not known here - the client decodes a settings row
+into an UploadRule and this module works only with that type.
 
 This replaces the previous (incorrect) behavior of always uploading every
 file in a segment/exchange folder under Table2's first UploadID. Every
@@ -8,8 +11,8 @@ UploadID CBOS offers for the batch's process is fetched once
 (fetch_upload_rules), then every discovered file is matched independently
 against that full rule set (match_file).
 
-Pattern matching is mandatory - a file must contain a rule's FILE NAME
-pattern somewhere in its name to be selected at all. Extension matching is
+Pattern matching is mandatory - a file must match a rule's pattern to be
+selected at all. Extension matching is
 NOT mandatory: a matched file is never rejected for having a different
 extension than Upload Settings declared - a mismatch is only logged as a
 warning, and the file still proceeds to upload under that UploadID. CBOS's
@@ -19,23 +22,12 @@ ultimately accepted; this engine's job is only to pick the right UploadID.
 
 import csv
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 
+from app.clients.cbos_client import UploadRule
 from app.core.config import settings
 
 logger = logging.getLogger("upload_matching")
-
-
-@dataclass(frozen=True)
-class UploadRule:
-    upload_id: str
-    name: str
-    file_name_pattern: str
-    compare_operator: str
-    extension: str
-    column_count: int | None
-    raw_settings: dict
 
 
 def _pattern_matches(pattern: str, operator: str, name: str) -> bool:
@@ -78,89 +70,6 @@ class AmbiguousUploadRule(FileRejected):
     couldn't single one out - reject loudly rather than silently pick wrong."""
 
 
-def _extract_pattern(setting: dict) -> tuple[str, str]:
-    """Find the file-name pattern in a Step-4 row, and any match operator that
-    came with it. Returns (pattern, operator_from_key).
-
-    Real CBOS bakes the semantics into the key name and sends no separate
-    operator field at all:
-
-        "FILE NAME (CONTAINS)": "MCX_PRODUCTMASTER"
-
-    So the parenthetical IS the operator. Any key beginning "FILE NAME" is
-    treated as the pattern field and its parenthetical (if any) as the
-    operator, which covers (CONTAINS) and whatever other variants CBOS uses
-    without needing a code change per variant. The older documented spellings
-    ("FILE NAME", "FileNameToCompare") still work and simply yield no operator
-    hint, falling back to CBOS's default containment behaviour.
-    """
-    for key, value in setting.items():
-        if not str(key).strip().upper().startswith("FILE NAME"):
-            continue
-        pattern = str(value or "").strip()
-        if not pattern:
-            continue
-        operator = ""
-        if "(" in key and ")" in key:
-            operator = key[key.index("(") + 1:key.rindex(")")].strip()
-        return pattern, operator
-
-    # Documented alternate spelling, no operator baked in.
-    return str(setting.get("FileNameToCompare") or "").strip(), ""
-
-
-def parse_upload_rule(upload_id: str, setting: dict, fallback_name: str = "") -> UploadRule | None:
-    """Turn one raw Step-4 settings row into an UploadRule. Pure - takes the
-    row CBOS returned, makes no calls of its own.
-
-    Returns None if the row can't produce a usable rule, which is a skip and
-    never an error: a slot with no pattern or no extension simply can't match
-    anything.
-
-    Tolerances that exist because CBOS's rows aren't uniform:
-      - the pattern key carries its own operator - "FILE NAME (CONTAINS)" -
-        and real CBOS sends no separate operator field at all (see
-        _extract_pattern); the documented "FILE NAME" / "FileNameToCompare"
-        spellings still work
-      - the extension as "FILEEXTENSION" or "FileExtension", and may carry a
-        leading dot or any case
-      - an explicit FileNameCompareOperator, if CBOS ever sends one, wins over
-        the key's parenthetical; with neither, CBOS's default containment
-        behaviour (LIKE) applies
-      - the column count may be absent, blank, "-", or non-numeric; any of
-        those means "don't check columns" rather than "reject this slot"
-    """
-    pattern, operator_from_key = _extract_pattern(setting)
-    compare_operator = str(
-        setting.get("FileNameCompareOperator") or operator_from_key or "LIKE"
-    ).strip()
-    extension = str(setting.get("FILEEXTENSION") or setting.get("FileExtension") or "").strip().lstrip(".").upper()
-
-    if not pattern or not extension:
-        logger.warning(
-            "upload_matching: incomplete upload settings for UPLOADID=%s (%s), skipping", upload_id, setting
-        )
-        return None
-
-    raw_columns = setting.get("NO. OF COLUMNS")
-    column_count = None
-    if raw_columns not in (None, "", "-"):
-        try:
-            column_count = int(raw_columns)
-        except (TypeError, ValueError):
-            logger.warning(
-                "upload_matching: non-numeric column count %r for UPLOADID=%s, ignoring", raw_columns, upload_id
-            )
-
-    return UploadRule(
-        upload_id=upload_id,
-        name=str(setting.get("NAME") or fallback_name or ""),
-        file_name_pattern=pattern,
-        compare_operator=compare_operator,
-        extension=extension,
-        column_count=column_count,
-        raw_settings=setting,
-    )
 
 
 def fetch_upload_rules(candidates, client) -> list[UploadRule]:
@@ -169,8 +78,8 @@ def fetch_upload_rules(candidates, client) -> list[UploadRule]:
     rule is known before any file is matched.
 
     `candidates` are cbos_client.UploadCandidate values; `client` is the CBOS
-    client the batch is already using. Interpreting each row is
-    parse_upload_rule's job."""
+    client the batch is already using. Decoding each row into an UploadRule
+    is the client's job."""
     rules: list[UploadRule] = []
     seen_ids: set[str] = set()
 
@@ -180,11 +89,7 @@ def fetch_upload_rules(candidates, client) -> list[UploadRule]:
             continue
         seen_ids.add(upload_id)
 
-        setting = client.upload_settings(upload_id)
-        if setting is None:
-            continue
-
-        rule = parse_upload_rule(upload_id, setting, fallback_name=candidate.name)
+        rule = client.upload_settings(upload_id, fallback_name=candidate.name)
         if rule is not None:
             rules.append(rule)
 
@@ -242,7 +147,7 @@ def match_file(file_path: Path, rules: list[UploadRule], exchange: str | None = 
     """Match one discovered file against every known UploadID rule.
 
     Pattern matching is MANDATORY - a rule only qualifies if its pattern is
-    contained in the filename (FileNameToCompare / LIKE-style containment).
+    matched against the filename per the rule's compare operator.
     When several rules match, the longest pattern wins; if several tie on pattern
     length, the file's extension and its exchange folder break the tie (see
     _disambiguate). A single unambiguous match is NEVER rejected for a wrong
