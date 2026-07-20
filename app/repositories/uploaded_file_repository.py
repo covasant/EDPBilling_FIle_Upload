@@ -9,13 +9,10 @@ logger = logging.getLogger("uploaded_file_repository")
 
 
 class UploadedFileRepository:
-    """Audit-log writer for the uploaded_files table. This is pure
-    record-keeping - nothing here drives skip/retry/dedup decisions. Every
-    processing attempt gets its own row; dedup is handled entirely by the
-    filesystem (a moved file can't be rediscovered) and the in-memory
-    in-flight guard in app/core/queue.py. Callers own the Session lifecycle
-    (create it, commit/close it) - this class only knows how to write rows
-    through the session it's given."""
+    """Reader/writer for the uploaded_files table. Mostly an audit log, with
+    one deliberate exception: find_completed() reads it for idempotency (so a
+    re-dropped, already-uploaded file isn't sent to CBOS twice - see ADR 6).
+    Callers own the Session lifecycle (create it, commit/close it)."""
 
     def __init__(self, session: Session):
         self.session = session
@@ -28,9 +25,21 @@ class UploadedFileRepository:
         return record
 
     def create_audit_record(self, file_path, folder_date: str, segment: str, exchange: str) -> UploadedFile:
-        """Called once per file at the start of batch processing - one
-        fresh 'pending' audit row per processing attempt, no lookup/reuse
-        of prior rows."""
+        """Get-or-create the audit row for this file_path, then reset it to
+        'pending' for a fresh attempt. Idempotent: if a prior attempt left a row
+        at this exact source path (a crash before the file was moved, or a manual
+        POST /upload followed by discovery), reuse it instead of inserting a
+        duplicate - the file_path UNIQUE constraint would otherwise raise
+        (the bug that made every such file reprocess forever)."""
+        existing = self.session.query(UploadedFile).filter_by(file_path=str(file_path)).one_or_none()
+        if existing is not None:
+            logger.debug("create_audit_record: reusing existing row id=%s for %s", existing.id, file_path)
+            existing.status = "pending"
+            existing.folder_date = folder_date
+            existing.segment = segment
+            existing.exchange = exchange
+            self.session.flush()
+            return existing
         return self.insert(
             file_name=Path(file_path).name,
             file_path=str(file_path),
@@ -40,20 +49,21 @@ class UploadedFileRepository:
             status="pending",
         )
 
-    def create_pending_record(self, file_path, folder_date: str, segment: str, exchange: str) -> UploadedFile:
-        """Used by POST /upload - one fresh 'pending' audit row for the
-        manually-saved file."""
-        record = self.insert(
-            file_name=Path(file_path).name,
-            file_path=str(file_path),
-            folder_date=folder_date,
-            segment=segment,
-            exchange=exchange,
-            status="pending",
+    def find_completed(self, segment: str, folder_date: str, upload_id, file_name: str) -> UploadedFile | None:
+        """Idempotency lookup: a prior row for this (segment, date, UploadID,
+        file name) that already reached 'uploaded'. If present, the file is
+        already in CBOS and must not be re-uploaded."""
+        return (
+            self.session.query(UploadedFile)
+            .filter_by(
+                segment=segment,
+                folder_date=folder_date,
+                cbos_upload_id=str(upload_id),
+                file_name=file_name,
+                status="uploaded",
+            )
+            .first()
         )
-        self.commit()
-        self.session.refresh(record)
-        return record
 
     def update(self, record: UploadedFile, **fields) -> UploadedFile:
         logger.debug("update: record id=%s <- %s", record.id, fields)

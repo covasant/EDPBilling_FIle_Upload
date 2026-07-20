@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     cbos_poll_interval_seconds: int = 2
     cbos_poll_max_attempts: int = 10
 
+    # Bounded retry for the per-batch CBOS setup calls (reserve PROCESSID + fetch
+    # upload rules). A transient blip retries instead of hot-looping forever;
+    # after cbos_max_retries attempts the batch's files are routed to uploadFailed.
+    cbos_max_retries: int = 2
+    cbos_retry_delay_seconds: int = 2
+
     # Step 4 file chunking (upload_file_chunks in cbos_client.py). Files are
     # read and uploaded chunk_size_kb at a time instead of loading the whole
     # file into memory; a file smaller than chunk_size_kb still uploads as a
