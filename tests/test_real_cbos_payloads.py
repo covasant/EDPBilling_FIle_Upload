@@ -94,3 +94,68 @@ def test_real_zero_uploadid_rows_expect_no_file():
     reservation = _RealPayloadClient().reserve_process("MCX", "14-07-2026")
     expecting = [c.upload_id for c in reservation.candidates if c.expects_a_file]
     assert expecting == ["127", "535", "534"]
+
+
+# --- double-encoded bodies ------------------------------------------------------
+# CBOS returns its payload as a JSON *string* holding a JSON document, not the
+# document itself. requests' .json() yields a str for that, and every .get()
+# downstream dies with AttributeError - which is NOT CBOSUploadError, so it
+# escapes process_batch's setup retry loop, the files are never routed to
+# uploadFailed/, and the next scan rediscovers them forever.
+
+import json
+
+import pytest
+
+from app.clients.cbos_client import CBOSUploadError, _decode_body
+
+
+class _DoubleEncodedClient(MockCBOSClient):
+    """Returns bodies exactly as the UAT server does - one extra JSON layer."""
+
+    def _get_new_trade_process(self, segment, trade_date):
+        return json.dumps(json.dumps({"Status": "Success", "Result": REAL_RESERVE_RESULT}))
+
+    def _get_upload_settings(self, upload_id):
+        return json.dumps(json.dumps({"Status": "Success", "Result": [REAL_UPLOAD_SETTINGS_127]}))
+
+    def _file_upload_status(self, segment):
+        return json.dumps(json.dumps({"Status": "Success", "Data": [{"MSG": "TRUE"}]}))
+
+
+def test_double_encoded_reserve_still_parses():
+    reservation = _DoubleEncodedClient().reserve_process("MCX", "14-07-2026")
+    assert reservation.process_id == "17739"
+    assert [c.upload_id for c in reservation.candidates] == ["127", "535", "534", "0"]
+
+
+def test_double_encoded_upload_settings_still_parses():
+    setting = _DoubleEncodedClient().upload_settings("127")
+    assert setting["FILE NAME (CONTAINS)"] == "MCX_PRODUCTMASTER"
+
+
+def test_double_encoded_gtg_still_parses(monkeypatch):
+    monkeypatch.setenv("CBOS_POLL_INTERVAL_SECONDS", "0")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    assert _DoubleEncodedClient().confirm_upload("MCX") is True
+
+
+def test_singly_encoded_bodies_are_untouched():
+    """The unwrap must be a no-op when CBOS behaves."""
+    body = {"Status": "Success", "Result": {"a": 1}}
+    assert _decode_body(body, "x") is body
+
+
+def test_a_non_object_body_raises_cbos_error_not_attribute_error():
+    """The whole point: a bad body must fail as CBOSUploadError so the setup
+    retry loop catches it and the batch fails cleanly, instead of looping."""
+    for bad in ('"just a string"', json.dumps([1, 2, 3]), json.dumps(None)):
+        with pytest.raises(CBOSUploadError):
+            _decode_body(json.loads(bad), "x")
+
+
+def test_a_string_that_is_not_json_raises_cbos_error():
+    with pytest.raises(CBOSUploadError, match="not JSON"):
+        _decode_body("<html>502 Bad Gateway</html>", "x")
