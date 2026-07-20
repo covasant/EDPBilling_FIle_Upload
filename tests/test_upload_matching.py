@@ -10,6 +10,7 @@ from app.services.upload_matching import (
     _pattern_matches,
     fetch_upload_rules,
     match_file,
+    parse_upload_rule,
 )
 
 
@@ -111,3 +112,59 @@ def test_fetch_upload_rules_deduplicates_repeated_uploadids():
                   UploadCandidate(upload_id="81", step_no=7, name="BSE SCRIP")]
     rules = fetch_upload_rules(candidates, cbos_client.get_cbos_client())
     assert len(rules) == 1
+
+
+# --- parse_upload_rule: the raw Step-4 row, interpreted (pure, no client) ------
+
+def test_parse_accepts_either_filename_key():
+    """CBOS spells the pattern field two ways depending on the endpoint."""
+    a = parse_upload_rule("81", {"FILE NAME": "SCRIP", "FILEEXTENSION": "TXT"})
+    b = parse_upload_rule("81", {"FileNameToCompare": "SCRIP", "FILEEXTENSION": "TXT"})
+    assert a.file_name_pattern == b.file_name_pattern == "SCRIP"
+
+
+def test_parse_accepts_either_extension_key_and_normalises_it():
+    for key in ("FILEEXTENSION", "FileExtension"):
+        rule = parse_upload_rule("81", {"FILE NAME": "SCRIP", key: ".csv"})
+        assert rule.extension == "CSV", f"{key} should normalise to bare uppercase"
+
+
+def test_parse_defaults_the_compare_operator_to_like():
+    rule = parse_upload_rule("81", {"FILE NAME": "SCRIP", "FILEEXTENSION": "TXT"})
+    assert rule.compare_operator == "LIKE"
+
+
+def test_parse_skips_a_row_with_no_pattern_or_no_extension():
+    """An unusable row is a skip, not an error - it simply can't match."""
+    assert parse_upload_rule("81", {"FILEEXTENSION": "TXT"}) is None
+    assert parse_upload_rule("81", {"FILE NAME": "SCRIP"}) is None
+    assert parse_upload_rule("81", {}) is None
+
+
+def test_parse_reads_a_numeric_column_count():
+    rule = parse_upload_rule("81", {"FILE NAME": "SCRIP", "FILEEXTENSION": "TXT", "NO. OF COLUMNS": "30"})
+    assert rule.column_count == 30
+
+
+def test_parse_treats_an_unusable_column_count_as_no_check():
+    """Absent, blank, '-' or non-numeric all mean 'don't check columns' - none
+    of them may cost us the whole rule."""
+    for raw in (None, "", "-", "N/A", "thirty"):
+        rule = parse_upload_rule("81", {"FILE NAME": "SCRIP", "FILEEXTENSION": "TXT", "NO. OF COLUMNS": raw})
+        assert rule is not None, f"{raw!r} should not discard the rule"
+        assert rule.column_count is None
+
+
+def test_parse_falls_back_to_the_candidate_name():
+    """The Table2 slot's label is used when the settings row carries no NAME."""
+    rule = parse_upload_rule("81", {"FILE NAME": "SCRIP", "FILEEXTENSION": "TXT"},
+                             fallback_name="BSE SCRIP")
+    assert rule.name == "BSE SCRIP"
+    named = parse_upload_rule("81", {"NAME": "From settings", "FILE NAME": "SCRIP", "FILEEXTENSION": "TXT"},
+                              fallback_name="BSE SCRIP")
+    assert named.name == "From settings", "the settings row wins when it has a NAME"
+
+
+def test_parse_keeps_the_raw_row_for_audit():
+    setting = {"FILE NAME": "SCRIP", "FILEEXTENSION": "TXT", "ODDBALL": 1}
+    assert parse_upload_rule("81", setting).raw_settings == setting
