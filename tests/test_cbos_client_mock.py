@@ -49,8 +49,10 @@ def test_candidate_knows_whether_a_file_is_expected():
 
 
 def test_upload_settings_strips_the_envelope():
+    """The key is "FILE NAME (CONTAINS)" - real CBOS bakes the match operator
+    into the key name. See tests/test_real_cbos_payloads.py."""
     setting = cbos_client.get_cbos_client().upload_settings("81")
-    assert setting["FILE NAME"] == "SCRIP"
+    assert setting["FILE NAME (CONTAINS)"] == "SCRIP"
     assert "FILEEXTENSION" in setting
 
 

@@ -39,20 +39,24 @@ class UploadRule:
 
 
 def _pattern_matches(pattern: str, operator: str, name: str) -> bool:
-    """Apply CBOS's own FileNameCompareOperator against the filename. The
-    operator is whatever CBOS's Step 4 response declares for this UploadID -
-    never assumed - so adding a new operator value in CBOS requires no code
-    change here as long as it maps to one of these comparison semantics."""
-    op = operator.strip().upper()
+    """Apply CBOS's declared match semantics against the filename. The operator
+    is whatever Step 4 declared for this UploadID - never assumed - so a new
+    operator value in CBOS needs no code change here as long as it maps to one
+    of these comparisons.
+
+    Spaces and underscores are ignored when reading the operator, so "STARTS
+    WITH", "STARTS_WITH" and "STARTSWITH" are the same thing. Real CBOS spells
+    it with a space (see _extract_pattern)."""
+    op = operator.strip().upper().replace(" ", "").replace("_", "")
     if op in ("LIKE", "CONTAINS", ""):
         return pattern in name
     if op in ("EQUALS", "EQUAL", "="):
         return pattern == name
-    if op in ("STARTSWITH", "STARTS_WITH"):
+    if op in ("STARTSWITH",):
         return name.startswith(pattern)
-    if op in ("ENDSWITH", "ENDS_WITH"):
+    if op in ("ENDSWITH",):
         return name.endswith(pattern)
-    logger.warning("upload_matching: unknown FileNameCompareOperator=%r, defaulting to LIKE/contains", operator)
+    logger.warning("upload_matching: unknown file-name compare operator=%r, defaulting to LIKE/contains", operator)
     return pattern in name
 
 
@@ -74,6 +78,37 @@ class AmbiguousUploadRule(FileRejected):
     couldn't single one out - reject loudly rather than silently pick wrong."""
 
 
+def _extract_pattern(setting: dict) -> tuple[str, str]:
+    """Find the file-name pattern in a Step-4 row, and any match operator that
+    came with it. Returns (pattern, operator_from_key).
+
+    Real CBOS bakes the semantics into the key name and sends no separate
+    operator field at all:
+
+        "FILE NAME (CONTAINS)": "MCX_PRODUCTMASTER"
+
+    So the parenthetical IS the operator. Any key beginning "FILE NAME" is
+    treated as the pattern field and its parenthetical (if any) as the
+    operator, which covers (CONTAINS) and whatever other variants CBOS uses
+    without needing a code change per variant. The older documented spellings
+    ("FILE NAME", "FileNameToCompare") still work and simply yield no operator
+    hint, falling back to CBOS's default containment behaviour.
+    """
+    for key, value in setting.items():
+        if not str(key).strip().upper().startswith("FILE NAME"):
+            continue
+        pattern = str(value or "").strip()
+        if not pattern:
+            continue
+        operator = ""
+        if "(" in key and ")" in key:
+            operator = key[key.index("(") + 1:key.rindex(")")].strip()
+        return pattern, operator
+
+    # Documented alternate spelling, no operator baked in.
+    return str(setting.get("FileNameToCompare") or "").strip(), ""
+
+
 def parse_upload_rule(upload_id: str, setting: dict, fallback_name: str = "") -> UploadRule | None:
     """Turn one raw Step-4 settings row into an UploadRule. Pure - takes the
     row CBOS returned, makes no calls of its own.
@@ -83,16 +118,22 @@ def parse_upload_rule(upload_id: str, setting: dict, fallback_name: str = "") ->
     anything.
 
     Tolerances that exist because CBOS's rows aren't uniform:
-      - the pattern arrives as "FILE NAME" or "FileNameToCompare"
+      - the pattern key carries its own operator - "FILE NAME (CONTAINS)" -
+        and real CBOS sends no separate operator field at all (see
+        _extract_pattern); the documented "FILE NAME" / "FileNameToCompare"
+        spellings still work
       - the extension as "FILEEXTENSION" or "FileExtension", and may carry a
         leading dot or any case
-      - the compare operator may be absent, in which case CBOS's default
-        containment behaviour (LIKE) applies
+      - an explicit FileNameCompareOperator, if CBOS ever sends one, wins over
+        the key's parenthetical; with neither, CBOS's default containment
+        behaviour (LIKE) applies
       - the column count may be absent, blank, "-", or non-numeric; any of
         those means "don't check columns" rather than "reject this slot"
     """
-    pattern = str(setting.get("FILE NAME") or setting.get("FileNameToCompare") or "").strip()
-    compare_operator = str(setting.get("FileNameCompareOperator") or "LIKE").strip()
+    pattern, operator_from_key = _extract_pattern(setting)
+    compare_operator = str(
+        setting.get("FileNameCompareOperator") or operator_from_key or "LIKE"
+    ).strip()
     extension = str(setting.get("FILEEXTENSION") or setting.get("FileExtension") or "").strip().lstrip(".").upper()
 
     if not pattern or not extension:
