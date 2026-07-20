@@ -117,6 +117,18 @@ def _extract_gtg_msg(response: dict) -> str:
     return str(rows[0].get("MSG", "")).strip() if rows else ""
 
 
+# Payload keys whose values must never reach a log line or the DB (H8).
+_SECRET_KEYS = {"password", "pwd", "passwd", "api_key", "apikey", "token", "secret"}
+
+
+def _redact(payload: dict) -> dict:
+    """A shallow copy of a request payload with secret values masked, for safe
+    logging/persistence. The password (PASSWORD) never appears in cleartext."""
+    if not isinstance(payload, dict):
+        return payload
+    return {k: ("***" if str(k).lower() in _SECRET_KEYS else v) for k, v in payload.items()}
+
+
 # --------------------------------------------------------------------------
 # Shared interface - both clients implement exactly these calls, with
 # exactly the same request args and the same response envelope shape:
@@ -167,9 +179,11 @@ class BaseCBOSClient(ABC):
 
 class CBOSClient(BaseCBOSClient):
     def __init__(self) -> None:
-        if not settings.cbos_login_id or not settings.cbos_password:
+        required = ("cbos_core_base_url", "cbos_gtg_base_url", "cbos_login_id", "cbos_password")
+        missing = [name.upper() for name in required if not getattr(settings, name)]
+        if missing:
             raise CBOSUploadError(
-                "CBOS_LOGIN_ID and CBOS_PASSWORD are mandatory when CBOS_MODE=REAL"
+                f"CBOS_MODE=REAL requires {', '.join(missing)} in .env (no committed defaults)"
             )
 
     def _gtg_url(self, path: str) -> str:
@@ -179,7 +193,7 @@ class CBOSClient(BaseCBOSClient):
         return f"{settings.cbos_core_base_url.rstrip('/')}{path}"
 
     def _post(self, url: str, payload: dict) -> dict:
-        logger.info("Request -> %s: %s", url, payload)
+        logger.info("Request -> %s: %s", url, _redact(payload))
         try:
             response = requests.post(url, json=payload, timeout=settings.cbos_timeout_seconds)
         except requests.RequestException as exc:
@@ -201,7 +215,7 @@ class CBOSClient(BaseCBOSClient):
         return body
 
     def _post_multipart(self, url: str, data: dict, files: dict) -> dict:
-        logger.info("Request -> %s: data=%s file=%s", url, data, files.get("file", (None,))[0])
+        logger.info("Request -> %s: data=%s file=%s", url, _redact(data), files.get("file", (None,))[0])
         try:
             response = requests.post(url, data=data, files=files, timeout=settings.cbos_upload_timeout_seconds)
         except requests.RequestException as exc:
