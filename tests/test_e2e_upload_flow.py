@@ -41,6 +41,9 @@ def test_full_mcx_batch_uploads_all_three(monkeypatch):
         p.write_text(",".join(str(i) for i in range(cols)) + "\n")
         paths.append(str(p))
 
+    from app.clients import cbos_client
+
+    client = cbos_client.get_cbos_client()
     task = SegmentBatchTask(folder_date=date, segment=segment, exchange=exchange, file_paths=paths)
     upload_service.process_batch(task)
 
@@ -53,3 +56,16 @@ def test_full_mcx_batch_uploads_all_three(monkeypatch):
         assert all(r.guid and r.process_id for r in rows)
     finally:
         session.close()
+
+    # Boundary: the empty non-zero slot (320 = STEPNO 4, no file today) is marked
+    # optional via Step 8, so FILEUPLOAD can reach TRUE.
+    assert 4 in [stepno for _, stepno in client.marked_optional]
+
+
+def test_uploader_does_not_trigger():
+    """This repo owns the upload lane only - the CBOS trigger (Step 10) belongs
+    to EDP_Billing. The client must not expose a trigger call."""
+    from app.clients import cbos_client
+
+    assert not hasattr(cbos_client, "trigger_process")
+    assert not hasattr(cbos_client.get_cbos_client(), "trigger_process")

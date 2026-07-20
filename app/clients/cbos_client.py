@@ -7,8 +7,14 @@ EDP_Trade_Process_API_Documentation_v4.pdf:
   GTG host  (settings.cbos_gtg_base_url)  - file_process_status GTG/CHK calls
   CORE host (settings.cbos_core_base_url) - process/brokerage CORE calls
 
-One file-upload batch (one segment + one trade date) is an 8-step sequence
-(numbered 2-9; there is no Step 1 - the holiday check was removed):
+This repo owns the UPLOAD lane only. The CBOS **trigger** (Step 10) and every
+downstream step (bill posting, recon, margin, MTF, collateral...) are owned by
+the EDP_Billing scheduler, which reads back our PROCESSID via getdropdown and
+waits on the FILEUPLOAD flag before triggering. So our job ends at "make
+FILEUPLOAD go TRUE": reserve -> match -> upload -> register -> mark empty slots
+optional. See docs/CBOS_HANDOFF_CONTRACT.md.
+
+One file-upload batch (one segment + one trade date):
 
   Step 2 - getNewTradeProcess (PROCESSID=0)              -> PROCESSID + Table2 (all UploadID candidates)
   Step 3 - CheckProcessIDExist                           -> confirms Step 2's PROCESSID registered
@@ -19,9 +25,10 @@ One file-upload batch (one segment + one trade date) is an 8-step sequence
                                                              sent as a single CurrentChunk=0/TotalChunks=1 call)
   Step 6 - getdropdown(EXISTINGPROCESSID)                -> optional confirmation lookup, not on the critical path
   Step 7 - SaveNewTradeProcessPromodalUploadFile         -> registers each uploaded file
-  Step 8 - getTradeProcess                               -> triggers the batch once, after every matched file
-                                                             in the segment/date has been uploaded+registered
-  Step 9 - file_process_status (FILEUPLOAD)              -> poll per SEGMENT (not per file/guid) until MSG=TRUE
+  Step 8 - UpdateNewTradeProcessProcessDetailsIsMandatory-> mark each non-zero Table2 slot that got NO file
+                                                             optional, so FILEUPLOAD can reach TRUE
+  Step 9 - file_process_status (FILEUPLOAD)              -> our own confirmation the files landed (EDP_Billing
+                                                             is the authoritative poller); we do NOT trigger
 
 Two implementations share one interface (BaseCBOSClient):
 
@@ -62,7 +69,7 @@ GET_UPLOAD_SETTINGS_PATH = "/v1/api/process/GetNewTradeProcessPromodalUploadSett
 UPLOAD_CHUNK_PATH = "/v1/api/process/SaveTradePromodalUploadChunkFile"
 SAVE_UPLOAD_FILE_PATH = "/v1/api/process/SaveNewTradeProcessPromodalUploadFile"
 GET_EXISTING_PROCESS_ID_PATH = "/v1/api/brokerage/getdropdown"
-TRIGGER_TRADE_PROCESS_PATH = "/v1/api/process/getTradeProcess"
+UPDATE_IS_MANDATORY_PATH = "/v1/api/process/UpdateNewTradeProcessProcessDetailsIsMandatory"
 
 # ProcessName values for the shared file_process_status (GTG) endpoint.
 PROCESS_NAME_CHECK_PROCESS_ID = "CheckProcessIDExist"
@@ -145,9 +152,9 @@ class BaseCBOSClient(ABC):
         """Step 7."""
 
     @abstractmethod
-    def trigger_process(self, login_id: str, segment: str, trade_date: str, process_id: str) -> dict:
-        """Step 8 - distinct endpoint from Step 2's getNewTradeProcess. Called
-        once per segment/date batch, never per file."""
+    def update_process_step_optional(self, process_id: str, stepno) -> dict:
+        """Step 8 - mark one Table2 step optional (a slot with no file today), so
+        it doesn't hold FILEUPLOAD at FALSE. One call per empty slot."""
 
     @abstractmethod
     def file_upload_status(self, segment: str, login_id: str) -> dict:
@@ -273,14 +280,12 @@ class CBOSClient(BaseCBOSClient):
         }
         return self._post(self._core_url(SAVE_UPLOAD_FILE_PATH), payload)
 
-    def trigger_process(self, login_id: str, segment: str, trade_date: str, process_id: str) -> dict:
-        payload = {
-            "loginid": login_id,
-            "segment": segment,
-            "tradedate": _to_cbos_date(trade_date),
-            "processid": process_id,
-        }
-        return self._post(self._core_url(TRIGGER_TRADE_PROCESS_PATH), payload)
+    def update_process_step_optional(self, process_id: str, stepno) -> dict:
+        # ISOPTIONAL="0" is the doc's (counter-intuitive) value for "make this
+        # step optional / not mandatory". Unverified against real CBOS - if it
+        # wants "1", this is the one line to change.
+        payload = {"PROCESSID": process_id, "STEPNO": stepno, "ISOPTIONAL": "0"}
+        return self._post(self._core_url(UPDATE_IS_MANDATORY_PATH), payload)
 
     def file_upload_status(self, segment: str, login_id: str) -> dict:
         payload = {"Segment": segment, "ProcessName": PROCESS_NAME_FILE_UPLOAD_STATUS, "UserID": login_id}
@@ -324,6 +329,7 @@ class MockCBOSClient(BaseCBOSClient):
         self._next_process_id = 17658
         self._segment_poll_state: dict[str, dict] = {}  # "segment|date" -> {"attempts": int, "outcome": str|None}
         self._segment_file_names: dict[str, list[str]] = {}
+        self.marked_optional: list[tuple] = []  # (process_id, stepno) each Step-8 call, for test assertions
 
     def _decide_outcome(self, file_names: list[str]) -> bool:
         """True = succeed, False = fail. See class docstring for the rules."""
@@ -386,9 +392,10 @@ class MockCBOSClient(BaseCBOSClient):
         self._segment_file_names.setdefault(key, []).append(file_name)
         return response
 
-    def trigger_process(self, login_id: str, segment: str, trade_date: str, process_id: str) -> dict:
-        logger.info("[MOCK] Trigger process: segment=%s process_id=%s trade_date=%s", segment, process_id, trade_date)
-        return {"Status": "Success", "Result": {"MSG": "Process triggered"}}
+    def update_process_step_optional(self, process_id: str, stepno) -> dict:
+        self.marked_optional.append((str(process_id), stepno))
+        logger.info("[MOCK] Marked step optional: process_id=%s stepno=%s", process_id, stepno)
+        return {"Status": "Success", "Result": {"Table1": [{"MSG": "Updated Successfully"}]}}
 
     def file_upload_status(self, segment: str, login_id: str) -> dict:
         # Poll state is tracked per segment (mock has no per-batch trade_date
@@ -517,12 +524,12 @@ def save_trade_process_upload_file(upload_id: str, guid: str, file_name: str, lo
     return get_cbos_client().create_file_entry(upload_id, guid, file_name, login_id, process_id, trade_date)
 
 
-def trigger_process(login_id: str, segment: str, trade_date: str, process_id: str) -> dict:
-    """Step 8. Called ONCE per segment/date batch, only after every matched
-    file in that batch has completed Steps 5+7."""
-    logger.info("Step 8 - getTradeProcess (trigger): segment=%s process_id=%s trade_date=%s",
-                segment, process_id, trade_date)
-    return get_cbos_client().trigger_process(login_id, segment, trade_date, process_id)
+def mark_step_optional(process_id: str, stepno) -> dict:
+    """Step 8. Mark a Table2 step optional so a slot with no file today doesn't
+    hold FILEUPLOAD at FALSE. One call per empty non-zero slot, after Steps 5+7."""
+    logger.info("Step 8 - UpdateNewTradeProcessProcessDetailsIsMandatory: process_id=%s stepno=%s",
+                process_id, stepno)
+    return get_cbos_client().update_process_step_optional(process_id, stepno)
 
 
 def poll_file_upload_status(segment: str, login_id: str) -> bool:

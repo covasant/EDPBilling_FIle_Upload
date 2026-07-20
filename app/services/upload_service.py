@@ -214,7 +214,8 @@ def process_batch(task: SegmentBatchTask) -> None:
         if not rules:
             logger.error("Batch %s: no usable UploadID rules resolved from Table2 - failing every file", task.key)
 
-        uploaded_candidates: list[tuple] = []  # (record, dest_file_path, response, request_log)
+        uploaded_candidates: list[tuple] = []  # (record, dest_file_path, request_log)
+        filled_upload_ids: set[str] = set()    # UploadIDs that actually received a file (Steps 5+7)
 
         for file_path in file_paths:
             record = repo.create_audit_record(file_path, task.folder_date, task.segment, task.exchange)
@@ -255,36 +256,43 @@ def process_batch(task: SegmentBatchTask) -> None:
                 logger.info("CBOS entry created = %s (UploadID=%s, GUID=%s)", file_path.name, rule.upload_id, guid)
 
                 uploaded_candidates.append((record, file_path, request_log))
+                filled_upload_ids.add(str(rule.upload_id))
             except Exception as exc:
                 logger.error("Batch %s: upload sequence failed for %s: %s", task.key, file_path.name, exc)
                 request_log.append({"step": "error", "error": str(exc)})
                 handle_upload_failure(repo, record, file_path, exc, request_log)
 
         if not uploaded_candidates:
-            logger.info("Batch %s: no files uploaded, skipping trigger/poll", task.key)
+            logger.info("Batch %s: no files uploaded, skipping mark-optional/poll", task.key)
             return
 
-        # Step 6: existing-process confirmation lookup, once per batch.
-        # Non-fatal - purely diagnostic.
+        # Step 6: existing-process confirmation lookup, once per batch. Non-fatal -
+        # purely diagnostic (it also confirms EDP_Billing will be able to find our
+        # PROCESSID via getdropdown).
         try:
             cbos_client.get_existing_process_id(task.segment, login_id, trade_date)
         except CBOSUploadError as exc:
             logger.warning("Batch %s: getdropdown(EXISTINGPROCESSID) failed (non-fatal): %s", task.key, exc)
 
-        # Step 8: trigger execution, once, only after every matched file in
-        # the batch has completed Steps 5+7.
-        try:
-            if settings.cbos_trigger_after_upload:
-                cbos_client.trigger_process(login_id, task.segment, trade_date, process_id)
-        except CBOSUploadError as exc:
-            logger.error("Batch %s: Step 8 trigger failed: %s - failing all %d uploaded file(s)",
-                         task.key, exc, len(uploaded_candidates))
-            for record, file_path, request_log in uploaded_candidates:
-                request_log.append({"step": "trigger_error", "error": str(exc)})
-                handle_upload_failure(repo, record, file_path, exc, request_log)
-            return
+        # Step 8: mark every non-zero Table2 slot that received NO file optional,
+        # so CBOS's FILEUPLOAD good-to-go isn't held waiting on a file that doesn't
+        # exist today. Non-fatal per slot. NOTE: the trigger (Step 10) and every
+        # downstream step are owned by the EDP_Billing scheduler, not this repo -
+        # our job ends at "make FILEUPLOAD go TRUE". See docs/CBOS_HANDOFF_CONTRACT.md.
+        empty_slots = [
+            row for row in table2
+            if str(row.get("UPLOADID", "0")) not in ("0", "")
+            and str(row.get("UPLOADID")) not in filled_upload_ids
+        ]
+        for row in empty_slots:
+            stepno = row.get("STEPNO")
+            try:
+                cbos_client.mark_step_optional(process_id, stepno)
+            except CBOSUploadError as exc:
+                logger.warning("Batch %s: mark-optional STEPNO=%s failed (non-fatal): %s", task.key, stepno, exc)
 
-        # Step 9: poll once per batch (segment-level, not per file/guid).
+        # Step 9: our own confirmation that the files landed (EDP_Billing is the
+        # authoritative FILEUPLOAD poller + the one that triggers). Per segment.
         succeeded = cbos_client.poll_file_upload_status(task.segment, login_id)
         for record, file_path, request_log in uploaded_candidates:
             request_log.append({"step": "file_process_status", "result": succeeded})
