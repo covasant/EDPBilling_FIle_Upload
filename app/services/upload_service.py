@@ -2,7 +2,9 @@
 file movement.
 
 Unlike the earlier per-file design, one CBOS "batch" is one segment + one
-trade date + one exchange folder (see app/core/queue.py's SegmentBatchTask).
+trade date - across every exchange sub-folder (see app/core/queue.py's
+SegmentBatchTask). One PROCESSID is reserved per segment/date; exchange is
+per-file metadata, not a partition key.
 That's required by the documented workflow itself: Holiday Check (Step 1),
 Process ID creation (Step 2), and the trigger (Step 8) all happen exactly
 ONCE per segment/date - never once per file. Each file discovered under
@@ -65,22 +67,24 @@ def discover_and_enqueue() -> None:
 def _discover_date(root: Path, folder_date: str) -> None:
     logger.info("Processing date: %s", folder_date)
 
-    groups: dict[tuple[str, str], list[str]] = defaultdict(list)
+    # Group by SEGMENT only - all exchange sub-folders for a segment become one
+    # batch (one PROCESSID per segment/date). Each file keeps its exchange.
+    groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
     files_found = 0
     for file_path, segment, exchange in file_service.discover_files_for_date(root, folder_date):
         logger.info("File discovered = %s (segment=%s, exchange=%s, extension=%s, size=%d bytes)",
                      file_path.name, segment, exchange, file_path.suffix or "(none)", file_path.stat().st_size)
         files_found += 1
-        groups[(segment, exchange)].append(str(file_path))
+        groups[segment].append((str(file_path), exchange))
 
-    for (segment, exchange), file_paths in groups.items():
-        _maybe_enqueue(folder_date, segment, exchange, file_paths)
+    for segment, files in groups.items():
+        _maybe_enqueue(folder_date, segment, files)
 
-    logger.info("Found %d file(s) across %d segment/exchange batch(es) for %s", files_found, len(groups), folder_date)
+    logger.info("Found %d file(s) across %d segment batch(es) for %s", files_found, len(groups), folder_date)
 
 
-def _maybe_enqueue(folder_date: str, segment: str, exchange: str, file_paths: list[str]) -> None:
-    task = SegmentBatchTask(folder_date=folder_date, segment=segment, exchange=exchange, file_paths=file_paths)
+def _maybe_enqueue(folder_date: str, segment: str, files: list[tuple[str, str]]) -> None:
+    task = SegmentBatchTask(folder_date=folder_date, segment=segment, files=files)
     added = enqueue(task)
     if not added:
         logger.debug("Skipping already-queued/in-flight batch %s", task.key)
@@ -194,12 +198,12 @@ def handle_upload_unconfirmed(repo: UploadedFileRepository, record, file_path: P
     return dest_path
 
 
-def _fail_all_files(repo: UploadedFileRepository, file_paths: list, task: SegmentBatchTask, error: Exception) -> None:
+def _fail_all_files(repo: UploadedFileRepository, files: list, task: SegmentBatchTask, error: Exception) -> None:
     """Batch setup (reserve / fetch-rules) failed before any upload - route every
     file to uploadFailed/ so the batch fails cleanly instead of being rediscovered
     and retried forever."""
-    for file_path in file_paths:
-        record = repo.create_audit_record(file_path, task.folder_date, task.segment, task.exchange)
+    for file_path, exchange in files:
+        record = repo.create_audit_record(file_path, task.folder_date, task.segment, exchange)
         handle_upload_failure(repo, record, file_path, error,
                               [{"step": "batch_setup_error", "error": str(error)}])
 
@@ -207,14 +211,14 @@ def _fail_all_files(repo: UploadedFileRepository, file_paths: list, task: Segmen
 def process_batch(task: SegmentBatchTask) -> None:
     """Attempt the CBOS upload lane (Steps 2->9) for one segment/date/exchange
     batch. Called by the worker loop for one queue item at a time."""
-    file_paths = [Path(p) for p in task.file_paths if Path(p).exists()]
-    if not file_paths:
+    files = [(Path(p), exch) for p, exch in task.files if Path(p).exists()]
+    if not files:
         logger.warning("Batch %s: no files still exist on disk, skipping", task.key)
         return
 
     login_id = settings.cbos_login_id
     trade_date = task.folder_date
-    logger.info("Processing batch %s: %d file(s)", task.key, len(file_paths))
+    logger.info("Processing batch %s: %d file(s)", task.key, len(files))
 
     session = get_sessionmaker()()
     try:
@@ -240,7 +244,7 @@ def process_batch(task: SegmentBatchTask) -> None:
                 else:
                     logger.error("Batch %s: setup exhausted %d attempt(s) - routing files to uploadFailed",
                                  task.key, settings.cbos_max_retries)
-                    _fail_all_files(repo, file_paths, task, exc)
+                    _fail_all_files(repo, files, task, exc)
                     return
         logger.info("ProcessID = %s (batch=%s, %d UploadID candidate(s))", process_id, task.key, len(table2))
 
@@ -256,12 +260,12 @@ def process_batch(task: SegmentBatchTask) -> None:
         uploaded_candidates: list[tuple] = []  # (record, dest_file_path, request_log)
         filled_upload_ids: set[str] = set()    # UploadIDs that actually received a file (Steps 5+7)
 
-        for file_path in file_paths:
-            record = repo.create_audit_record(file_path, task.folder_date, task.segment, task.exchange)
+        for file_path, exchange in files:
+            record = repo.create_audit_record(file_path, task.folder_date, task.segment, exchange)
             request_log: list = []
 
             try:
-                rule = upload_matching.match_file(file_path, rules, exchange=task.exchange)
+                rule = upload_matching.match_file(file_path, rules, exchange=exchange)
             except FileRejected as exc:
                 handle_file_rejected(repo, record, file_path, exc)
                 continue

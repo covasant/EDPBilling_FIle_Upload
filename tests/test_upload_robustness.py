@@ -35,7 +35,8 @@ def _root():
 def _batch(date="17-07-2026", segment="MCX", exchange="NA", files=None):
     from app.core.queue import SegmentBatchTask
 
-    return SegmentBatchTask(folder_date=date, segment=segment, exchange=exchange, file_paths=files or [])
+    return SegmentBatchTask(folder_date=date, segment=segment,
+                            files=[(p, exchange) for p in (files or [])])
 
 
 # --- B1 -----------------------------------------------------------------------
@@ -147,6 +148,40 @@ def test_unconfirmed_upload_goes_to_uploaded_not_failed(monkeypatch):
 
 
 # --- idempotency: a re-dropped, already-uploaded file is not sent twice --------
+
+def test_multi_exchange_segment_reserves_one_pid(monkeypatch):
+    """H1: EQ files from BSE + NSE folders are ONE batch -> exactly one PROCESSID,
+    both exchanges' files under it. Slicing by exchange would reserve two."""
+    _fast(monkeypatch)
+    from app.core import database
+    from app.core.queue import SegmentBatchTask
+    from app.models.uploaded_file import UploadedFile
+    from app.services import upload_service
+
+    database.init_db()
+    client = cbos_client.get_cbos_client()
+
+    root = _root()
+    bse = _write(root / "17-07-2026" / "EQ" / "BSE", "Trade_BSE_CM_0_TM_446_20260717_F_0000.csv")
+    nse = _write(root / "17-07-2026" / "EQ" / "NSE", "Trade_NSE_CM_0_TM_10412_20260717_F_0000.csv")
+
+    task = SegmentBatchTask(folder_date="17-07-2026", segment="EQ",
+                            files=[(str(bse), "BSE"), (str(nse), "NSE")])
+    assert task.key == "17-07-2026|EQ"  # exchange is NOT in the batch key
+    upload_service.process_batch(task)
+
+    assert client.reserve_calls == 1, "one PROCESSID per segment/date, not per exchange"
+    session = database.get_sessionmaker()()
+    try:
+        rows = session.query(UploadedFile).all()
+        assert len(rows) == 2
+        assert {r.status for r in rows} == {"uploaded"}
+        assert len({r.process_id for r in rows}) == 1          # both under the SAME pid
+        assert {r.exchange for r in rows} == {"BSE", "NSE"}     # per-file exchange preserved
+        assert {r.cbos_upload_id for r in rows} == {"545", "546"}
+    finally:
+        session.close()
+
 
 def test_idempotent_reupload_skips(monkeypatch):
     _fast(monkeypatch)

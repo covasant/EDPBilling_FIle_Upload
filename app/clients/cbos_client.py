@@ -345,6 +345,7 @@ class MockCBOSClient(BaseCBOSClient):
         self._segment_file_names: dict[str, list[str]] = {}
         self.marked_optional: list[tuple] = []  # (process_id, stepno) each Step-8 call, for test assertions
         self.upload_calls: list[tuple] = []     # (upload_id, file_name) each Step-5 upload, for test assertions
+        self.reserve_calls = 0                  # count of Step-2 reservations, for test assertions
 
     def _decide_outcome(self, file_names: list[str]) -> bool:
         """True = succeed, False = fail. See class docstring for the rules."""
@@ -356,6 +357,7 @@ class MockCBOSClient(BaseCBOSClient):
         return random.random() < settings.cbos_mock_random_success_rate
 
     def get_new_trade_process(self, segment: str, login_id: str, trade_date: str) -> dict:
+        self.reserve_calls += 1
         process_id = self._next_process_id
         self._next_process_id += 1
         # Table2 is sourced from the shared mock dataset (mock_cbos/data.py), so
