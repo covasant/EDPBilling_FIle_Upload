@@ -35,11 +35,6 @@ class Settings(BaseSettings):
     cbos_poll_interval_seconds: int = 2
     cbos_poll_max_attempts: int = 10
 
-    # Step 8 in the doc ("Trigger Trade Process") always runs once per
-    # segment/date, after every matched file in that batch has been
-    # uploaded and registered - never per individual file.
-    cbos_trigger_after_upload: bool = True
-
     # Step 4 file chunking (upload_file_chunks in cbos_client.py). Files are
     # read and uploaded chunk_size_kb at a time instead of loading the whole
     # file into memory; a file smaller than chunk_size_kb still uploads as a
