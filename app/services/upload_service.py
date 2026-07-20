@@ -261,7 +261,7 @@ def process_batch(task: SegmentBatchTask) -> None:
             request_log: list = []
 
             try:
-                rule = upload_matching.match_file(file_path, rules)
+                rule = upload_matching.match_file(file_path, rules, exchange=task.exchange)
             except FileRejected as exc:
                 handle_file_rejected(repo, record, file_path, exc)
                 continue
