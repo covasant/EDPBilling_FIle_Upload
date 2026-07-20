@@ -2,55 +2,53 @@
 implementation and a mock one via CBOS_MODE (see app/core/config.py).
 
 Endpoints are split across two hosts, per
-EDP_Trade_Process_API_Documentation_v4.pdf:
+EDP_Trade_Process_API_Documentation_v4.docx:
 
   GTG host  (settings.cbos_gtg_base_url)  - file_process_status GTG/CHK calls
   CORE host (settings.cbos_core_base_url) - process/brokerage CORE calls
 
-This repo owns the UPLOAD lane only. The CBOS **trigger** (Step 10) and every
-downstream step (bill posting, recon, margin, MTF, collateral...) are owned by
-the EDP_Billing scheduler, which reads back our PROCESSID via getdropdown and
-waits on the FILEUPLOAD flag before triggering. So our job ends at "make
-FILEUPLOAD go TRUE": reserve -> match -> upload -> register -> mark empty slots
-optional. See docs/CBOS_HANDOFF_CONTRACT.md.
+This repo owns the UPLOAD lane only - see CONTEXT.md for the handoff. Our job
+ends at "make FILEUPLOAD go TRUE"; the trigger (Step 10) and everything
+downstream belong to the EDP_Billing scheduler.
 
 One file-upload batch (one segment + one trade date):
 
   Step 2 - getNewTradeProcess (PROCESSID=0)              -> PROCESSID + Table2 (all UploadID candidates)
   Step 3 - CheckProcessIDExist                           -> confirms Step 2's PROCESSID registered
   Step 4 - GetNewTradeProcessPromodalUploadSettings      -> per-UploadID pattern/extension/column rules
-                                                             (called once per Table2 candidate - see
-                                                             app/services/upload_matching.py)
   Step 5 - SaveTradePromodalUploadChunkFile              -> one call per CHUNK_SIZE_KB chunk of a matched file
-                                                             (0-indexed CurrentChunk, one GUID per file; a
-                                                             small file is a single 0/1 call)
   Step 6 - getdropdown(EXISTINGPROCESSID)                -> optional confirmation lookup, not on the critical path
   Step 7 - SaveNewTradeProcessPromodalUploadFile         -> registers each uploaded file
-  Step 8 - UpdateNewTradeProcessProcessDetailsIsMandatory-> mark each non-zero Table2 slot that got NO file
-                                                             optional, so FILEUPLOAD can reach TRUE
-  Step 9 - file_process_status (FILEUPLOAD)              -> our own confirmation the files landed (EDP_Billing
-                                                             is the authoritative poller); we do NOT trigger
+  Step 8 - UpdateNewTradeProcessProcessDetailsIsMandatory-> mark each empty non-zero slot optional
+  Step 9 - file_process_status (FILEUPLOAD)              -> our own confirmation the files landed
 
-Two implementations share one interface (BaseCBOSClient):
+--------------------------------------------------------------------------
+The interface
+--------------------------------------------------------------------------
 
-  CBOSClient - makes the actual HTTP calls against the two CBOS hosts.
-  MockCBOSClient - returns canned responses with the exact same shape, so
-                   upload_service.py's orchestration logic (and everything
-                   above it - queue, worker, scheduler) runs unmodified in
-                   either mode.
+Callers use the eight methods on BaseCBOSClient and nothing else. They return
+real values - a ProcessReservation, a bool - never CBOS's raw response
+envelope, so no caller needs to know that a PROCESSID arrives at
+Result.Table1[0].PROCESSID or that a GTG verdict arrives at Data[0].MSG.
 
-get_cbos_client() is the factory: it reads settings.cbos_mode once and
-returns the matching singleton. upload_service.py never imports the classes
-directly - it calls the module-level functions below, which delegate to
-whichever client the factory picked.
+An adapter supplies the eight `_`-prefixed raw calls, one per CBOS endpoint.
+Everything else - envelope parsing, the chunk loop, the poll loop - lives once
+on the base class and is shared by both adapters:
+
+  CBOSClient     - makes the actual HTTP calls against the two CBOS hosts.
+  MockCBOSClient - returns canned dicts with the exact same shape, so the
+                   orchestration above runs unmodified in either mode.
+
+get_cbos_client() is the factory; it reads settings.cbos_mode once and returns
+the matching singleton.
 """
 
 import logging
-import socket
-
 import random
+import socket
 import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -77,32 +75,44 @@ PROCESS_NAME_CHECK_PROCESS_ID = "CheckProcessIDExist"
 PROCESS_NAME_FILE_UPLOAD_STATUS = "FILEUPLOAD"
 
 
+class CBOSUploadError(Exception):
+    pass
+
+
 def _to_cbos_date(folder_date: str) -> str:
-    """Reformats a folder_date (settings.date_folder_format, e.g. dd-mm-yyyy)
+    """Reformats a trade date (settings.date_folder_format, e.g. dd-mm-yyyy)
     into the yyyy-mm-dd shape CBOS's TRADEDATE/paraM1 fields require. Only
-    affects the outgoing CBOS payload - folder names, DB records, and
-    business date logic elsewhere are untouched."""
+    affects the outgoing CBOS payload - folder names and DB records are
+    untouched."""
     return datetime.strptime(folder_date, settings.date_folder_format).strftime("%Y-%m-%d")
 
 
 def _server_ip() -> str:
     """Best-effort local IP for the documented "ipaddress" field on Step 7.
-    Falls back to an empty string if it can't be resolved, rather than
-    failing the whole upload over a non-critical field."""
+    Falls back to an empty string rather than failing an upload over a
+    non-critical field."""
     try:
         return socket.gethostbyname(socket.gethostname())
     except socket.error:
         return ""
 
 
-class CBOSUploadError(Exception):
-    pass
+# Payload keys whose values must never reach a log line or the DB (H8).
+_SECRET_KEYS = {"password", "pwd", "passwd", "api_key", "apikey", "token", "secret"}
 
 
-# Response bodies that indicate a business-level failure even though the
-# HTTP call itself returned 200. Only trips when the body actually carries a
-# recognized failure marker - an unrecognized/absent Status is treated as
-# success, since we don't have a confirmed real-CBOS failure shape yet.
+def _redact(payload: dict) -> dict:
+    """A shallow copy of a request payload with secret values masked, for safe
+    logging. The password never appears in cleartext."""
+    if not isinstance(payload, dict):
+        return payload
+    return {k: ("***" if str(k).lower() in _SECRET_KEYS else v) for k, v in payload.items()}
+
+
+# Response bodies that indicate a business-level failure even though the HTTP
+# call itself returned 200. Only trips on a recognized failure marker - an
+# unrecognized/absent Status is treated as success, since we don't have a
+# confirmed real-CBOS failure shape yet.
 _FAILURE_STATUSES = {"FAILED", "FAILURE", "ERROR"}
 
 
@@ -113,65 +123,213 @@ def _raise_on_failed_status(path: str, body: dict) -> None:
         raise CBOSUploadError(f"{path} returned Status={status}: {body}")
 
 
-def _extract_gtg_msg(response: dict) -> str:
-    rows = response.get("Data") or []
-    return str(rows[0].get("MSG", "")).strip() if rows else ""
+# --------------------------------------------------------------------------
+# What the interface hands back.
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class UploadCandidate:
+    """One Table2 slot from a batch's reservation. A non-zero upload_id means
+    CBOS expects a file at this step today."""
+    upload_id: str
+    step_no: object | None
+    name: str
+
+    @property
+    def expects_a_file(self) -> bool:
+        return self.upload_id not in ("0", "")
 
 
-# Payload keys whose values must never reach a log line or the DB (H8).
-_SECRET_KEYS = {"password", "pwd", "passwd", "api_key", "apikey", "token", "secret"}
-
-
-def _redact(payload: dict) -> dict:
-    """A shallow copy of a request payload with secret values masked, for safe
-    logging/persistence. The password (PASSWORD) never appears in cleartext."""
-    if not isinstance(payload, dict):
-        return payload
-    return {k: ("***" if str(k).lower() in _SECRET_KEYS else v) for k, v in payload.items()}
+@dataclass(frozen=True)
+class ProcessReservation:
+    """The result of reserving a batch (Step 2): the PROCESSID every file in
+    the batch shares, plus every UploadID slot the segment's pipeline offers."""
+    process_id: str
+    candidates: list[UploadCandidate]
 
 
 # --------------------------------------------------------------------------
-# Shared interface - both clients implement exactly these calls, with
-# exactly the same request args and the same response envelope shape:
-#   {"Status": "Success", "Result": ...}  /  {"Status": "Success", "Data": ...}
+# BaseCBOSClient - the single interface. Adapters supply the eight raw calls;
+# parsing, chunking and polling are implemented once, here.
 # --------------------------------------------------------------------------
 
 class BaseCBOSClient(ABC):
-    @abstractmethod
-    def get_new_trade_process(self, segment: str, login_id: str, trade_date: str) -> dict:
-        """Step 2."""
+
+    # ---- the raw CBOS calls an adapter must provide -----------------------
 
     @abstractmethod
-    def check_process_id_exist(self, segment: str, login_id: str) -> dict:
-        """Step 3."""
+    def _get_new_trade_process(self, segment: str, trade_date: str) -> dict:
+        """Step 2 raw call."""
 
     @abstractmethod
-    def get_upload_settings(self, upload_id: str) -> dict:
-        """Step 4."""
+    def _check_process_id_exist(self, segment: str) -> dict:
+        """Step 3 raw call."""
 
     @abstractmethod
-    def upload_chunk(self, upload_id: str, guid: str, file_name: str, chunk_bytes: bytes,
+    def _get_upload_settings(self, upload_id: str) -> dict:
+        """Step 4 raw call."""
+
+    @abstractmethod
+    def _upload_chunk(self, upload_id: str, guid: str, file_name: str, chunk_bytes: bytes,
                       current_chunk: int, total_chunks: int) -> dict:
-        """Step 5, one call per chunk."""
+        """Step 5 raw call, one per chunk."""
 
     @abstractmethod
-    def get_existing_process_id(self, segment: str, login_id: str, trade_date: str) -> dict:
-        """Step 6. Not on the critical path today - see
-        get_existing_process_id() below."""
+    def _get_existing_process_id(self, segment: str, trade_date: str) -> dict:
+        """Step 6 raw call."""
 
     @abstractmethod
-    def create_file_entry(self, upload_id: str, guid: str, file_name: str, login_id: str, process_id: str,
+    def _create_file_entry(self, upload_id: str, guid: str, file_name: str, process_id: str,
                            trade_date: str) -> dict:
-        """Step 7."""
+        """Step 7 raw call."""
 
     @abstractmethod
-    def update_process_step_optional(self, process_id: str, stepno) -> dict:
-        """Step 8 - mark one Table2 step optional (a slot with no file today), so
-        it doesn't hold FILEUPLOAD at FALSE. One call per empty slot."""
+    def _update_step_optional(self, process_id: str, step_no) -> dict:
+        """Step 8 raw call, one per empty slot."""
 
     @abstractmethod
-    def file_upload_status(self, segment: str, login_id: str) -> dict:
-        """Step 9, one poll call - segment-level, not per file/guid."""
+    def _file_upload_status(self, segment: str) -> dict:
+        """Step 9 raw call, one poll."""
+
+    # ---- the interface callers use ----------------------------------------
+
+    def reserve_process(self, segment: str, trade_date: str) -> ProcessReservation:
+        """Step 2. Reserve one PROCESSID for this batch and read back every
+        UploadID slot its segment expects.
+
+        Raises CBOSUploadError if CBOS returns no PROCESSID or an empty Table2 -
+        either makes the batch unprocessable.
+        """
+        logger.info("Step 2 - getNewTradeProcess: segment=%s trade_date=%s", segment, trade_date)
+        response = self._get_new_trade_process(segment, trade_date)
+        result = response.get("Result") or {}
+
+        table1 = result.get("Table1") or []
+        if not table1 or table1[0].get("PROCESSID") is None:
+            raise CBOSUploadError(f"getNewTradeProcess response had no Table1[0].PROCESSID: {response}")
+        process_id = str(table1[0]["PROCESSID"])
+
+        table2 = result.get("Table2") or []
+        if not table2:
+            raise CBOSUploadError(f"getNewTradeProcess response had no Table2 upload candidates: {response}")
+
+        candidates = [
+            UploadCandidate(
+                upload_id=str(row.get("UPLOADID", "0")),
+                step_no=row.get("STEPNO"),
+                name=str(row.get("NAME") or ""),
+            )
+            for row in table2
+        ]
+        logger.info("ProcessID = %s (segment=%s, %d UploadID candidate(s))",
+                    process_id, segment, len(candidates))
+        return ProcessReservation(process_id=process_id, candidates=candidates)
+
+    def check_process_exists(self, segment: str) -> str:
+        """Step 3. Confirmation that Step 2's PROCESSID registered. Diagnostic
+        only - never a gate. Returns CBOS's message."""
+        logger.info("Step 3 - CheckProcessIDExist: segment=%s", segment)
+        return self._gtg_msg(self._check_process_id_exist(segment))
+
+    def upload_settings(self, upload_id: str) -> dict | None:
+        """Step 4. The raw settings row for one UploadID, envelope stripped.
+        Returns None if CBOS offered no settings for it.
+
+        The row's fields are interpreted by app/services/upload_matching.py -
+        this only unwraps it.
+        """
+        logger.info("Step 4 - GetNewTradeProcessPromodalUploadSettings: UPLOADID=%s", upload_id)
+        result = self._get_upload_settings(upload_id).get("Result") or []
+        if not result:
+            logger.warning("No upload settings returned for UPLOADID=%s", upload_id)
+            return None
+        return result[0]
+
+    def upload_file(self, file_path: Path, upload_id: str, guid: str) -> None:
+        """Step 5. Stream the file to CBOS in chunk_size_kb-sized chunks
+        (0-indexed CurrentChunk, TotalChunks=N, one GUID for the whole file), so
+        a large file is never loaded into memory whole and a slow link isn't
+        bound by the short JSON timeout.
+
+        Each chunk retries up to cbos_chunk_retry_attempts on a transient
+        CBOSUploadError before failing the file.
+        """
+        chunk_size = max(1, settings.chunk_size_kb) * 1024
+        retries = max(1, settings.cbos_chunk_retry_attempts)
+        file_size = file_path.stat().st_size
+        total_chunks = max(1, (file_size + chunk_size - 1) // chunk_size)
+        logger.info(
+            "Step 5 - SaveTradePromodalUploadChunkFile: %s (%d bytes) in %d chunk(s) of <=%d KB, "
+            "upload_id=%s guid=%s",
+            file_path.name, file_size, total_chunks, settings.chunk_size_kb, upload_id, guid,
+        )
+
+        with file_path.open("rb") as fh:
+            for current_chunk in range(total_chunks):
+                chunk_bytes = fh.read(chunk_size)
+                for attempt in range(1, retries + 1):
+                    try:
+                        self._upload_chunk(upload_id, guid, file_path.name, chunk_bytes,
+                                           current_chunk, total_chunks)
+                        break
+                    except CBOSUploadError as exc:
+                        logger.warning("Step 5: chunk %d/%d of %s failed (attempt %d/%d): %s",
+                                       current_chunk + 1, total_chunks, file_path.name,
+                                       attempt, retries, exc)
+                        if attempt >= retries:
+                            raise
+
+        logger.info("Step 5 complete: %s uploaded in %d chunk(s)", file_path.name, total_chunks)
+
+    def existing_process(self, segment: str, trade_date: str) -> None:
+        """Step 6. Confirmation lookup, not on the critical path - it also
+        confirms EDP_Billing will be able to find our PROCESSID via
+        getdropdown."""
+        logger.info("Step 6 - getdropdown(EXISTINGPROCESSID): segment=%s trade_date=%s", segment, trade_date)
+        self._get_existing_process_id(segment, trade_date)
+
+    def register_file(self, upload_id: str, guid: str, file_name: str, process_id: str,
+                      trade_date: str) -> None:
+        """Step 7. Register an uploaded file against its UploadID and PROCESSID."""
+        logger.info("Step 7 - SaveNewTradeProcessPromodalUploadFile: %s (upload_id=%s, guid=%s)",
+                    file_name, upload_id, guid)
+        self._create_file_entry(upload_id, guid, file_name, process_id, trade_date)
+
+    def mark_step_optional(self, process_id: str, step_no) -> None:
+        """Step 8. Mark an empty slot optional so it doesn't hold FILEUPLOAD at
+        FALSE. One call per empty non-zero slot, after Steps 5+7."""
+        logger.info("Step 8 - UpdateNewTradeProcessProcessDetailsIsMandatory: process_id=%s stepno=%s",
+                    process_id, step_no)
+        self._update_step_optional(process_id, step_no)
+
+    def confirm_upload(self, segment: str) -> bool:
+        """Step 9. Poll FILEUPLOAD per SEGMENT (matching the documented payload
+        shape - it carries no PROCESSID/UPLOADID/GUID), up to
+        cbos_poll_max_attempts times.
+
+        Returns True on MSG=TRUE; False on FALSE/FAILED/ERROR or timeout. False
+        does NOT mean the files failed - EDP_Billing is the authoritative poller
+        and may see TRUE later.
+        """
+        for attempt in range(1, settings.cbos_poll_max_attempts + 1):
+            msg = self._gtg_msg(self._file_upload_status(segment)).upper()
+            logger.info("Step 9 - file_process_status attempt %d/%d: segment=%s MSG=%s",
+                        attempt, settings.cbos_poll_max_attempts, segment, msg)
+
+            if msg == "TRUE":
+                return True
+            # FALSE means "still pending" per the doc; keep polling until the
+            # attempt budget runs out, then treat it the same as a timeout.
+            time.sleep(settings.cbos_poll_interval_seconds)
+
+        logger.error("Step 9 - file_process_status polling timed out after %d attempts (segment=%s)",
+                     settings.cbos_poll_max_attempts, segment)
+        return False
+
+    @staticmethod
+    def _gtg_msg(response: dict) -> str:
+        rows = response.get("Data") or []
+        return str(rows[0].get("MSG", "")).strip() if rows else ""
 
 
 # --------------------------------------------------------------------------
@@ -193,6 +351,21 @@ class CBOSClient(BaseCBOSClient):
     def _core_url(self, path: str) -> str:
         return f"{settings.cbos_core_base_url.rstrip('/')}{path}"
 
+    def _handle(self, url: str, response) -> dict:
+        logger.debug("Response <- %s: status=%s body=%s", url, response.status_code, response.text[:1000])
+        if not response.ok:
+            logger.error("Response <- %s failed: %s %s", url, response.status_code, response.text)
+            raise CBOSUploadError(f"{url} failed: {response.status_code} {response.text}")
+
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise CBOSUploadError(f"{url} returned non-JSON response: {response.text}") from exc
+
+        _raise_on_failed_status(url, body)
+        logger.info("Response <- %s: %s", url, body)
+        return body
+
     def _post(self, url: str, payload: dict) -> dict:
         logger.info("Request -> %s: %s", url, _redact(payload))
         try:
@@ -200,62 +373,37 @@ class CBOSClient(BaseCBOSClient):
         except requests.RequestException as exc:
             logger.error("Request -> %s failed: %s", url, exc)
             raise CBOSUploadError(f"Request to {url} failed: {exc}") from exc
-
-        logger.debug("Response <- %s: status=%s body=%s", url, response.status_code, response.text[:1000])
-        if not response.ok:
-            logger.error("Response <- %s failed: %s %s", url, response.status_code, response.text)
-            raise CBOSUploadError(f"{url} failed: {response.status_code} {response.text}")
-
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise CBOSUploadError(f"{url} returned non-JSON response: {response.text}") from exc
-
-        _raise_on_failed_status(url, body)
-        logger.info("Response <- %s: %s", url, body)
-        return body
+        return self._handle(url, response)
 
     def _post_multipart(self, url: str, data: dict, files: dict) -> dict:
         logger.info("Request -> %s: data=%s file=%s", url, _redact(data), files.get("file", (None,))[0])
         try:
-            response = requests.post(url, data=data, files=files, timeout=settings.cbos_upload_timeout_seconds)
+            response = requests.post(url, data=data, files=files,
+                                     timeout=settings.cbos_upload_timeout_seconds)
         except requests.RequestException as exc:
             logger.error("Request -> %s failed: %s", url, exc)
             raise CBOSUploadError(f"Request to {url} failed: {exc}") from exc
+        return self._handle(url, response)
 
-        logger.debug("Response <- %s: status=%s body=%s", url, response.status_code, response.text[:1000])
-        if not response.ok:
-            logger.error("Response <- %s failed: %s %s", url, response.status_code, response.text)
-            raise CBOSUploadError(f"{url} failed: {response.status_code} {response.text}")
-
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise CBOSUploadError(f"{url} returned non-JSON response: {response.text}") from exc
-
-        _raise_on_failed_status(url, body)
-        logger.info("Response <- %s: %s", url, body)
-        return body
-
-    def get_new_trade_process(self, segment: str, login_id: str, trade_date: str) -> dict:
+    def _get_new_trade_process(self, segment: str, trade_date: str) -> dict:
         payload = {
             "GROUPNAME": segment,
-            "LOGINID": login_id,
+            "LOGINID": settings.cbos_login_id,
             "PASSWORD": settings.cbos_password,
             "TRADEDATE": _to_cbos_date(trade_date),
-            "PROCESSID": "0",  # "0" = create a new process; PROCESSID/UPLOADID are read back from Table1/Table2
+            "PROCESSID": "0",  # "0" = create a new process; read back from Table1/Table2
         }
         return self._post(self._core_url(GET_NEW_TRADE_PROCESS_PATH), payload)
 
-    def check_process_id_exist(self, segment: str, login_id: str) -> dict:
-        payload = {"Segment": segment, "ProcessName": PROCESS_NAME_CHECK_PROCESS_ID, "UserID": login_id}
+    def _check_process_id_exist(self, segment: str) -> dict:
+        payload = {"Segment": segment, "ProcessName": PROCESS_NAME_CHECK_PROCESS_ID,
+                   "UserID": settings.cbos_login_id}
         return self._post(self._gtg_url(FILE_PROCESS_STATUS_PATH), payload)
 
-    def get_upload_settings(self, upload_id: str) -> dict:
-        payload = {"UPLOADID": upload_id}
-        return self._post(self._core_url(GET_UPLOAD_SETTINGS_PATH), payload)
+    def _get_upload_settings(self, upload_id: str) -> dict:
+        return self._post(self._core_url(GET_UPLOAD_SETTINGS_PATH), {"UPLOADID": upload_id})
 
-    def upload_chunk(self, upload_id: str, guid: str, file_name: str, chunk_bytes: bytes,
+    def _upload_chunk(self, upload_id: str, guid: str, file_name: str, chunk_bytes: bytes,
                       current_chunk: int, total_chunks: int) -> dict:
         data = {
             "UPLOADID": upload_id,
@@ -267,10 +415,10 @@ class CBOSClient(BaseCBOSClient):
         files = {"file": (file_name, chunk_bytes)}
         return self._post_multipart(self._core_url(UPLOAD_CHUNK_PATH), data, files)
 
-    def get_existing_process_id(self, segment: str, login_id: str, trade_date: str) -> dict:
+    def _get_existing_process_id(self, segment: str, trade_date: str) -> dict:
         payload = {
             "TAG": "EXISTINGPROCESSID",
-            "LOGINID": login_id,
+            "LOGINID": settings.cbos_login_id,
             "FILTER1": segment,
             "FILTER2": _to_cbos_date(trade_date),
             "extraoption2": "",
@@ -278,11 +426,11 @@ class CBOSClient(BaseCBOSClient):
         }
         return self._post(self._core_url(GET_EXISTING_PROCESS_ID_PATH), payload)
 
-    def create_file_entry(self, upload_id: str, guid: str, file_name: str, login_id: str, process_id: str,
+    def _create_file_entry(self, upload_id: str, guid: str, file_name: str, process_id: str,
                            trade_date: str) -> dict:
         payload = {
             "uploadid": upload_id,
-            "loginid": login_id,
+            "loginid": settings.cbos_login_id,
             "uploadfoldername": guid,
             "uploadfilename": file_name,
             "ipaddress": _server_ip(),
@@ -295,58 +443,47 @@ class CBOSClient(BaseCBOSClient):
         }
         return self._post(self._core_url(SAVE_UPLOAD_FILE_PATH), payload)
 
-    def update_process_step_optional(self, process_id: str, stepno) -> dict:
+    def _update_step_optional(self, process_id: str, step_no) -> dict:
         # ISOPTIONAL="0" is the doc's (counter-intuitive) value for "make this
         # step optional / not mandatory". Unverified against real CBOS - if it
         # wants "1", this is the one line to change.
-        payload = {"PROCESSID": process_id, "STEPNO": stepno, "ISOPTIONAL": "0"}
+        payload = {"PROCESSID": process_id, "STEPNO": step_no, "ISOPTIONAL": "0"}
         return self._post(self._core_url(UPDATE_IS_MANDATORY_PATH), payload)
 
-    def file_upload_status(self, segment: str, login_id: str) -> dict:
-        payload = {"Segment": segment, "ProcessName": PROCESS_NAME_FILE_UPLOAD_STATUS, "UserID": login_id}
+    def _file_upload_status(self, segment: str) -> dict:
+        payload = {"Segment": segment, "ProcessName": PROCESS_NAME_FILE_UPLOAD_STATUS,
+                   "UserID": settings.cbos_login_id}
         return self._post(self._gtg_url(FILE_PROCESS_STATUS_PATH), payload)
 
     def get_expected_filename(self, segment: str, upload_id: str) -> dict:
-        """Step 39 - optional cross-check against upload_matching's own
-        pattern engine. Not on the critical path."""
-        payload = {"segment": segment, "uploadid": upload_id}
-        return self._post(self._gtg_url(GET_EXPECTED_FILENAME_PATH), payload)
+        """Step 39 - optional cross-check against upload_matching's own pattern
+        engine. Not on the critical path, so not part of the interface."""
+        return self._post(self._gtg_url(GET_EXPECTED_FILENAME_PATH),
+                          {"segment": segment, "uploadid": upload_id})
 
 
 # --------------------------------------------------------------------------
 # MockCBOSClient - canned responses, same shape as real CBOS, no network.
 #
-# Table2 mirrors a small, representative slice of the real 28-step upload
-# pipeline (see the PDF's page 5 table) so upload_matching.py's per-file
-# UploadID resolution has more than one candidate to choose between, instead
-# of the old single hardcoded UploadID=81 for every file.
+# Table2 and the upload settings come from the shared mock dataset
+# (mock_cbos/data.py), so the in-process mock and the standalone mock server
+# agree on each segment's pipeline.
 #
 # Scenario rules (checked against the file name, case-insensitively):
 #   contains "success" -> always succeeds
-#   contains "fail"     -> always fails (at Step 9, like a real processing
-#                          rejection would)
-#   neither             -> random, per CBOS_MOCK_RANDOM_SUCCESS_RATE
+#   contains "fail"    -> always fails (at Step 9, like a real processing
+#                         rejection would)
+#   neither            -> random, per CBOS_MOCK_RANDOM_SUCCESS_RATE
 # --------------------------------------------------------------------------
-
-_MOCK_UPLOAD_SETTINGS = {
-    "81": {"NAME": "BSE SCRIP", "FILE NAME": "SCRIP", "FileNameCompareOperator": "LIKE", "FILEEXTENSION": "TXT", "NO. OF COLUMNS": 30},
-    "82": {"NAME": "NSE SCRIP", "FILE NAME": "SCRIP", "FileNameCompareOperator": "LIKE", "FILEEXTENSION": "TXT", "NO. OF COLUMNS": 30},
-    "85": {"NAME": "BSE TRADE FILE", "FILE NAME": "VN", "FileNameCompareOperator": "LIKE", "FILEEXTENSION": "CSV", "NO. OF COLUMNS": None},
-    "94": {"NAME": "STT NOT TO CHARGE", "FILE NAME": "BR", "FileNameCompareOperator": "LIKE", "FILEEXTENSION": "TXT", "NO. OF COLUMNS": None},
-    "172": {"NAME": "POSITION VARIATION", "FILE NAME": "C_VAR1_", "FileNameCompareOperator": "LIKE", "FILEEXTENSION": "DAT", "NO. OF COLUMNS": None},
-    "201": {"NAME": "BILLING WORKBOOK", "FILE NAME": "VN", "FileNameCompareOperator": "LIKE", "FILEEXTENSION": "XLSX", "NO. OF COLUMNS": None},
-    "202": {"NAME": "LEGACY SCRIP MASTER", "FILE NAME": "SCRIP", "FileNameCompareOperator": "LIKE", "FILEEXTENSION": "XLS", "NO. OF COLUMNS": None},
-}
-
 
 class MockCBOSClient(BaseCBOSClient):
     def __init__(self) -> None:
         self._next_process_id = 17658
-        self._segment_poll_state: dict[str, dict] = {}  # "segment|date" -> {"attempts": int, "outcome": str|None}
+        self._segment_poll_state: dict[str, dict] = {}
         self._segment_file_names: dict[str, list[str]] = {}
-        self.marked_optional: list[tuple] = []  # (process_id, stepno) each Step-8 call, for test assertions
-        self.upload_calls: list[tuple] = []     # (upload_id, file_name) each Step-5 upload, for test assertions
-        self.reserve_calls = 0                  # count of Step-2 reservations, for test assertions
+        self.marked_optional: list[tuple] = []  # (process_id, step_no) per Step-8 call, for assertions
+        self.upload_calls: list[tuple] = []     # (upload_id, file_name) per Step-5 chunk, for assertions
+        self.reserve_calls = 0                  # count of Step-2 reservations, for assertions
 
     def _decide_outcome(self, file_names: list[str]) -> bool:
         """True = succeed, False = fail. See class docstring for the rules."""
@@ -357,68 +494,61 @@ class MockCBOSClient(BaseCBOSClient):
             return False
         return random.random() < settings.cbos_mock_random_success_rate
 
-    def get_new_trade_process(self, segment: str, login_id: str, trade_date: str) -> dict:
+    def _get_new_trade_process(self, segment: str, trade_date: str) -> dict:
+        from mock_cbos import data
+
         self.reserve_calls += 1
         process_id = self._next_process_id
         self._next_process_id += 1
-        # Table2 is sourced from the shared mock dataset (mock_cbos/data.py), so
-        # the in-process mock and the standalone mock server agree on each
-        # segment's pipeline - MCX yields 127/534/535/320, EQ its 12 steps, etc.
-        from mock_cbos import data
-        table2 = data.table2_for(segment)
-        response = {
+        logger.info("[MOCK] Process ID created: PROCESSID=%s (GROUPNAME=%s, TRADEDATE=%s)",
+                    process_id, segment, trade_date)
+        return {
             "Status": "Success",
             "Result": {
                 "Table1": [{"PROCESSID": process_id, "ISRUNNABLE": True, "ISAUTOUPLOAD": True}],
-                "Table2": table2,
+                "Table2": data.table2_for(segment),
             },
         }
-        logger.info("[MOCK] Process ID created: PROCESSID=%s (GROUPNAME=%s, LOGINID=%s, TRADEDATE=%s)",
-                    process_id, segment, login_id, trade_date)
-        return response
 
-    def check_process_id_exist(self, segment: str, login_id: str) -> dict:
+    def _check_process_id_exist(self, segment: str) -> dict:
         pid = self._next_process_id - 1
         logger.info("[MOCK] Check process id exist: segment=%s -> PROCESSID=%s", segment, pid)
         return {"Status": "Success", "Data": [{"MSG": f"PROCESS ID ALREADY GENERATED : {pid}"}]}
 
-    def get_upload_settings(self, upload_id: str) -> dict:
+    def _get_upload_settings(self, upload_id: str) -> dict:
         from mock_cbos import data
+
         setting = data.upload_setting(str(upload_id))
         uid = int(upload_id) if str(upload_id).isdigit() else upload_id
-        result = [{"ID": uid, **setting}]
         logger.info("[MOCK] Upload settings fetched: UPLOADID=%s -> %s", upload_id, setting)
-        return {"Status": "Success", "Result": result}
+        return {"Status": "Success", "Result": [{"ID": uid, **setting}]}
 
-    def upload_chunk(self, upload_id: str, guid: str, file_name: str, chunk_bytes: bytes,
+    def _upload_chunk(self, upload_id: str, guid: str, file_name: str, chunk_bytes: bytes,
                       current_chunk: int, total_chunks: int) -> dict:
         self.upload_calls.append((str(upload_id), file_name))
-        response = {"Status": "ChunkUploaded", "Guid": guid}
         logger.info("[MOCK] Chunk uploaded: %s chunk %d/%d (upload_id=%s, guid=%s)",
-                     file_name, current_chunk, total_chunks, upload_id, guid)
-        return response
+                    file_name, current_chunk, total_chunks, upload_id, guid)
+        return {"Status": "ChunkUploaded", "Guid": guid}
 
-    def get_existing_process_id(self, segment: str, login_id: str, trade_date: str) -> dict:
-        response = {"Status": "Success", "Result": [{"_KEY": self._next_process_id - 1, "_DESC": f"{login_id} - {trade_date}"}]}
+    def _get_existing_process_id(self, segment: str, trade_date: str) -> dict:
         logger.info("[MOCK] Existing process id lookup: segment=%s trade_date=%s", segment, trade_date)
-        return response
+        return {"Status": "Success",
+                "Result": [{"_KEY": self._next_process_id - 1, "_DESC": f"{segment} - {trade_date}"}]}
 
-    def create_file_entry(self, upload_id: str, guid: str, file_name: str, login_id: str, process_id: str,
+    def _create_file_entry(self, upload_id: str, guid: str, file_name: str, process_id: str,
                            trade_date: str) -> dict:
-        response = {"Status": "Success", "Result": "File entry saved successfully"}
         logger.info("[MOCK] File entry created: %s (upload_id=%s, guid=%s)", file_name, upload_id, guid)
-        key = f"{trade_date}"
-        self._segment_file_names.setdefault(key, []).append(file_name)
-        return response
+        self._segment_file_names.setdefault(trade_date, []).append(file_name)
+        return {"Status": "Success", "Result": "File entry saved successfully"}
 
-    def update_process_step_optional(self, process_id: str, stepno) -> dict:
-        self.marked_optional.append((str(process_id), stepno))
-        logger.info("[MOCK] Marked step optional: process_id=%s stepno=%s", process_id, stepno)
+    def _update_step_optional(self, process_id: str, step_no) -> dict:
+        self.marked_optional.append((str(process_id), step_no))
+        logger.info("[MOCK] Marked step optional: process_id=%s stepno=%s", process_id, step_no)
         return {"Status": "Success", "Result": {"Table1": [{"MSG": "Updated Successfully"}]}}
 
-    def file_upload_status(self, segment: str, login_id: str) -> dict:
-        # Poll state is tracked per segment (mock has no per-batch trade_date
-        # handle at this call, matching the real Step 9 payload shape).
+    def _file_upload_status(self, segment: str) -> dict:
+        # Poll state is tracked per segment (the real Step 9 payload carries no
+        # per-batch trade_date handle either).
         state = self._segment_poll_state.setdefault(segment, {"attempts": 0, "outcome": None})
         state["attempts"] += 1
 
@@ -435,10 +565,10 @@ class MockCBOSClient(BaseCBOSClient):
         return {"Status": "Success", "Data": [{"MSG": state["outcome"]}]}
 
     def get_expected_filename(self, segment: str, upload_id: str) -> dict:
-        setting = _MOCK_UPLOAD_SETTINGS.get(str(upload_id), {})
-        pattern = setting.get("FILE NAME", "")
-        ext = setting.get("FILEEXTENSION", "TXT")
-        return {"Status": "Success", "Data": [{"UploadID": upload_id, "ExpectedFileNamePattern1": f"{pattern}_DDMMYY.{ext.lower()}"}]}
+        from mock_cbos import data
+
+        return {"Status": "Success",
+                "Data": [{"UploadID": upload_id, "ExpectedFileNamePattern1": data.expected_pattern(upload_id)}]}
 
 
 # --------------------------------------------------------------------------
@@ -474,124 +604,3 @@ def reset_cbos_client() -> None:
     CBOS_MODE. Call between tests."""
     global _client
     _client = None
-
-
-# --------------------------------------------------------------------------
-# Module-level orchestration functions - upload_service.py's integration
-# point. These never change shape between MOCK and REAL; they just delegate
-# to whichever client get_cbos_client() picked, plus interpret the shared
-# response envelope ({"Status": ..., "Result"/"Data": ...}).
-# --------------------------------------------------------------------------
-
-def get_new_trade_process(segment: str, login_id: str, trade_date: str) -> dict:
-    logger.info("Step 2 - getNewTradeProcess: segment=%s login_id=%s trade_date=%s", segment, login_id, trade_date)
-    return get_cbos_client().get_new_trade_process(segment, login_id, trade_date)
-
-
-def extract_process_id(response: dict) -> str:
-    result = response.get("Result") or {}
-    table1 = result.get("Table1") or []
-    if table1 and table1[0].get("PROCESSID") is not None:
-        return str(table1[0]["PROCESSID"])
-    raise CBOSUploadError(f"getNewTradeProcess response had no Table1[0].PROCESSID: {response}")
-
-
-def extract_upload_candidates(response: dict) -> list[dict]:
-    result = response.get("Result") or {}
-    table2 = result.get("Table2") or []
-    if not table2:
-        raise CBOSUploadError(f"getNewTradeProcess response had no Table2 upload candidates: {response}")
-    return table2
-
-
-def check_process_id_exist(segment: str, login_id: str) -> dict:
-    logger.info("Step 3 - CheckProcessIDExist: segment=%s", segment)
-    return get_cbos_client().check_process_id_exist(segment, login_id)
-
-
-def get_upload_settings(upload_id: str) -> dict:
-    logger.info("Step 4 - GetNewTradeProcessPromodalUploadSettings: UPLOADID=%s", upload_id)
-    return get_cbos_client().get_upload_settings(upload_id)
-
-
-def upload_file_chunks(file_path: Path, upload_id: str, guid: str) -> None:
-    """Step 5. Streams the file to CBOS in chunk_size_kb-sized chunks (0-indexed
-    CurrentChunk, TotalChunks=N, one GUID for the whole file), so a large file is
-    never loaded into memory whole and a slow link isn't bound by the short JSON
-    timeout. Each chunk retries up to cbos_chunk_retry_attempts on a transient
-    CBOSUploadError before failing the file."""
-    client = get_cbos_client()
-    chunk_size = max(1, settings.chunk_size_kb) * 1024
-    retries = max(1, settings.cbos_chunk_retry_attempts)
-    file_size = file_path.stat().st_size
-    total_chunks = max(1, (file_size + chunk_size - 1) // chunk_size)
-    logger.info(
-        "Step 5 - SaveTradePromodalUploadChunkFile: %s (%d bytes) in %d chunk(s) of <=%d KB, upload_id=%s guid=%s",
-        file_path.name, file_size, total_chunks, settings.chunk_size_kb, upload_id, guid,
-    )
-
-    with file_path.open("rb") as fh:
-        for current_chunk in range(total_chunks):
-            chunk_bytes = fh.read(chunk_size)
-            for attempt in range(1, retries + 1):
-                try:
-                    client.upload_chunk(upload_id, guid, file_path.name, chunk_bytes, current_chunk, total_chunks)
-                    break
-                except CBOSUploadError as exc:
-                    logger.warning("Step 5: chunk %d/%d of %s failed (attempt %d/%d): %s",
-                                   current_chunk + 1, total_chunks, file_path.name, attempt, retries, exc)
-                    if attempt >= retries:
-                        raise
-
-    logger.info("Step 5 complete: %s uploaded in %d chunk(s)", file_path.name, total_chunks)
-
-
-def get_existing_process_id(segment: str, login_id: str, trade_date: str) -> dict:
-    """Step 6 - confirmation lookup, not on the critical path. Failures here
-    are logged but never abort the batch."""
-    logger.info("Step 6 - getdropdown(EXISTINGPROCESSID): segment=%s trade_date=%s", segment, trade_date)
-    return get_cbos_client().get_existing_process_id(segment, login_id, trade_date)
-
-
-def save_trade_process_upload_file(upload_id: str, guid: str, file_name: str, login_id: str, process_id: str,
-                                    trade_date: str) -> dict:
-    logger.info("Step 7 - SaveNewTradeProcessPromodalUploadFile: %s (upload_id=%s, guid=%s)", file_name, upload_id, guid)
-    return get_cbos_client().create_file_entry(upload_id, guid, file_name, login_id, process_id, trade_date)
-
-
-def mark_step_optional(process_id: str, stepno) -> dict:
-    """Step 8. Mark a Table2 step optional so a slot with no file today doesn't
-    hold FILEUPLOAD at FALSE. One call per empty non-zero slot, after Steps 5+7."""
-    logger.info("Step 8 - UpdateNewTradeProcessProcessDetailsIsMandatory: process_id=%s stepno=%s",
-                process_id, stepno)
-    return get_cbos_client().update_process_step_optional(process_id, stepno)
-
-
-def poll_file_upload_status(segment: str, login_id: str) -> bool:
-    """Step 9. Polls per SEGMENT (matches the documented payload shape - no
-    PROCESSID/UPLOADID/GUID field), up to cbos_poll_max_attempts times.
-    Returns True on MSG=TRUE, False on MSG=FALSE/FAILED/ERROR or timeout."""
-    client = get_cbos_client()
-
-    for attempt in range(1, settings.cbos_poll_max_attempts + 1):
-        logger.debug("Step 9 - file_process_status(FILEUPLOAD) attempt %d/%d, segment=%s",
-                     attempt, settings.cbos_poll_max_attempts, segment)
-        result = client.file_upload_status(segment, login_id)
-        msg = _extract_gtg_msg(result).strip().upper()
-        logger.info("Step 9 - file_process_status attempt %d: segment=%s MSG=%s", attempt, segment, msg)
-
-        if msg == "TRUE":
-            return True
-        if msg in ("FALSE", "FAILED", "ERROR"):
-            # FALSE means "still pending" earlier in the pipeline per the
-            # doc, but this poll only starts after Step 8 has already been
-            # triggered, so a still-FALSE result after enough attempts is
-            # treated the same as a timeout below - keep polling until then.
-            time.sleep(settings.cbos_poll_interval_seconds)
-            continue
-
-        time.sleep(settings.cbos_poll_interval_seconds)
-
-    logger.error("Step 9 - file_process_status polling timed out after %d attempts (segment=%s)",
-                 settings.cbos_poll_max_attempts, segment)
-    return False

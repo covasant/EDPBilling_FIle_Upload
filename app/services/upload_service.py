@@ -180,8 +180,8 @@ def process_batch(task: SegmentBatchTask) -> None:
         logger.warning("Batch %s: no files still exist on disk, skipping", task.key)
         return
 
-    login_id = settings.cbos_login_id
     trade_date = task.folder_date
+    client = cbos_client.get_cbos_client()
     logger.info("Processing batch %s: %d file(s)", task.key, len(files))
 
     session = get_sessionmaker()()
@@ -192,13 +192,11 @@ def process_batch(task: SegmentBatchTask) -> None:
         # and fetch each UploadID's matching rule, up front. Bounded retry so a
         # transient CBOS blip doesn't hot-loop the batch forever - after
         # cbos_max_retries attempts the files are routed to uploadFailed.
-        process_id = table2 = rules = None
+        reservation = rules = None
         for attempt in range(1, settings.cbos_max_retries + 1):
             try:
-                step2_response = cbos_client.get_new_trade_process(task.segment, login_id, trade_date)
-                process_id = cbos_client.extract_process_id(step2_response)
-                table2 = cbos_client.extract_upload_candidates(step2_response)
-                rules = upload_matching.fetch_upload_rules(table2)
+                reservation = client.reserve_process(task.segment, trade_date)
+                rules = upload_matching.fetch_upload_rules(reservation.candidates, client)
                 break
             except CBOSUploadError as exc:
                 logger.warning("Batch %s: setup attempt %d/%d failed: %s",
@@ -210,11 +208,11 @@ def process_batch(task: SegmentBatchTask) -> None:
                                  task.key, settings.cbos_max_retries)
                     _fail_all_files(repo, files, task, exc)
                     return
-        logger.info("ProcessID = %s (batch=%s, %d UploadID candidate(s))", process_id, task.key, len(table2))
+        process_id = reservation.process_id
 
         # Step 3: confirmation check - non-fatal sanity check, never a gate.
         try:
-            cbos_client.check_process_id_exist(task.segment, login_id)
+            client.check_process_exists(task.segment)
         except CBOSUploadError as exc:
             logger.warning("Batch %s: CheckProcessIDExist failed (non-fatal): %s", task.key, exc)
 
@@ -266,16 +264,14 @@ def process_batch(task: SegmentBatchTask) -> None:
                 repo.commit()
                 logger.info("Upload started = %s (UploadID=%s, GUID=%s)",
                             file_path.name, rule.upload_id, guid)
-                cbos_client.upload_file_chunks(file_path, rule.upload_id, guid)
+                client.upload_file(file_path, rule.upload_id, guid)
                 request_log.append({"step": "SaveTradePromodalUploadChunkFile", "upload_id": rule.upload_id, "guid": guid})
 
                 # Step 7: register the uploaded file (Step 6's existing-process
                 # lookup is a non-critical confirmation call, done once per
                 # batch below rather than once per file).
-                step7_response = cbos_client.save_trade_process_upload_file(
-                    rule.upload_id, guid, file_path.name, login_id, process_id, trade_date
-                )
-                request_log.append({"step": "SaveNewTradeProcessPromodalUploadFile", "response": step7_response})
+                client.register_file(rule.upload_id, guid, file_path.name, process_id, trade_date)
+                request_log.append({"step": "SaveNewTradeProcessPromodalUploadFile", "upload_id": rule.upload_id})
                 logger.info("CBOS entry created = %s (UploadID=%s, GUID=%s)", file_path.name, rule.upload_id, guid)
 
                 uploaded_candidates.append((record, file_path, request_log))
@@ -293,7 +289,7 @@ def process_batch(task: SegmentBatchTask) -> None:
         # purely diagnostic (it also confirms EDP_Billing will be able to find our
         # PROCESSID via getdropdown).
         try:
-            cbos_client.get_existing_process_id(task.segment, login_id, trade_date)
+            client.existing_process(task.segment, trade_date)
         except CBOSUploadError as exc:
             logger.warning("Batch %s: getdropdown(EXISTINGPROCESSID) failed (non-fatal): %s", task.key, exc)
 
@@ -303,20 +299,19 @@ def process_batch(task: SegmentBatchTask) -> None:
         # downstream step are owned by the EDP_Billing scheduler, not this repo -
         # our job ends at "make FILEUPLOAD go TRUE". See docs/CBOS_HANDOFF_CONTRACT.md.
         empty_slots = [
-            row for row in table2
-            if str(row.get("UPLOADID", "0")) not in ("0", "")
-            and str(row.get("UPLOADID")) not in filled_upload_ids
+            c for c in reservation.candidates
+            if c.expects_a_file and c.upload_id not in filled_upload_ids
         ]
-        for row in empty_slots:
-            stepno = row.get("STEPNO")
+        for candidate in empty_slots:
             try:
-                cbos_client.mark_step_optional(process_id, stepno)
+                client.mark_step_optional(process_id, candidate.step_no)
             except CBOSUploadError as exc:
-                logger.warning("Batch %s: mark-optional STEPNO=%s failed (non-fatal): %s", task.key, stepno, exc)
+                logger.warning("Batch %s: mark-optional STEPNO=%s failed (non-fatal): %s",
+                               task.key, candidate.step_no, exc)
 
         # Step 9: our own confirmation that the files landed (EDP_Billing is the
         # authoritative FILEUPLOAD poller + the one that triggers). Per segment.
-        succeeded = cbos_client.poll_file_upload_status(task.segment, login_id)
+        succeeded = client.confirm_upload(task.segment)
         outcome = upload_outcome.from_poll_result(succeeded)
         for record, file_path, request_log in uploaded_candidates:
             request_log.append({"step": "file_process_status", "result": succeeded})
