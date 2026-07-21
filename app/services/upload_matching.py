@@ -84,6 +84,16 @@ def fetch_upload_rules(candidates, client) -> list[UploadRule]:
     seen_ids: set[str] = set()
 
     for candidate in candidates:
+        # UPLOADID=0 marks a processing step (Brokerage Computation, Bill
+        # Posting) - CBOS never expects a file there, so there are no upload
+        # settings to fetch. Asking anyway is a call real CBOS may well reject,
+        # and a Step 4 error propagates into process_batch's setup retry loop:
+        # three attempts, then every file in the batch goes to uploadFailed.
+        # The mock happens to answer with a phantom "UPLOAD 0" rule, which then
+        # joins the matching pool - so this stayed invisible in MOCK mode.
+        if not candidate.expects_a_file:
+            continue
+
         upload_id = candidate.upload_id
         if upload_id in seen_ids:
             continue
