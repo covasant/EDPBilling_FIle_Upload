@@ -84,7 +84,7 @@ class UploadedFileRepository:
             .one_or_none()
         )
         if stale is not None:
-            retired = f"{new_path}{_SUPERSEDED_MARKER}{stale.id}"
+            retired = f"{new_path}{_SUPERSEDED_MARKER}{record.id}>"
             logger.warning(
                 "claim_file_path: row id=%s still claimed %s (its file was moved away between runs); "
                 "retiring that claim as %s so row id=%s can take the path",

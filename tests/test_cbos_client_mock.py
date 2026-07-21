@@ -165,3 +165,16 @@ def test_skip_is_a_verdict_and_stops_polling(monkeypatch):
 
     assert _AlwaysSkip().confirm_upload("MCX") == "SKIP"
     assert _AlwaysSkip.polls == 1, "SKIP must not be retried - it is not a pending state"
+
+
+def test_zero_poll_attempts_does_not_crash(monkeypatch):
+    """A configured budget of 0 skips the loop body, so the timeout log line has
+    no message to report. Guarding the unbound-name crash that would otherwise
+    take out the batch AFTER every file had already uploaded successfully."""
+    monkeypatch.setenv("CBOS_POLL_MAX_ATTEMPTS", "0")
+    monkeypatch.setenv("CBOS_POLL_INTERVAL_SECONDS", "0")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    assert MockCBOSClient().confirm_upload("MCX") == cbos_client.POLL_TIMED_OUT

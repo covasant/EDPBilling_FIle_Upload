@@ -542,6 +542,9 @@ class BaseCBOSClient(ABC):
         log asserted "a file CBOS expects is still unregistered" - our
         interpretation, printed as though it were CBOS's.
         """
+        # Bound before the loop: a configured attempt budget of 0 skips the body
+        # entirely, and the timeout line below reads msg.
+        msg = ""
         for attempt in range(1, settings.cbos_poll_max_attempts + 1):
             # DEBUG on the raw call: the poll can run for many attempts, and the
             # attempt line below already carries the verdict, which is the part
