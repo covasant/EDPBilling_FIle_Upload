@@ -631,8 +631,13 @@ class CBOSClient(BaseCBOSClient):
 
     def _upload_chunk(self, upload_id: str, guid: str, file_name: str, chunk_bytes: bytes,
                       current_chunk: int, total_chunks: int) -> dict:
+        # Exactly the five multipart fields the API doc specifies for Step 5.
+        # UPLOADID is deliberately NOT among them: the doc doesn't list it here
+        # (it belongs to Steps 4 and 7), and real CBOS answered every chunk with
+        # a 500 "Object reference not set to an instance of an object" while we
+        # were sending it. The chunk endpoint keys off Guid alone - the UploadID
+        # is bound to the GUID folder later, by Step 7's uploadid/uploadfoldername.
         data = {
-            "UPLOADID": upload_id,
             "CurrentChunk": str(current_chunk),
             "TotalChunks": str(total_chunks),
             "Guid": guid,
