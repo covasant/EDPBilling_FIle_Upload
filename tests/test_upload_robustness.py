@@ -372,6 +372,7 @@ def test_holiday_skips_the_batch_without_reserving_a_processid(monkeypatch):
     """
     _fast(monkeypatch)
     monkeypatch.setenv("CBOS_MOCK_HOLIDAY", "true")
+    monkeypatch.setenv("CBOS_HOLIDAY_CHECK_ENFORCED", "true")
     from app.core.config import get_settings
 
     get_settings.cache_clear()
@@ -406,3 +407,35 @@ def test_skip_means_proceed_not_skip(monkeypatch):
 
     client = cbos_client.get_cbos_client()
     assert client.may_begin_upload("MCX") is True
+
+
+def test_holiday_check_is_observe_only_by_default(monkeypatch):
+    """A holiday answer must NOT stop a batch unless enforcement is switched on.
+
+    "Any message except SKIP means holiday" comes from one line of the API doc
+    and no real BeginFileUpload reply has ever been seen. If CBOS words its
+    working-day answer differently, enforcing by default would halt every
+    upload - silently, and looking exactly like a day with no files to process.
+    So the default reports and carries on.
+    """
+    _fast(monkeypatch)
+    monkeypatch.setenv("CBOS_MOCK_HOLIDAY", "true")          # CBOS says "holiday"
+    monkeypatch.setenv("CBOS_HOLIDAY_CHECK_ENFORCED", "false")  # but we only observe
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    from app.core import database
+    from app.services import upload_service
+
+    database.init_db()
+    client = cbos_client.get_cbos_client()
+
+    folder = _root() / "16-07-2026" / "MCX" / "NA"
+    name = "Position_MCXCCL_CO_0_CM_55930_20260716_F_0000.csv"
+    src = _write(folder, name)
+
+    upload_service.process_batch(_batch(date="16-07-2026", files=[str(src)]))
+
+    assert len(client.upload_calls) == 1, "observe-only must not block the upload"
+    assert (folder / "uploaded" / name).exists()
