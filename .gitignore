@@ -39,3 +39,6 @@ docs/adr/
 # Local SQLite dev database
 *.db
 *.sqlite3
+
+# Local file drop folder (FILE_ROOT_PATH) - real exchange data, never commit
+/edpb/

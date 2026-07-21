@@ -118,7 +118,7 @@ async def upload_chunk(
     The file part is optional: the mock only tracks the handshake, so a Postman
     Runner can drive the flow with form fields alone (no file to attach)."""
     body = await file.read() if file is not None else b""
-    folder = STATE.add_chunk(Guid, FileName, len(body))
+    folder = STATE.add_chunk(Guid, FileName, body, int(CurrentChunk), int(TotalChunks))
     return _ok(
         Status="ChunkUploaded",
         Guid=Guid,
@@ -284,8 +284,25 @@ async def mock_state():
             for pid, p in STATE.processes.items()
         },
         "guids": {
-            g: {"files": f.files, "registered": f.registered, "upload_id": f.upload_id,
-                "process_id": f.process_id}
+            g: {
+                # Per file: what the server would actually have on disk after
+                # reassembling the chunks. sha256 is null until every chunk has
+                # arrived - compare it against the source file to prove Step 5
+                # transferred the bytes intact, not merely the right count.
+                "files": {
+                    name: {
+                        "total_chunks": c.total_chunks,
+                        "received_chunks": c.received,
+                        "missing_chunks": c.missing,
+                        "complete": c.complete,
+                        "total_bytes": c.total_bytes,
+                        "sha256": c.sha256(),
+                    }
+                    for name, c in f.files.items()
+                },
+                "registered": f.registered, "upload_id": f.upload_id,
+                "process_id": f.process_id,
+            }
             for g, f in STATE.guids.items()
         },
     }
