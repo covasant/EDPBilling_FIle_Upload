@@ -56,7 +56,8 @@ app/
 ├── core/
 │   ├── config.py               Settings (pydantic-settings, reads .env)
 │   ├── database.py             SQLAlchemy engine/session, init_db()
-│   ├── logging.py               structured logging setup
+│   ├── logging.py               structured logging setup + correlation-id filter
+│   ├── correlation.py           per-run id carried on every log line
 │   └── queue.py                 in-memory Queue + FileTask + in-flight guard
 ├── models/
 │   └── uploaded_file.py         UploadedFile ORM model (audit log)
@@ -256,6 +257,37 @@ caught by the single `except Exception` in `process_task()` and routed to
 `handle_upload_failure()`. Only Step 7 confirming completion routes to
 `handle_upload_success()`. These two functions are the only places in the
 codebase that move a file on disk or write its final audit status.
+
+### Reading the log
+
+Every CBOS step logs its request and its response, in **both** `CBOS_MODE=MOCK`
+and `CBOS_MODE=REAL` - the narration lives on `BaseCBOSClient._call`, so the two
+modes read identically and a mock run is a faithful rehearsal of a real one.
+
+Every line emitted while a batch is in flight carries a correlation id and the
+batch key, so one batch's whole conversation can be pulled out of a day's log:
+
+```
+2026-07-21 08:47:10 cbos_client INFO [3fb59f94 17-07-2026|MCX] Step 2 getNewTradeProcess REQUEST  {'segment': 'MCX', 'trade_date': '17-07-2026'}
+2026-07-21 08:47:10 cbos_client INFO [3fb59f94 17-07-2026|MCX] Step 2 getNewTradeProcess RESPONSE {'Status': 'Success', 'Result': {...}}
+2026-07-21 08:47:10 cbos_client INFO [3fb59f94 17-07-2026|MCX] Step 2 reserved ProcessID=17658 segment=MCX: 6 Table2 slot(s), 4 expecting a file ['127', '534', '535', '320']
+```
+
+```bash
+grep 3fb59f94 app.log          # one batch, start to finish
+```
+
+Lines outside a batch (scheduler ticks, startup) show `[-]`.
+
+| Level | What you get |
+|---|---|
+| `INFO` | One REQUEST + one RESPONSE line per step; per-file and per-batch summaries; the Step 9 gate line listing which UploadIDs were filled and which were marked optional. Response bodies are truncated at 600 chars, and say so. |
+| `DEBUG` | Adds the literal wire traffic (full URL, HTTP status, untruncated body), one line per upload chunk, and one per FILEUPLOAD poll. |
+
+A failed CBOS call always logs at `ERROR`, even for the steps whose failure the
+caller deliberately swallows (3, 6, 8) - a silently-skipped Step 8 is what would
+let CBOS proceed to billing without a file, so it must never be invisible at
+`INFO`.
 
 ---
 
