@@ -221,6 +221,26 @@ def _process_batch(task: SegmentBatchTask) -> None:
     client = cbos_client.get_cbos_client()
     logger.info("Processing batch %s: %d file(s)", task.key, len(files))
 
+    # Step 1: is CBOS accepting uploads for this segment today? Runs before
+    # anything is reserved, because Step 2 mints a new PROCESSID on every
+    # attempt - starting a batch CBOS has already ruled out would leave one
+    # behind for a day that should have produced none.
+    #
+    # The files are left exactly where they are: a holiday says nothing about
+    # them, and the next scan re-checks. No audit rows either - nothing has been
+    # attempted, so there is nothing to record about these files yet.
+    try:
+        if not client.may_begin_upload(task.segment):
+            logger.warning("Batch %s: CBOS reports today is not a processing day for segment %s - "
+                           "leaving files in place for the next scan", task.key, task.segment)
+            return
+    except CBOSUploadError as exc:
+        # Unreachable/erroring GTG host is not proof of a holiday. Uploading on a
+        # holiday is recoverable; refusing to upload on a working day because a
+        # status endpoint blipped silently stalls the whole day's billing.
+        logger.warning("Batch %s: BeginFileUpload check failed (%s) - proceeding anyway; "
+                       "an unanswered holiday check is not a holiday", task.key, exc)
+
     session = get_sessionmaker()()
     try:
         repo = UploadedFileRepository(session)

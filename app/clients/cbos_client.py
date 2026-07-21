@@ -13,6 +13,7 @@ downstream belong to the EDP_Billing scheduler.
 
 One file-upload batch (one segment + one trade date):
 
+  Step 1 - file_process_status (BeginFileUpload)         -> holiday check; SKIP means proceed
   Step 2 - getNewTradeProcess (PROCESSID=0)              -> PROCESSID + Table2 (all UploadID candidates)
   Step 3 - CheckProcessIDExist                           -> confirms Step 2's PROCESSID registered
   Step 4 - GetNewTradeProcessPromodalUploadSettings      -> per-UploadID pattern/extension/column rules
@@ -72,8 +73,16 @@ GET_EXISTING_PROCESS_ID_PATH = "/v1/api/brokerage/getdropdown"
 UPDATE_IS_MANDATORY_PATH = "/v1/api/process/UpdateNewTradeProcessProcessDetailsIsMandatory"
 
 # ProcessName values for the shared file_process_status (GTG) endpoint.
+PROCESS_NAME_BEGIN_FILE_UPLOAD = "BeginFileUpload"
 PROCESS_NAME_CHECK_PROCESS_ID = "CheckProcessIDExist"
 PROCESS_NAME_FILE_UPLOAD_STATUS = "FILEUPLOAD"
+
+# Step 1's "carry on" answer. Note the inversion: SKIP means PROCEED - the API
+# doc is explicit ("MSG = SKIP means proceed. Any other value indicates a
+# holiday - stop processing for today"), and reading it the other way round is
+# the obvious mistake to make. Everything here goes through
+# may_begin_upload() so the comparison exists in exactly one place.
+BEGIN_UPLOAD_PROCEED = "SKIP"
 
 
 class CBOSUploadError(Exception):
@@ -152,8 +161,14 @@ POLL_TIMED_OUT = "POLL_TIMED_OUT"
 
 # Step 9 answers that are CBOS's final word rather than "still pending", so
 # polling stops on them. Real CBOS returned SKIP for a whole MCX batch on
-# 2026-07-21 and we polled it thirty times before reporting a timeout; what SKIP
-# means is a question for the CBOS team, but it plainly isn't "not yet".
+# 2026-07-21 and we polled it thirty times before reporting a timeout.
+#
+# UNRESOLVED - treat this set as provisional. On Step 1 the doc defines SKIP as
+# "proceed" (see BEGIN_UPLOAD_PROCEED), which is the opposite of a failure, and
+# both steps share this endpoint. Step 9's own section documents only TRUE as
+# good-to-go and FALSE as pending, so SKIP there is undefined either way. It
+# stays here for now because it plainly isn't "check again in two seconds", but
+# whether it means success is an open question with the CBOS team.
 _TERMINAL_POLL_MESSAGES = {"SKIP"} | _FAILURE_STATUSES
 
 
@@ -376,6 +391,10 @@ class BaseCBOSClient(ABC):
         """Step 2 raw call."""
 
     @abstractmethod
+    def _begin_file_upload(self, segment: str) -> dict:
+        """Step 1 raw call."""
+
+    @abstractmethod
     def _check_process_id_exist(self, segment: str) -> dict:
         """Step 3 raw call."""
 
@@ -444,6 +463,28 @@ class BaseCBOSClient(ABC):
         logger.info("Step 2 reserved ProcessID=%s segment=%s: %d Table2 slot(s), %d expecting a file %s",
                     process_id, segment, len(candidates), len(expects), expects)
         return ProcessReservation(process_id=process_id, candidates=candidates)
+
+    def may_begin_upload(self, segment: str) -> bool:
+        """Step 1 - Check Holiday. True when CBOS says to go ahead.
+
+        The market being open is the precondition for everything after it, so
+        this runs before Step 2 reserves anything. Skipping it meant uploading
+        on days CBOS had already ruled out, and - because Step 2 mints a
+        PROCESSID on every attempt - leaving a trail of them behind on a day
+        that should have produced none.
+
+        CBOS answers SKIP to mean PROCEED. Any other value means holiday. That
+        reads backwards, so the comparison lives here and callers get a plain
+        bool named for what they actually want to know.
+        """
+        msg = self._gtg_msg(self._call(1, "file_process_status(BeginFileUpload)",
+                                       lambda: self._begin_file_upload(segment),
+                                       segment=segment)).upper()
+        proceeding = msg == BEGIN_UPLOAD_PROCEED
+        logger.info("Step 1 BeginFileUpload segment=%s MSG=%s -> %s",
+                    segment, msg,
+                    "proceed" if proceeding else "HOLIDAY/not a processing day, batch skipped")
+        return proceeding
 
     def check_process_exists(self, segment: str) -> str:
         """Step 3. Confirmation that Step 2's PROCESSID registered. Diagnostic
@@ -657,6 +698,11 @@ class CBOSClient(BaseCBOSClient):
         }
         return self._post(self._core_url(GET_NEW_TRADE_PROCESS_PATH), payload)
 
+    def _begin_file_upload(self, segment: str) -> dict:
+        payload = {"Segment": segment, "ProcessName": PROCESS_NAME_BEGIN_FILE_UPLOAD,
+                   "UserID": settings.cbos_login_id}
+        return self._post(self._gtg_url(FILE_PROCESS_STATUS_PATH), payload)
+
     def _check_process_id_exist(self, segment: str) -> dict:
         payload = {"Segment": segment, "ProcessName": PROCESS_NAME_CHECK_PROCESS_ID,
                    "UserID": settings.cbos_login_id}
@@ -812,6 +858,14 @@ class MockCBOSClient(BaseCBOSClient):
         self.marked_optional.append((str(process_id), step_no))
         logger.debug("[MOCK] Marked step optional: process_id=%s stepno=%s", process_id, step_no)
         return {"Status": "Success", "Result": {"Table1": [{"MSG": "Updated Successfully"}]}}
+
+    def _begin_file_upload(self, segment: str) -> dict:
+        """Step 1. Answers "proceed" unless CBOS_MOCK_HOLIDAY is set, so the
+        holiday branch is reachable in tests and in a local dry run without
+        waiting for an actual market holiday."""
+        msg = "HOLIDAY" if settings.cbos_mock_holiday else BEGIN_UPLOAD_PROCEED
+        logger.debug("[MOCK] BeginFileUpload segment=%s -> %s", segment, msg)
+        return {"Status": "Success", "Data": [{"MSG": msg}]}
 
     def _file_upload_status(self, segment: str) -> dict:
         # Poll state is tracked per segment (the real Step 9 payload carries no

@@ -359,3 +359,50 @@ def test_processid_mismatch_is_logged_loudly(caplog):
     with caplog.at_level(logging.ERROR):
         _warn_if_process_id_differs("PROCESS ID CREATED", "17747", task)
     assert caplog.text == "", "an unrecognised phrasing is not evidence of a mismatch"
+
+
+def test_holiday_skips_the_batch_without_reserving_a_processid(monkeypatch):
+    """Step 1 gates the batch. On a holiday nothing is reserved, nothing is
+    uploaded, and the files stay put for the next scan.
+
+    Reserving first would be the expensive mistake: Step 2 mints a NEW
+    PROCESSID on every attempt, so a scheduler ticking every 30 seconds through
+    a holiday would leave CBOS a trail of empty processes for a day that should
+    have produced none.
+    """
+    _fast(monkeypatch)
+    monkeypatch.setenv("CBOS_MOCK_HOLIDAY", "true")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    from app.core import database
+    from app.services import upload_service
+
+    database.init_db()
+    client = cbos_client.get_cbos_client()
+
+    folder = _root() / "19-07-2026" / "MCX" / "NA"
+    name = "Position_MCXCCL_CO_0_CM_55930_20260719_F_0000.csv"
+    src = _write(folder, name)
+
+    upload_service.process_batch(_batch(date="19-07-2026", files=[str(src)]))
+
+    assert client.upload_calls == [], "no file may be uploaded on a holiday"
+    assert src.exists(), "the file must be left where it is, not moved to uploaded/ or uploadFailed/"
+    assert not (folder / "uploaded").exists()
+    assert not (folder / "uploadFailed").exists()
+
+
+def test_skip_means_proceed_not_skip(monkeypatch):
+    """The inversion, pinned: CBOS answers SKIP to mean "carry on". Reading it
+    as "skip this batch" would stop the uploader on every working day - a
+    failure that looks exactly like normal quiet operation."""
+    _fast(monkeypatch)
+    monkeypatch.setenv("CBOS_MOCK_HOLIDAY", "false")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    client = cbos_client.get_cbos_client()
+    assert client.may_begin_upload("MCX") is True
