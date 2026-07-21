@@ -163,7 +163,7 @@ def test_missing_chunk_is_detected(mock_server):
     for idx in (0, 2):
         requests.post(
             url,
-            data={"UPLOADID": "535", "CurrentChunk": str(idx), "TotalChunks": "3",
+            data={"CurrentChunk": str(idx), "TotalChunks": "3",
                   "Guid": "guid-gap", "FileName": "gappy.csv"},
             files={"file": ("gappy.csv", b"x" * 10)},
             timeout=5,
