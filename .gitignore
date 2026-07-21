@@ -35,3 +35,7 @@ docs/adr/
 
 # e2e runner scratch staging
 .e2e_work/
+
+# Local SQLite dev database
+*.db
+*.sqlite3

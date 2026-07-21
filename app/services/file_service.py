@@ -13,6 +13,9 @@ logger = logging.getLogger("file_service")
 
 UPLOAD_SUBFOLDER = "uploaded"
 FAILED_SUBFOLDER = "uploadFailed"
+# Recorded as the exchange for segments that don't split by one (MCX, CD, ...).
+# Audit/tie-break only - the exchange is never sent to CBOS.
+NO_EXCHANGE = "NA"
 # Never treated as a segment/date folder / never scanned for source files.
 _PROCESSED_SUBFOLDER_NAMES = {UPLOAD_SUBFOLDER, FAILED_SUBFOLDER}
 
@@ -54,8 +57,21 @@ def list_files(folder: Path) -> list[Path]:
 
 
 def discover_files_for_date(root: Path, folder_date: str):
-    """Yields (file_path, segment, exchange) for every source file found directly
-    under root/{folder_date}/{segment}/{exchange}/."""
+    """Yields (file_path, segment, exchange) for every source file found under
+    root/{folder_date}/{segment}/, with or without an exchange level:
+
+        {date}/EQ/BSE/file.csv  -> exchange "BSE"
+        {date}/MCX/file.csv     -> exchange NO_EXCHANGE
+
+    The downloader only creates an exchange folder for segments that actually
+    split by one (EQ -> BSE/NSE). MCX and friends write straight into the
+    segment folder. Requiring the exchange level made those files invisible -
+    list_subdirs returned nothing, so they were never even looked at, and a
+    whole segment silently went unbilled. Both shapes are accepted here so
+    that neither side has to invent placeholder folders.
+
+    A segment folder may hold both at once (loose files plus exchange
+    sub-folders); everything found is yielded."""
     date_folder = root / folder_date
     logger.debug("discover_files_for_date: scanning %s", date_folder)
     if not date_folder.is_dir():
@@ -63,6 +79,16 @@ def discover_files_for_date(root: Path, folder_date: str):
         return
 
     for segment_folder in list_subdirs(date_folder):
+        # Files sitting directly in the segment folder - no exchange split.
+        loose_files = list_files(segment_folder)
+        if loose_files:
+            logger.debug(
+                "discover_files_for_date: %s (no exchange folder) -> %d file(s)",
+                segment_folder.name, len(loose_files),
+            )
+            for file_path in loose_files:
+                yield file_path, segment_folder.name, NO_EXCHANGE
+
         for exchange_folder in list_subdirs(segment_folder):
             files = list_files(exchange_folder)
             logger.debug(
