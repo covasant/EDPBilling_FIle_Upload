@@ -178,3 +178,25 @@ def test_zero_poll_attempts_does_not_crash(monkeypatch):
     get_settings.cache_clear()
 
     assert MockCBOSClient().confirm_upload("MCX") == cbos_client.POLL_TIMED_OUT
+
+
+def test_upload_ip_address_prefers_the_configured_value(monkeypatch):
+    """Step 7's ipaddress comes from .env when set, so it can be pointed at
+    whichever address CBOS turns out to want without a code change.
+
+    The API doc's own example carries the CORE host's address rather than the
+    caller's, and we had been sending the client machine's IP without ever
+    checking - hence configurable rather than a new hardcoded guess.
+    """
+    from app.clients.cbos_client import _upload_ip_address
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("CBOS_UPLOAD_IP_ADDRESS", "10.167.202.164")
+    get_settings.cache_clear()
+    assert _upload_ip_address() == "10.167.202.164"
+
+    # Unset falls back to the detected local IP - the previous behaviour, so
+    # nothing changes for a deployment that doesn't set it.
+    monkeypatch.setenv("CBOS_UPLOAD_IP_ADDRESS", "")
+    get_settings.cache_clear()
+    assert _upload_ip_address() != "10.167.202.164"

@@ -88,10 +88,21 @@ def _to_cbos_date(folder_date: str) -> str:
     return datetime.strptime(folder_date, settings.date_folder_format).strftime("%Y-%m-%d")
 
 
-def _server_ip() -> str:
-    """Best-effort local IP for the documented "ipaddress" field on Step 7.
-    Falls back to an empty string rather than failing an upload over a
-    non-critical field."""
+def _upload_ip_address() -> str:
+    """Step 7's "ipaddress" field.
+
+    Uses settings.cbos_upload_ip_address when set. That is the whole point of
+    the setting: the doc's example carries the CORE host's own address rather
+    than the caller's, so this may identify where the uploaded file sits, not
+    who sent it - and we cannot tell from here which CBOS means.
+
+    Falls back to the local IP (the previous behaviour) when unset, and to an
+    empty string if even that can't be resolved - a batch shouldn't fail over a
+    field whose meaning is still an open question.
+    """
+    configured = settings.cbos_upload_ip_address.strip()
+    if configured:
+        return configured
     try:
         return socket.gethostbyname(socket.gethostname())
     except socket.error:
@@ -689,7 +700,7 @@ class CBOSClient(BaseCBOSClient):
             "loginid": settings.cbos_login_id,
             "uploadfoldername": guid,
             "uploadfilename": file_name,
-            "ipaddress": _server_ip(),
+            "ipaddress": _upload_ip_address(),
             "file": "",
             "paraM1": _to_cbos_date(trade_date),
             "paraM2": "", "paraM3": "", "paraM4": "", "paraM5": "",
