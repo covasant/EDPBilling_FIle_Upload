@@ -39,6 +39,18 @@ class Settings(BaseSettings):
     cbos_poll_interval_seconds: int = 2
     cbos_poll_max_attempts: int = 10
 
+    # Step 7's "ipaddress" field. The API doc's example fills it with the CORE
+    # host's own address (10.167.202.164), NOT the caller's - and the GUID drop
+    # folder CBOS reads from lives on that server, so the field may well be about
+    # where the file is rather than who sent it. We had been sending the client
+    # machine's IP on that assumption, never having checked.
+    #
+    # Which one CBOS actually wants is an open question with their team, so this
+    # is configurable rather than guessed: set it in .env to whatever they
+    # confirm. Left empty, it falls back to the detected local IP, preserving
+    # the previous behaviour.
+    cbos_upload_ip_address: str = ""
+
     # Bounded retry for the per-batch CBOS setup calls (reserve PROCESSID + fetch
     # upload rules). A transient blip retries instead of hot-looping forever;
     # after cbos_max_retries attempts the batch's files are routed to uploadFailed.
