@@ -54,19 +54,25 @@ def confirmed() -> FileOutcome:
     )
 
 
-def unconfirmed() -> FileOutcome:
+def unconfirmed(poll_message: str = "") -> FileOutcome:
     """Steps 5 and 7 succeeded - the file IS in CBOS - but our Step 9 read
     didn't confirm good-to-go.
 
     Lands in uploaded/, not uploadFailed/: re-dropping a file CBOS already
     holds would duplicate it. EDP_Billing is the authoritative FILEUPLOAD
     poller and triggers once CBOS reports TRUE.
+
+    poll_message is CBOS's last word (FALSE, SKIP, POLL_TIMED_OUT, ...) and is
+    recorded verbatim. Every unconfirmed file used to store one fixed sentence,
+    so the audit row couldn't tell "still pending" apart from "SKIP" - a
+    distinction that turned out to matter.
     """
+    said = f" (FILEUPLOAD said {poll_message})" if poll_message else ""
     return FileOutcome(
         outcome=Outcome.UNCONFIRMED,
         destination=Destination.UPLOADED,
         status="uploaded",
-        cbos_response="Registered in CBOS; FILEUPLOAD good-to-go not confirmed by uploader",
+        cbos_response=f"Registered in CBOS; FILEUPLOAD good-to-go not confirmed by uploader{said}",
         stamp_uploaded_at=True,
     )
 
@@ -114,6 +120,12 @@ def failed(error: Exception) -> FileOutcome:
     )
 
 
-def from_poll_result(succeeded: bool) -> FileOutcome:
-    """Step 9's verdict for a file that was uploaded and registered."""
-    return confirmed() if succeeded else unconfirmed()
+def from_poll_result(poll_message: str) -> FileOutcome:
+    """Step 9's verdict for a file that was uploaded and registered.
+
+    poll_message is CBOS's own last FILEUPLOAD message (or POLL_TIMED_OUT).
+    Only TRUE is documented to mean good-to-go; everything else lands in
+    uploaded/ as unconfirmed, carrying the message verbatim so the audit row
+    says what CBOS said rather than what we assumed it meant.
+    """
+    return confirmed() if poll_message == "TRUE" else unconfirmed(poll_message)

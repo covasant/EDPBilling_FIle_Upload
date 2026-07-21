@@ -286,3 +286,76 @@ def test_idempotent_reupload_skips(monkeypatch):
 
     assert len(client.upload_calls) == 1, "already-uploaded file must not be re-uploaded"
     assert (folder / "uploaded" / name).exists()
+
+
+def test_retry_after_operator_moves_file_back_out_of_uploaded(monkeypatch):
+    """The operator retry loop: a batch completes, the file lands in uploaded/,
+    then a human moves it back to the source folder to run it again.
+
+    test_idempotent_reupload_skips re-drops a COPY, leaving the pass-1 file in
+    uploaded/ - so _move_file finds the destination occupied and renames to
+    <stem>_2, and the DB is never asked to write a duplicate path. Moving the
+    file back instead empties the destination, _move_file uses the plain name,
+    and it collides with the pass-1 row that still owns that exact file_path.
+    The filesystem is clean; only the UNIQUE constraint notices.
+
+    This is what broke on the VDI: every retry died on
+    "UNIQUE constraint failed: uploaded_files.file_path" at the commit right
+    after matching, so no file ever reached Step 5 or Step 7 and FILEUPLOAD
+    stayed FALSE.
+    """
+    _fast(monkeypatch)
+    from app.core import database
+    from app.services import upload_service
+
+    database.init_db()
+
+    folder = _root() / "18-07-2026" / "MCX" / "NA"
+    name = "Trade_MCX_CO_0_CM_55930_20260718_F_0000.csv"
+
+    src = _write(folder, name)
+    upload_service.process_batch(_batch(date="18-07-2026", files=[str(src)]))
+
+    landed = folder / "uploaded" / name
+    assert landed.exists(), "pass 1 must leave the file in uploaded/"
+
+    # The operator MOVES it back - the destination is now empty, so _move_file
+    # has no filename collision to protect us with.
+    landed.rename(src)
+    assert not landed.exists()
+
+    upload_service.process_batch(_batch(date="18-07-2026", files=[str(src)]))
+
+    assert not src.exists(), "pass 2 must move the file out of the source folder"
+
+
+def test_processid_mismatch_is_logged_loudly(caplog):
+    """Step 3 names the PROCESSID CBOS's good-to-go side tracks for a segment.
+    If it isn't ours, Step 9 will describe a different process and FILEUPLOAD
+    can never confirm our files - so the mismatch must be impossible to miss.
+
+    On 2026-07-21 this call answered 17741 while the batch filled 17747. Its
+    reply was discarded, so the run looked healthy right up to a poll that could
+    never succeed.
+    """
+    import logging
+
+    from app.core.queue import SegmentBatchTask
+    from app.services.upload_service import _warn_if_process_id_differs
+
+    task = SegmentBatchTask(folder_date="20-07-2026", segment="MCX", files=[])
+
+    with caplog.at_level(logging.ERROR):
+        _warn_if_process_id_differs("PROCESS ID ALREADY GENERATED : 17741", "17747", task)
+    assert "PROCESSID MISMATCH" in caplog.text
+    assert "17741" in caplog.text and "17747" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.ERROR):
+        _warn_if_process_id_differs("PROCESS ID ALREADY GENERATED : 17747", "17747", task)
+    assert caplog.text == "", "a matching PROCESSID must stay quiet"
+
+    caplog.clear()
+    with caplog.at_level(logging.ERROR):
+        _warn_if_process_id_differs("PROCESS ID CREATED", "17747", task)
+    assert caplog.text == "", "an unrecognised phrasing is not evidence of a mismatch"

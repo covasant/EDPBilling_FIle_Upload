@@ -135,6 +135,16 @@ def _summarise(response) -> str:
 # confirmed real-CBOS failure shape yet.
 _FAILURE_STATUSES = {"FAILED", "FAILURE", "ERROR"}
 
+# Step 9 stand-in for "CBOS never gave a verdict inside the attempt budget".
+# Not a value CBOS sends - the empty-string case is covered by it too.
+POLL_TIMED_OUT = "POLL_TIMED_OUT"
+
+# Step 9 answers that are CBOS's final word rather than "still pending", so
+# polling stops on them. Real CBOS returned SKIP for a whole MCX batch on
+# 2026-07-21 and we polled it thirty times before reporting a timeout; what SKIP
+# means is a question for the CBOS team, but it plainly isn't "not yet".
+_TERMINAL_POLL_MESSAGES = {"SKIP"} | _FAILURE_STATUSES
+
 
 # How many times a body may be re-encoded before we give up. Steps 2/4 need one
 # pass after requests' .json(); Step 5 needs two. Headroom for the next surprise.
@@ -515,14 +525,22 @@ class BaseCBOSClient(ABC):
                    lambda: self._update_step_optional(process_id, step_no),
                    process_id=process_id, step_no=step_no)
 
-    def confirm_upload(self, segment: str) -> bool:
+    def confirm_upload(self, segment: str) -> str:
         """Step 9. Poll FILEUPLOAD per SEGMENT (matching the documented payload
         shape - it carries no PROCESSID/UPLOADID/GUID), up to
         cbos_poll_max_attempts times.
 
-        Returns True on MSG=TRUE; False on FALSE/FAILED/ERROR or timeout. False
-        does NOT mean the files failed - EDP_Billing is the authoritative poller
-        and may see TRUE later.
+        Returns CBOS's own last message, uppercased - "TRUE", "FALSE", "SKIP",
+        or POLL_TIMED_OUT if the budget ran out. Callers must not read anything
+        into a non-TRUE value beyond what CBOS said: only TRUE is documented to
+        mean good-to-go, and EDP_Billing is the authoritative poller, so any
+        other answer may still become TRUE later.
+
+        Returning the message rather than a bool is deliberate. CBOS distinguishes
+        FALSE ("still pending") from SKIP, and collapsing both to False cost us a
+        day: SKIP was polled thirty times and reported as a timeout, while the
+        log asserted "a file CBOS expects is still unregistered" - our
+        interpretation, printed as though it were CBOS's.
         """
         for attempt in range(1, settings.cbos_poll_max_attempts + 1):
             # DEBUG on the raw call: the poll can run for many attempts, and the
@@ -533,19 +551,23 @@ class BaseCBOSClient(ABC):
                              level=logging.DEBUG, segment=segment,
                              attempt=attempt, max_attempts=settings.cbos_poll_max_attempts)
             msg = self._gtg_msg(raw).upper()
-            logger.info("Step 9 FILEUPLOAD poll %d/%d segment=%s MSG=%s%s",
-                        attempt, settings.cbos_poll_max_attempts, segment, msg,
-                        "" if msg == "TRUE" else " (a file CBOS expects is still unregistered)")
+            logger.info("Step 9 FILEUPLOAD poll %d/%d segment=%s MSG=%s",
+                        attempt, settings.cbos_poll_max_attempts, segment, msg)
 
             if msg == "TRUE":
-                return True
-            # FALSE means "still pending" per the doc; keep polling until the
-            # attempt budget runs out, then treat it the same as a timeout.
+                return msg
+            if msg in _TERMINAL_POLL_MESSAGES:
+                # Not "still pending" - CBOS has given its answer, so polling it
+                # another 29 times only delays the batch and buries the message
+                # under identical lines.
+                logger.error("Step 9 - FILEUPLOAD returned %s for segment=%s; this is a verdict, not a "
+                             "pending state, so polling stops here", msg, segment)
+                return msg
             time.sleep(settings.cbos_poll_interval_seconds)
 
-        logger.error("Step 9 - file_process_status polling timed out after %d attempts (segment=%s)",
-                     settings.cbos_poll_max_attempts, segment)
-        return False
+        logger.error("Step 9 - file_process_status polling timed out after %d attempts (segment=%s), "
+                     "last MSG=%s", settings.cbos_poll_max_attempts, segment, msg)
+        return POLL_TIMED_OUT
 
     @staticmethod
     def _gtg_msg(response) -> str:

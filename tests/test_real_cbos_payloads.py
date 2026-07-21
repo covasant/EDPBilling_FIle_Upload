@@ -142,7 +142,7 @@ def test_double_encoded_gtg_still_parses(monkeypatch):
     from app.core.config import get_settings
 
     get_settings.cache_clear()
-    assert _DoubleEncodedClient().confirm_upload("MCX") is True
+    assert _DoubleEncodedClient().confirm_upload("MCX") == "TRUE"
 
 
 def test_singly_encoded_bodies_are_untouched():

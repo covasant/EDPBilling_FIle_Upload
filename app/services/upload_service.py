@@ -23,6 +23,7 @@ processing decision."""
 
 import json
 import logging
+import re
 import time
 import uuid
 from collections import defaultdict
@@ -122,6 +123,30 @@ _OUTCOME_LOG_LEVEL = {
 }
 
 
+def _warn_if_process_id_differs(gtg_message: str, process_id: str, task: SegmentBatchTask) -> None:
+    """Compare the PROCESSID in Step 3's message against the one we reserved.
+
+    CBOS phrases it as "PROCESS ID ALREADY GENERATED : 17741", so the number is
+    pulled out rather than matched whole. If no number is found the check is
+    skipped silently - an unrecognised phrasing is not evidence of a mismatch.
+    """
+    found = re.search(r"(\d+)", gtg_message or "")
+    if not found:
+        return
+
+    gtg_process_id = found.group(1)
+    if gtg_process_id == str(process_id):
+        return
+
+    logger.error(
+        "Batch %s: PROCESSID MISMATCH - we reserved %s but CheckProcessIDExist reports %s for segment %s. "
+        "Steps 3 and 9 carry no trade date or PROCESSID, so CBOS resolves the segment itself: FILEUPLOAD "
+        "will describe %s, not the process these files are being uploaded into. Uploading anyway; expect "
+        "Step 9 not to confirm.",
+        task.key, process_id, gtg_process_id, task.segment, gtg_process_id,
+    )
+
+
 def apply_outcome(repo: UploadedFileRepository, record, file_path: Path, outcome: FileOutcome,
                   request_log: list | None = None) -> Path:
     """Move the file into the folder its outcome calls for, and record what
@@ -131,10 +156,13 @@ def apply_outcome(repo: UploadedFileRepository, record, file_path: Path, outcome
             else file_service.move_to_failed)
     dest_path = move(file_path)
 
+    # Take the destination path off any earlier row that still claims it before
+    # writing it here - see UploadedFileRepository.claim_file_path.
+    repo.claim_file_path(record, dest_path)
+
     fields = {
         "status": outcome.status,
         "cbos_response": outcome.cbos_response,
-        "file_path": str(dest_path),
     }
     if outcome.validation_error is not None:
         fields["validation_error"] = outcome.validation_error
@@ -219,9 +247,23 @@ def _process_batch(task: SegmentBatchTask) -> None:
                     return
         process_id = reservation.process_id
 
-        # Step 3: confirmation check - non-fatal sanity check, never a gate.
+        # Step 3: confirm the PROCESSID we just reserved is the one CBOS's
+        # good-to-go side is tracking for this segment.
+        #
+        # Not a gate - a mismatch does not stop the uploads. The files still
+        # belong in CBOS, and we do not know CBOS's rule for resolving a segment
+        # to a PROCESSID (Steps 3 and 9 carry only Segment/ProcessName/UserID -
+        # no trade date, no PROCESSID), so refusing to upload on a mismatch would
+        # act on a guess and could block every batch.
+        #
+        # But it is logged loudly, because a mismatch means Step 9 is reporting
+        # on a DIFFERENT process than the one we are filling, and FILEUPLOAD will
+        # never go TRUE for our files however perfectly they upload. On
+        # 2026-07-21 this call answered 17741 while we filled 17747, and because
+        # its reply was discarded, that took a day to find.
         try:
-            client.check_process_exists(task.segment)
+            gtg_message = client.check_process_exists(task.segment)
+            _warn_if_process_id_differs(gtg_message, process_id, task)
         except CBOSUploadError as exc:
             logger.warning("Batch %s: CheckProcessIDExist failed (non-fatal): %s", task.key, exc)
 
@@ -342,16 +384,16 @@ def _process_batch(task: SegmentBatchTask) -> None:
             sorted(filled_upload_ids) or "none",
             marked_optional or "none",
         )
-        succeeded = client.confirm_upload(task.segment)
-        outcome = upload_outcome.from_poll_result(succeeded)
+        poll_message = client.confirm_upload(task.segment)
+        outcome = upload_outcome.from_poll_result(poll_message)
         for record, file_path, request_log in uploaded_candidates:
-            request_log.append({"step": "file_process_status", "result": succeeded})
+            request_log.append({"step": "file_process_status", "result": poll_message})
             apply_outcome(repo, record, file_path, outcome, request_log)
 
         logger.info(
             "Batch %s complete: %d file(s) in CBOS (%s)",
             task.key, len(uploaded_candidates),
-            "FILEUPLOAD confirmed" if succeeded else "FILEUPLOAD not yet confirmed",
+            f"FILEUPLOAD MSG={poll_message}",
         )
 
     finally:

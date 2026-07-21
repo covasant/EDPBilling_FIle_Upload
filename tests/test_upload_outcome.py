@@ -56,8 +56,12 @@ def test_failed_counts_a_retry_but_sets_no_validation_error():
 
 
 def test_poll_result_maps_to_confirmed_or_unconfirmed():
-    assert upload_outcome.from_poll_result(True).outcome is Outcome.CONFIRMED
-    assert upload_outcome.from_poll_result(False).outcome is Outcome.UNCONFIRMED
+    assert upload_outcome.from_poll_result("TRUE").outcome is Outcome.CONFIRMED
+    assert upload_outcome.from_poll_result("FALSE").outcome is Outcome.UNCONFIRMED
+    # SKIP is not "still pending" - but it is still not TRUE, so the file stays
+    # unconfirmed rather than being treated as good-to-go.
+    assert upload_outcome.from_poll_result("SKIP").outcome is Outcome.UNCONFIRMED
+    assert "SKIP" in upload_outcome.from_poll_result("SKIP").cbos_response
 
 
 def test_only_failures_route_to_uploadfailed():
