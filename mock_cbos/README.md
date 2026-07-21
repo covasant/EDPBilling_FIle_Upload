@@ -44,6 +44,20 @@ It reproduces the two invariants that actually bite:
 
 `GET /__mock/state` shows *why* a process isn't good-to-go (`unsatisfied_upload_steps`).
 
+3. **Chunk reassembly.** Step 5 keeps each chunk's *bytes*, indexed by
+   `CurrentChunk`, and reassembles them in order. `GET /__mock/state` reports
+   per file: `total_chunks`, `received_chunks`, `missing_chunks`, `complete`,
+   `total_bytes` and `sha256` (null until every chunk has arrived). Comparing
+   that digest against the source file is the only check that proves the
+   uploader's chunking transferred the bytes intact — counting bytes passes
+   even when chunks arrive duplicated, out of order, or truncated.
+
+   `tests/test_chunk_wire.py` drives this over a real socket with the real
+   `CBOSClient`; it starts this server on an ephemeral port itself, so there is
+   nothing to run by hand. Note what it does *not* prove: this server and the
+   client were written from the same doc by the same author, so they can agree
+   with each other and both be wrong about real CBOS.
+
 ## Endpoint map (V4 step → route)
 
 | Step | Route | Host |

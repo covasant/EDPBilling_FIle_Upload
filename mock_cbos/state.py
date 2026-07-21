@@ -13,6 +13,7 @@ surprised by the real server.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from dataclasses import dataclass, field
 
@@ -40,9 +41,51 @@ class Step:
 
 
 @dataclass
+class ChunkedFile:
+    """Chunks received for one file, kept as bytes so the server can actually
+    reassemble them - the only way to prove the uploader's Step 5 splitting is
+    correct. Counting bytes (the previous behaviour) passes even if chunks
+    arrive out of order, are duplicated, or are silently truncated.
+
+    Indexed by CurrentChunk rather than appended, so a repeat of chunk 3
+    overwrites chunk 3 instead of corrupting the file by growing it."""
+    file_name: str
+    total_chunks: int = 0
+    chunks: dict[int, bytes] = field(default_factory=dict)
+
+    @property
+    def received(self) -> int:
+        return len(self.chunks)
+
+    @property
+    def total_bytes(self) -> int:
+        return sum(len(b) for b in self.chunks.values())
+
+    @property
+    def missing(self) -> list[int]:
+        """Indices CBOS never received. Non-empty means the file cannot be
+        reassembled - the real server would have a partial file on disk."""
+        return [i for i in range(self.total_chunks) if i not in self.chunks]
+
+    @property
+    def complete(self) -> bool:
+        return self.total_chunks > 0 and not self.missing
+
+    def assemble(self) -> bytes | None:
+        """Concatenate chunks in CurrentChunk order. None if any are missing."""
+        if not self.complete:
+            return None
+        return b"".join(self.chunks[i] for i in range(self.total_chunks))
+
+    def sha256(self) -> str | None:
+        data = self.assemble()
+        return hashlib.sha256(data).hexdigest() if data is not None else None
+
+
+@dataclass
 class GuidFolder:
     guid: str
-    files: dict[str, int] = field(default_factory=dict)  # filename -> total bytes received
+    files: dict[str, ChunkedFile] = field(default_factory=dict)  # filename -> chunks
     registered: bool = False
     upload_id: str | None = None
     process_id: str | None = None
@@ -112,10 +155,21 @@ class MockState:
         return self.processes.get(pid) if pid else None
 
     # --- uploads --------------------------------------------------------------
-    def add_chunk(self, guid: str, filename: str, nbytes: int) -> GuidFolder:
+    def add_chunk(self, guid: str, filename: str, chunk: bytes,
+                  current_chunk: int, total_chunks: int) -> GuidFolder:
+        """Store one chunk's bytes at its declared index, so the file can be
+        reassembled and checksummed later. Chunks may legitimately arrive in
+        any order; storing by index rather than appending is what makes the
+        reassembly independent of arrival order."""
         with self._lock:
             folder = self.guids.setdefault(guid, GuidFolder(guid=guid))
-            folder.files[filename] = folder.files.get(filename, 0) + nbytes
+            entry = folder.files.get(filename)
+            if entry is None:
+                entry = ChunkedFile(file_name=filename)
+                folder.files[filename] = entry
+            # TotalChunks comes from the client on every chunk; trust the latest.
+            entry.total_chunks = max(entry.total_chunks, int(total_chunks))
+            entry.chunks[int(current_chunk)] = chunk
             return folder
 
     def register_file(self, guid: str, upload_id: str, process_id: str) -> tuple[bool, str]:
