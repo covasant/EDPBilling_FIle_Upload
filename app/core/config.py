@@ -51,6 +51,18 @@ class Settings(BaseSettings):
     # the previous behaviour.
     cbos_upload_ip_address: str = ""
 
+    # Whether Step 1 (BeginFileUpload) may actually stop a batch.
+    #
+    # Default False - observe only: the check runs and its answer is logged, but
+    # the batch proceeds regardless. Enforcing it is a way to STOP uploading, and
+    # it turns on "any message except SKIP means holiday", a rule taken from one
+    # line of the API doc and never yet seen from the real server. If CBOS words
+    # its working-day reply differently, enforcing would halt every batch while
+    # looking exactly like a quiet day with no files.
+    #
+    # Set true once a real BeginFileUpload response has been confirmed.
+    cbos_holiday_check_enforced: bool = False
+
     # Bounded retry for the per-batch CBOS setup calls (reserve PROCESSID + fetch
     # upload rules). A transient blip retries instead of hot-looping forever;
     # after cbos_max_retries attempts the batch's files are routed to uploadFailed.

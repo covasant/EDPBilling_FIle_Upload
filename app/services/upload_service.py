@@ -229,11 +229,22 @@ def _process_batch(task: SegmentBatchTask) -> None:
     # The files are left exactly where they are: a holiday says nothing about
     # them, and the next scan re-checks. No audit rows either - nothing has been
     # attempted, so there is nothing to record about these files yet.
+    # Gating is opt-in (CBOS_HOLIDAY_CHECK_ENFORCED). Until a real
+    # BeginFileUpload reply has been seen, the check only reports: "any message
+    # except SKIP means holiday" comes from a single line of the API doc, and
+    # acting on it would be a new way for the uploader to refuse to upload -
+    # silently, and looking just like a day with no files.
     try:
         if not client.may_begin_upload(task.segment):
-            logger.warning("Batch %s: CBOS reports today is not a processing day for segment %s - "
-                           "leaving files in place for the next scan", task.key, task.segment)
-            return
+            if settings.cbos_holiday_check_enforced:
+                logger.warning("Batch %s: CBOS reports today is not a processing day for segment %s - "
+                               "leaving files in place for the next scan", task.key, task.segment)
+                return
+            logger.warning("Batch %s: Step 1 did not answer %s for segment %s. Not a processing day, IF the "
+                           "doc's rule holds - but the holiday check is observe-only "
+                           "(CBOS_HOLIDAY_CHECK_ENFORCED=false), so the batch continues. Confirm this "
+                           "message with the CBOS team before enforcing it.",
+                           task.key, cbos_client.BEGIN_UPLOAD_PROCEED, task.segment)
     except CBOSUploadError as exc:
         # Unreachable/erroring GTG host is not proof of a holiday. Uploading on a
         # holiday is recoverable; refusing to upload on a working day because a
