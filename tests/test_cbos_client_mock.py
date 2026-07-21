@@ -114,7 +114,7 @@ def test_confirm_upload_resolves_true_for_a_success_file(monkeypatch):
 
     client = cbos_client.get_cbos_client()
     client.register_file("81", "guid-1", "success_file.txt", "17658", "14-07-2026")
-    assert client.confirm_upload("MCX") is True
+    assert client.confirm_upload("MCX") == "TRUE"
 
 
 def test_confirm_upload_returns_false_after_exhausting_attempts(monkeypatch):
@@ -131,7 +131,7 @@ def test_confirm_upload_returns_false_after_exhausting_attempts(monkeypatch):
             _AlwaysFalse.polls += 1
             return {"Status": "Success", "Data": [{"MSG": "FALSE"}]}
 
-    assert _AlwaysFalse().confirm_upload("MCX") is False
+    assert _AlwaysFalse().confirm_upload("MCX") == cbos_client.POLL_TIMED_OUT
     assert _AlwaysFalse.polls == 3, "should poll exactly the configured number of times"
 
 
@@ -140,3 +140,28 @@ def test_uploader_exposes_no_trigger():
     to EDP_Billing. See CONTEXT.md's handoff."""
     assert not hasattr(cbos_client, "trigger_process")
     assert not hasattr(cbos_client.get_cbos_client(), "trigger_process")
+
+
+def test_skip_is_a_verdict_and_stops_polling(monkeypatch):
+    """SKIP is CBOS's answer, not "not yet", so the poll returns it immediately
+    instead of spending the whole attempt budget on it.
+
+    Real CBOS answered SKIP for every one of 30 polls on 2026-07-21 and the
+    batch was reported as a timeout - the message that would have explained the
+    run was buried under 29 identical repeats of itself.
+    """
+    monkeypatch.setenv("CBOS_POLL_MAX_ATTEMPTS", "30")
+    monkeypatch.setenv("CBOS_POLL_INTERVAL_SECONDS", "0")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    class _AlwaysSkip(MockCBOSClient):
+        polls = 0
+
+        def _file_upload_status(self, segment):
+            _AlwaysSkip.polls += 1
+            return {"Status": "Success", "Data": [{"MSG": "SKIP"}]}
+
+    assert _AlwaysSkip().confirm_upload("MCX") == "SKIP"
+    assert _AlwaysSkip.polls == 1, "SKIP must not be retried - it is not a pending state"

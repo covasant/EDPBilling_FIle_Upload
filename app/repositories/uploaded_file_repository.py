@@ -7,6 +7,11 @@ from app.models import UploadedFile
 
 logger = logging.getLogger("uploaded_file_repository")
 
+# Appended to a superseded row's file_path so it stays UNIQUE without pretending
+# to be a location on disk. Contains characters Windows forbids in a path, so it
+# can never collide with a real file. See claim_file_path.
+_SUPERSEDED_MARKER = " <superseded by row "
+
 
 class UploadedFileRepository:
     """Reader/writer for the uploaded_files table. Mostly an audit log, with
@@ -48,6 +53,48 @@ class UploadedFileRepository:
             exchange=exchange,
             status="pending",
         )
+
+    def claim_file_path(self, record: UploadedFile, new_path) -> None:
+        """Point `record` at new_path, first releasing any OTHER row that still
+        claims it.
+
+        file_path is UNIQUE, so two rows can never name the same location. That
+        normally holds by itself: a file lives at one path, and the row that owns
+        it moves with it. It breaks when a human intervenes between runs -
+        move a file back out of uploaded/ to retry it, and the source folder is
+        occupied again while the earlier run's row still records the uploaded/
+        path. This attempt then finishes, moves the file to that same uploaded/
+        path, and two rows want it.
+
+        _move_file guards the FILESYSTEM against this (it suffixes _2 if a file
+        is already sitting at the destination), but a moved-away file leaves the
+        destination empty, so that guard never fires and only the UNIQUE
+        constraint notices - as an IntegrityError mid-batch that kills every
+        remaining file in it.
+
+        The older row is stale, not wrong: its file genuinely was at that path
+        once, and the audit trail should keep saying so. So it is retired rather
+        than deleted - its path gets a marker that no real path can collide with,
+        which frees the name for the row that now owns the file on disk.
+        """
+        new_path = str(new_path)
+        stale = (
+            self.session.query(UploadedFile)
+            .filter(UploadedFile.file_path == new_path, UploadedFile.id != record.id)
+            .one_or_none()
+        )
+        if stale is not None:
+            retired = f"{new_path}{_SUPERSEDED_MARKER}{stale.id}"
+            logger.warning(
+                "claim_file_path: row id=%s still claimed %s (its file was moved away between runs); "
+                "retiring that claim as %s so row id=%s can take the path",
+                stale.id, new_path, retired, record.id,
+            )
+            stale.file_path = retired
+            self.session.flush()
+
+        record.file_path = new_path
+        self.session.flush()
 
     def find_completed(self, segment: str, folder_date: str, upload_id, file_name: str) -> UploadedFile | None:
         """Idempotency lookup: a prior row for this (segment, date, UploadID,
