@@ -110,6 +110,25 @@ def _redact(payload: dict) -> dict:
     return {k: ("***" if str(k).lower() in _SECRET_KEYS else v) for k, v in payload.items()}
 
 
+# A response body can be a large encoded envelope (Step 4 returns every column
+# rule). Long enough to see Status and the first fields, short enough that a
+# day's log stays greppable.
+_LOG_BODY_LIMIT = 600
+
+
+def _summarise(response) -> str:
+    """A response rendered for a log line: single-line and length-capped.
+
+    Truncation is marked rather than silent, so a body that got cut is never
+    mistaken for one that genuinely ended there - LOG_LEVEL=DEBUG gives the
+    untruncated wire body in REAL mode.
+    """
+    text = str(response).replace("\n", " ")
+    if len(text) <= _LOG_BODY_LIMIT:
+        return text
+    return f"{text[:_LOG_BODY_LIMIT]}... [+{len(text) - _LOG_BODY_LIMIT} chars, LOG_LEVEL=DEBUG for full body]"
+
+
 # Response bodies that indicate a business-level failure even though the HTTP
 # call itself returned 200. Only trips on a recognized failure marker - an
 # unrecognized/absent Status is treated as success, since we don't have a
@@ -298,6 +317,37 @@ def _parse_upload_rule(upload_id: str, setting: dict, fallback_name: str = "") -
 
 class BaseCBOSClient(ABC):
 
+    # ---- step logging -----------------------------------------------------
+
+    def _call(self, step, api: str, raw_call, level: int = logging.INFO, **params):
+        """Run one raw CBOS call, logging what we sent and what came back.
+
+        This lives on the base class deliberately: the adapters' own logging
+        only ever covers one mode each, so before this existed a MOCK run - the
+        mode used for local development - showed the step names but never a
+        payload. Now both modes narrate identically, and the only thing DEBUG
+        adds in REAL mode is the literal wire traffic.
+
+        params are the call's arguments, already the safe-to-log view: they are
+        what we asked for rather than the encoded body, so they read the same in
+        either mode. Passed through _redact in case a caller ever adds a
+        credential-bearing argument.
+
+        level lets the noisy per-item steps (5's chunks, 9's polls) log at DEBUG
+        while their once-per-file/batch summary stays at INFO.
+        """
+        logger.log(level, "Step %s %s REQUEST  %s", step, api, _redact(params))
+        try:
+            response = raw_call()
+        except Exception as exc:
+            # ERROR regardless of `level`: a failed call is never routine, and
+            # some callers treat the failure as non-fatal, so this may be the
+            # only record that it happened.
+            logger.error("Step %s %s FAILED   %s", step, api, exc)
+            raise
+        logger.log(level, "Step %s %s RESPONSE %s", step, api, _summarise(response))
+        return response
+
     # ---- the raw CBOS calls an adapter must provide -----------------------
 
     @abstractmethod
@@ -343,8 +393,10 @@ class BaseCBOSClient(ABC):
         Raises CBOSUploadError if CBOS returns no PROCESSID or an empty Table2 -
         either makes the batch unprocessable.
         """
-        logger.info("Step 2 - getNewTradeProcess: segment=%s trade_date=%s", segment, trade_date)
-        response = _decode_body(self._get_new_trade_process(segment, trade_date), "getNewTradeProcess")
+        raw = self._call(2, "getNewTradeProcess",
+                         lambda: self._get_new_trade_process(segment, trade_date),
+                         segment=segment, trade_date=trade_date)
+        response = _decode_body(raw, "getNewTradeProcess")
         result = response.get("Result") or {}
 
         table1 = result.get("Table1") or []
@@ -364,15 +416,20 @@ class BaseCBOSClient(ABC):
             )
             for row in table2
         ]
-        logger.info("ProcessID = %s (segment=%s, %d UploadID candidate(s))",
-                    process_id, segment, len(candidates))
+        # The Table2 slot list is the batch's whole plan - which UploadIDs CBOS
+        # expects a file at today. Logged once here so a run's later "why is
+        # FILEUPLOAD still FALSE" can be answered from the log alone.
+        expects = [c.upload_id for c in candidates if c.expects_a_file]
+        logger.info("Step 2 reserved ProcessID=%s segment=%s: %d Table2 slot(s), %d expecting a file %s",
+                    process_id, segment, len(candidates), len(expects), expects)
         return ProcessReservation(process_id=process_id, candidates=candidates)
 
     def check_process_exists(self, segment: str) -> str:
         """Step 3. Confirmation that Step 2's PROCESSID registered. Diagnostic
         only - never a gate. Returns CBOS's message."""
-        logger.info("Step 3 - CheckProcessIDExist: segment=%s", segment)
-        return self._gtg_msg(self._check_process_id_exist(segment))
+        return self._gtg_msg(self._call(3, "CheckProcessIDExist",
+                                        lambda: self._check_process_id_exist(segment),
+                                        segment=segment))
 
     def upload_settings(self, upload_id: str, fallback_name: str = "") -> UploadRule | None:
         """Step 4. This UploadID's matching rule, decoded. Returns None if CBOS
@@ -381,8 +438,10 @@ class BaseCBOSClient(ABC):
         fallback_name is used when the settings row carries no NAME - pass the
         Table2 slot's label.
         """
-        logger.info("Step 4 - GetNewTradeProcessPromodalUploadSettings: UPLOADID=%s", upload_id)
-        response = _decode_body(self._get_upload_settings(upload_id), "GetNewTradeProcessPromodalUploadSettings")
+        raw = self._call(4, "GetNewTradeProcessPromodalUploadSettings",
+                         lambda: self._get_upload_settings(upload_id),
+                         upload_id=upload_id)
+        response = _decode_body(raw, "GetNewTradeProcessPromodalUploadSettings")
         result = response.get("Result") or []
         if not result:
             logger.warning("No upload settings returned for UPLOADID=%s", upload_id)
@@ -413,8 +472,16 @@ class BaseCBOSClient(ABC):
                 chunk_bytes = fh.read(chunk_size)
                 for attempt in range(1, retries + 1):
                     try:
-                        self._upload_chunk(upload_id, guid, file_path.name, chunk_bytes,
-                                           current_chunk, total_chunks)
+                        # DEBUG: a large file is hundreds of chunks, and at INFO
+                        # they would bury the batch narrative. The Step 5
+                        # summary lines either side stay at INFO.
+                        self._call(5, "SaveTradePromodalUploadChunkFile",
+                                   lambda: self._upload_chunk(upload_id, guid, file_path.name,
+                                                              chunk_bytes, current_chunk, total_chunks),
+                                   level=logging.DEBUG,
+                                   upload_id=upload_id, guid=guid, file_name=file_path.name,
+                                   current_chunk=current_chunk, total_chunks=total_chunks,
+                                   chunk_bytes=len(chunk_bytes))
                         break
                     except CBOSUploadError as exc:
                         logger.warning("Step 5: chunk %d/%d of %s failed (attempt %d/%d): %s",
@@ -429,22 +496,24 @@ class BaseCBOSClient(ABC):
         """Step 6. Confirmation lookup, not on the critical path - it also
         confirms EDP_Billing will be able to find our PROCESSID via
         getdropdown."""
-        logger.info("Step 6 - getdropdown(EXISTINGPROCESSID): segment=%s trade_date=%s", segment, trade_date)
-        self._get_existing_process_id(segment, trade_date)
+        self._call(6, "getdropdown(EXISTINGPROCESSID)",
+                   lambda: self._get_existing_process_id(segment, trade_date),
+                   segment=segment, trade_date=trade_date)
 
     def register_file(self, upload_id: str, guid: str, file_name: str, process_id: str,
                       trade_date: str) -> None:
         """Step 7. Register an uploaded file against its UploadID and PROCESSID."""
-        logger.info("Step 7 - SaveNewTradeProcessPromodalUploadFile: %s (upload_id=%s, guid=%s)",
-                    file_name, upload_id, guid)
-        self._create_file_entry(upload_id, guid, file_name, process_id, trade_date)
+        self._call(7, "SaveNewTradeProcessPromodalUploadFile",
+                   lambda: self._create_file_entry(upload_id, guid, file_name, process_id, trade_date),
+                   upload_id=upload_id, guid=guid, file_name=file_name,
+                   process_id=process_id, trade_date=trade_date)
 
     def mark_step_optional(self, process_id: str, step_no) -> None:
         """Step 8. Mark an empty slot optional so it doesn't hold FILEUPLOAD at
         FALSE. One call per empty non-zero slot, after Steps 5+7."""
-        logger.info("Step 8 - UpdateNewTradeProcessProcessDetailsIsMandatory: process_id=%s stepno=%s",
-                    process_id, step_no)
-        self._update_step_optional(process_id, step_no)
+        self._call(8, "UpdateNewTradeProcessProcessDetailsIsMandatory",
+                   lambda: self._update_step_optional(process_id, step_no),
+                   process_id=process_id, step_no=step_no)
 
     def confirm_upload(self, segment: str) -> bool:
         """Step 9. Poll FILEUPLOAD per SEGMENT (matching the documented payload
@@ -456,9 +525,17 @@ class BaseCBOSClient(ABC):
         and may see TRUE later.
         """
         for attempt in range(1, settings.cbos_poll_max_attempts + 1):
-            msg = self._gtg_msg(self._file_upload_status(segment)).upper()
-            logger.info("Step 9 - file_process_status attempt %d/%d: segment=%s MSG=%s",
-                        attempt, settings.cbos_poll_max_attempts, segment, msg)
+            # DEBUG on the raw call: the poll can run for many attempts, and the
+            # attempt line below already carries the verdict, which is the part
+            # that matters.
+            raw = self._call(9, "file_process_status(FILEUPLOAD)",
+                             lambda: self._file_upload_status(segment),
+                             level=logging.DEBUG, segment=segment,
+                             attempt=attempt, max_attempts=settings.cbos_poll_max_attempts)
+            msg = self._gtg_msg(raw).upper()
+            logger.info("Step 9 FILEUPLOAD poll %d/%d segment=%s MSG=%s%s",
+                        attempt, settings.cbos_poll_max_attempts, segment, msg,
+                        "" if msg == "TRUE" else " (a file CBOS expects is still unregistered)")
 
             if msg == "TRUE":
                 return True
@@ -508,11 +585,15 @@ class CBOSClient(BaseCBOSClient):
 
         body = _decode_body(parsed, url)
         _raise_on_failed_status(url, body)
-        logger.info("Response <- %s: %s", url, body)
+        # DEBUG, not INFO: BaseCBOSClient._call already narrates every step in
+        # both modes. These lines are the literal wire view - full URL, HTTP
+        # status, untruncated body - which is what you want when the narrative
+        # itself looks wrong. Failure paths above stay at ERROR.
+        logger.debug("Response <- %s: %s", url, body)
         return body
 
     def _post(self, url: str, payload: dict) -> dict:
-        logger.info("Request -> %s: %s", url, _redact(payload))
+        logger.debug("Request -> %s: %s", url, _redact(payload))
         try:
             response = requests.post(url, json=payload, timeout=settings.cbos_timeout_seconds)
         except requests.RequestException as exc:
@@ -521,7 +602,7 @@ class CBOSClient(BaseCBOSClient):
         return self._handle(url, response)
 
     def _post_multipart(self, url: str, data: dict, files: dict) -> dict:
-        logger.info("Request -> %s: data=%s file=%s", url, _redact(data), files.get("file", (None,))[0])
+        logger.debug("Request -> %s: data=%s file=%s", url, _redact(data), files.get("file", (None,))[0])
         try:
             response = requests.post(url, data=data, files=files,
                                      timeout=settings.cbos_upload_timeout_seconds)
@@ -645,7 +726,7 @@ class MockCBOSClient(BaseCBOSClient):
         self.reserve_calls += 1
         process_id = self._next_process_id
         self._next_process_id += 1
-        logger.info("[MOCK] Process ID created: PROCESSID=%s (GROUPNAME=%s, TRADEDATE=%s)",
+        logger.debug("[MOCK] Process ID created: PROCESSID=%s (GROUPNAME=%s, TRADEDATE=%s)",
                     process_id, segment, trade_date)
         return {
             "Status": "Success",
@@ -657,7 +738,7 @@ class MockCBOSClient(BaseCBOSClient):
 
     def _check_process_id_exist(self, segment: str) -> dict:
         pid = self._next_process_id - 1
-        logger.info("[MOCK] Check process id exist: segment=%s -> PROCESSID=%s", segment, pid)
+        logger.debug("[MOCK] Check process id exist: segment=%s -> PROCESSID=%s", segment, pid)
         return {"Status": "Success", "Data": [{"MSG": f"PROCESS ID ALREADY GENERATED : {pid}"}]}
 
     def _get_upload_settings(self, upload_id: str) -> dict:
@@ -665,30 +746,30 @@ class MockCBOSClient(BaseCBOSClient):
 
         setting = data.upload_setting(str(upload_id))
         uid = int(upload_id) if str(upload_id).isdigit() else upload_id
-        logger.info("[MOCK] Upload settings fetched: UPLOADID=%s -> %s", upload_id, setting)
+        logger.debug("[MOCK] Upload settings fetched: UPLOADID=%s -> %s", upload_id, setting)
         return {"Status": "Success", "Result": [{"ID": uid, **setting}]}
 
     def _upload_chunk(self, upload_id: str, guid: str, file_name: str, chunk_bytes: bytes,
                       current_chunk: int, total_chunks: int) -> dict:
         self.upload_calls.append((str(upload_id), file_name))
-        logger.info("[MOCK] Chunk uploaded: %s chunk %d/%d (upload_id=%s, guid=%s)",
+        logger.debug("[MOCK] Chunk uploaded: %s chunk %d/%d (upload_id=%s, guid=%s)",
                     file_name, current_chunk, total_chunks, upload_id, guid)
         return {"Status": "ChunkUploaded", "Guid": guid}
 
     def _get_existing_process_id(self, segment: str, trade_date: str) -> dict:
-        logger.info("[MOCK] Existing process id lookup: segment=%s trade_date=%s", segment, trade_date)
+        logger.debug("[MOCK] Existing process id lookup: segment=%s trade_date=%s", segment, trade_date)
         return {"Status": "Success",
                 "Result": [{"_KEY": self._next_process_id - 1, "_DESC": f"{segment} - {trade_date}"}]}
 
     def _create_file_entry(self, upload_id: str, guid: str, file_name: str, process_id: str,
                            trade_date: str) -> dict:
-        logger.info("[MOCK] File entry created: %s (upload_id=%s, guid=%s)", file_name, upload_id, guid)
+        logger.debug("[MOCK] File entry created: %s (upload_id=%s, guid=%s)", file_name, upload_id, guid)
         self._segment_file_names.setdefault(trade_date, []).append(file_name)
         return {"Status": "Success", "Result": "File entry saved successfully"}
 
     def _update_step_optional(self, process_id: str, step_no) -> dict:
         self.marked_optional.append((str(process_id), step_no))
-        logger.info("[MOCK] Marked step optional: process_id=%s stepno=%s", process_id, step_no)
+        logger.debug("[MOCK] Marked step optional: process_id=%s stepno=%s", process_id, step_no)
         return {"Status": "Success", "Result": {"Table1": [{"MSG": "Updated Successfully"}]}}
 
     def _file_upload_status(self, segment: str) -> dict:
@@ -698,7 +779,7 @@ class MockCBOSClient(BaseCBOSClient):
         state["attempts"] += 1
 
         if state["attempts"] <= settings.cbos_mock_pending_polls:
-            logger.info("[MOCK] FILEUPLOAD FALSE/pending (attempt %d/%d, segment=%s)",
+            logger.debug("[MOCK] FILEUPLOAD FALSE/pending (attempt %d/%d, segment=%s)",
                         state["attempts"], settings.cbos_mock_pending_polls, segment)
             return {"Status": "Success", "Data": [{"MSG": "FALSE"}]}
 
@@ -706,7 +787,7 @@ class MockCBOSClient(BaseCBOSClient):
             file_names = [n for names in self._segment_file_names.values() for n in names]
             state["outcome"] = "TRUE" if self._decide_outcome(file_names) else "FALSE"
 
-        logger.info("[MOCK] FILEUPLOAD %s (segment=%s)", state["outcome"], segment)
+        logger.debug("[MOCK] FILEUPLOAD %s (segment=%s)", state["outcome"], segment)
         return {"Status": "Success", "Data": [{"MSG": state["outcome"]}]}
 
     def get_expected_filename(self, segment: str, upload_id: str) -> dict:

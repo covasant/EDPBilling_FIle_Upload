@@ -31,6 +31,7 @@ from pathlib import Path
 
 from app.clients import cbos_client
 from app.clients.cbos_client import CBOSUploadError
+from app.core import correlation
 from app.core.config import settings
 from app.core.database import get_sessionmaker
 from app.core.queue import BatchQueue, SegmentBatchTask
@@ -174,6 +175,15 @@ def _fail_all_files(repo: UploadedFileRepository, files: list, task: SegmentBatc
 def process_batch(task: SegmentBatchTask) -> None:
     """Attempt the CBOS upload lane (Steps 2->9) for one segment/date/exchange
     batch. Called by the worker loop for one queue item at a time."""
+    # Every log line emitted below - including the ones from cbos_client, which
+    # knows nothing about batches - carries this run's id, so one run's whole
+    # CBOS conversation can be grepped out of a day's log. The batch key alone
+    # won't do: it recurs on every rescan.
+    with correlation.batch_context(task.key):
+        _process_batch(task)
+
+
+def _process_batch(task: SegmentBatchTask) -> None:
     files = [(Path(p), exch) for p, exch in task.files if Path(p).exists()]
     if not files:
         logger.warning("Batch %s: no files still exist on disk, skipping", task.key)
@@ -318,6 +328,20 @@ def process_batch(task: SegmentBatchTask) -> None:
 
         # Step 9: our own confirmation that the files landed (EDP_Billing is the
         # authoritative FILEUPLOAD poller + the one that triggers). Per segment.
+        #
+        # Log the gate's inputs first. CBOS only ever answers TRUE/FALSE, so
+        # when it says FALSE this line is the only place the log records which
+        # slots we believe we satisfied and how - without it, a stuck poll is
+        # twenty identical MSG=FALSE lines and no way to tell whether a file was
+        # missed, mis-matched, or genuinely still processing on CBOS's side.
+        marked_optional = [str(c.upload_id) for c in empty_slots]
+        logger.info(
+            "Batch %s: Step 9 gate - %d slot(s) expecting a file: filled=%s marked-optional=%s",
+            task.key,
+            len(marked_optional) + len(filled_upload_ids),
+            sorted(filled_upload_ids) or "none",
+            marked_optional or "none",
+        )
         succeeded = client.confirm_upload(task.segment)
         outcome = upload_outcome.from_poll_result(succeeded)
         for record, file_path, request_log in uploaded_candidates:
