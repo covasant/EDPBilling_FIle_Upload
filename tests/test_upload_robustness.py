@@ -184,6 +184,51 @@ def test_guid_persisted_even_when_chunk_upload_fails(monkeypatch):
         session.close()
 
 
+# --- the downloader omits the exchange level for segments that lack one -------
+
+def test_discovers_files_with_no_exchange_folder(monkeypatch):
+    """The RPA bot writes {date}/MCX/file.csv (no exchange level) but
+    {date}/EQ/BSE/file.csv (with one). Requiring the exchange folder made every
+    MCX file invisible to discovery - silently unbilled, no error anywhere."""
+    _fast(monkeypatch)
+    from app.services import file_service
+
+    root = _root()
+    loose = _write(root / "17-07-2026" / "MCX", "Position_MCXCCL_CO_0_CM_55930_20260717_F_0000.csv")
+    nested = _write(root / "17-07-2026" / "EQ" / "BSE", "Trade_BSE_CM_0_TM_446_20260717_F_0000.csv")
+
+    found = {p.name: (seg, exc) for p, seg, exc in
+             file_service.discover_files_for_date(root, "17-07-2026")}
+
+    assert found[loose.name] == ("MCX", "NA"), "segment-level file must be found"
+    assert found[nested.name] == ("EQ", "BSE"), "exchange-level file keeps its exchange"
+
+
+def test_no_exchange_file_uploads_and_moves_beside_itself(monkeypatch):
+    """A segment-level file goes through the full lane and lands in
+    MCX/uploaded/ - which list_subdirs must not then mistake for an exchange."""
+    _fast(monkeypatch)
+    from app.core import database
+    from app.models.uploaded_file import UploadedFile
+    from app.services import file_service, upload_service
+
+    database.init_db()
+    segment_folder = _root() / "17-07-2026" / "MCX"
+    f = _write(segment_folder, "Position_MCXCCL_CO_0_CM_55930_20260717_F_0000.csv")
+
+    upload_service.process_batch(_batch(exchange="NA", files=[str(f)]))
+
+    assert (segment_folder / "uploaded" / f.name).exists()
+    session = database.get_sessionmaker()()
+    try:
+        assert session.query(UploadedFile).one().status == "uploaded"
+    finally:
+        session.close()
+
+    # The uploaded/ folder must not now look like an exchange holding a source file.
+    assert list(file_service.discover_files_for_date(_root(), "17-07-2026")) == []
+
+
 # --- idempotency: a re-dropped, already-uploaded file is not sent twice --------
 
 def test_multi_exchange_segment_reserves_one_pid(monkeypatch):

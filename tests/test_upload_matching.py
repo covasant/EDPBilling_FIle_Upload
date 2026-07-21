@@ -168,3 +168,23 @@ def test_parse_falls_back_to_the_candidate_name():
 def test_parse_keeps_the_raw_row_for_audit():
     setting = {"FILE NAME": "SCRIP", "FILEEXTENSION": "TXT", "ODDBALL": 1}
     assert parse_upload_rule("81", setting).raw_settings == setting
+
+
+def test_placeholder_exchange_does_not_break_ties(tmp_path):
+    """"NA" is a placeholder for segments with no exchange split, not a real
+    exchange. The tie-breaker substring-matches the exchange against the CBOS
+    rule name, and "NA" hides inside ordinary words (FINAL, MANUAL, NATIONAL) -
+    so feeding it in could silently pick the wrong UploadID. Passing None
+    instead must leave the tie genuinely unresolved."""
+    f = _write(tmp_path, "POSITION_20260717.csv")
+    tied = [
+        _rule(1, "POSITION", ext="CSV", name="POSITION INTRADAY"),
+        _rule(2, "POSITION", ext="CSV", name="POSITION FINAL"),  # contains "NA"
+    ]
+
+    # The bug: "NA" singles out "POSITION FINAL" and returns it with confidence.
+    assert match_file(f, tied, exchange="NA").upload_id == "2"
+
+    # Correct behaviour: no exchange info -> the tie stands and is rejected loudly.
+    with pytest.raises(AmbiguousUploadRule):
+        match_file(f, tied, exchange=None)

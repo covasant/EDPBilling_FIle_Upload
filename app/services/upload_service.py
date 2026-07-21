@@ -225,8 +225,16 @@ def process_batch(task: SegmentBatchTask) -> None:
             record = repo.create_audit_record(file_path, task.folder_date, task.segment, exchange)
             request_log: list = []
 
+            # NO_EXCHANGE is a placeholder for segments that don't split by
+            # exchange, not a real one. It must not reach the tie-breaker:
+            # that does a substring match of the exchange against the CBOS
+            # rule name, and "NA" appears inside ordinary words (FINAL,
+            # MANUAL, NATIONAL), so it could break a tie towards the wrong
+            # UploadID. None means "no exchange information" - the honest input.
+            match_exchange = None if exchange == file_service.NO_EXCHANGE else exchange
+
             try:
-                rule = upload_matching.match_file(file_path, rules, exchange=exchange)
+                rule = upload_matching.match_file(file_path, rules, exchange=match_exchange)
             except FileRejected as exc:
                 apply_outcome(repo, record, file_path, upload_outcome.rejected(exc))
                 continue
