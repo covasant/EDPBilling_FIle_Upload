@@ -188,3 +188,32 @@ def test_placeholder_exchange_does_not_break_ties(tmp_path):
     # Correct behaviour: no exchange info -> the tie stands and is rejected loudly.
     with pytest.raises(AmbiguousUploadRule):
         match_file(f, tied, exchange=None)
+
+
+def test_processing_steps_are_never_asked_for_upload_settings():
+    """Table2 rows with UPLOADID=0 are processing steps (Brokerage Computation,
+    Bill Posting), not file slots. Asking CBOS for their upload settings is a
+    call real CBOS may reject - and a Step 4 error lands in process_batch's
+    setup retry loop, which dumps the whole batch to uploadFailed. The mock
+    answers with a phantom "UPLOAD 0" rule instead, so nothing looked wrong.
+    """
+    from app.clients.cbos_client import UploadCandidate
+    from app.services.upload_matching import fetch_upload_rules
+
+    candidates = [
+        UploadCandidate(upload_id="535", step_no=3, name="MCX Trade File Upload"),
+        UploadCandidate(upload_id="0", step_no=5, name="MCX Brokerage Computation"),
+        UploadCandidate(upload_id="0", step_no=6, name="MCX Bill Posting"),
+    ]
+
+    asked: list[str] = []
+
+    class _Client:
+        def upload_settings(self, upload_id, fallback_name=""):
+            asked.append(upload_id)
+            return _rule(535, "MCX_CO_0_CM", ext="csv", name="MCX COM TRADE FILE")
+
+    rules = fetch_upload_rules(candidates, _Client())
+
+    assert asked == ["535"], f"Step 4 must only run for real file slots, asked: {asked}"
+    assert len(rules) == 1, "a processing step must not become a matching rule"
