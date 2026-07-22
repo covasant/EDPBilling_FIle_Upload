@@ -1,0 +1,1677 @@
+{
+    "item": [
+        {
+            "name": "api",
+            "description": "",
+            "item": [
+                {
+                    "name": "edp",
+                    "description": "",
+                    "item": [
+                        {
+                            "name": "file_process_status",
+                            "description": "",
+                            "item": [
+                                {
+                                    "id": "838ecfb2-7faa-400e-b7a3-891773cd941f",
+                                    "name": "Segment/process status check (GTG / CHK)",
+                                    "request": {
+                                        "name": "Segment/process status check (GTG / CHK)",
+                                        "description": {
+                                            "content": "Single multiplexed endpoint used by Steps 1, 3, 9, 11-16, 19-20, 22-23, 25, 28, 30-31, 33, 37-38. The `ProcessName` field distinguishes which check is performed; `Segment` is required for segment-scoped checks and omitted for global ones. V5: `TradeDate` (YYYY-MM-DD) is now required on every call to this endpoint.",
+                                            "type": "text/plain"
+                                        },
+                                        "url": {
+                                            "protocol": "http",
+                                            "port": "8087",
+                                            "path": [
+                                                "api",
+                                                "edp",
+                                                "file_process_status"
+                                            ],
+                                            "host": [
+                                                "10",
+                                                "167",
+                                                "202",
+                                                "234"
+                                            ],
+                                            "query": [],
+                                            "variable": []
+                                        },
+                                        "header": [
+                                            {
+                                                "key": "Content-Type",
+                                                "value": "application/json"
+                                            },
+                                            {
+                                                "key": "Accept",
+                                                "value": "application/json"
+                                            }
+                                        ],
+                                        "method": "POST",
+                                        "body": {
+                                            "mode": "raw",
+                                            "raw": "{\n  \"TradeDate\": \"<date>\",\n  \"ProcessName\": \"CHECKCONTRACTNOTEGENERATION\",\n  \"UserID\": \"<string>\",\n  \"Segment\": \"MCXPHY\"\n}",
+                                            "options": {
+                                                "raw": {
+                                                    "headerFamily": "json",
+                                                    "language": "json"
+                                                }
+                                            }
+                                        },
+                                        "auth": null
+                                    },
+                                    "response": [
+                                        {
+                                            "id": "529a9fda-f87a-401e-bcf8-b37e11dcbaf8",
+                                            "name": "Status check result. MSG=SKIP (holiday check) or TRUE/True means proceed; FALSE/False means not yet ready.",
+                                            "originalRequest": {
+                                                "url": {
+                                                    "protocol": "http",
+                                                    "port": "8087",
+                                                    "path": [
+                                                        "api",
+                                                        "edp",
+                                                        "file_process_status"
+                                                    ],
+                                                    "host": [
+                                                        "10",
+                                                        "167",
+                                                        "202",
+                                                        "234"
+                                                    ],
+                                                    "query": [],
+                                                    "variable": []
+                                                },
+                                                "header": [
+                                                    {
+                                                        "key": "Content-Type",
+                                                        "value": "application/json"
+                                                    },
+                                                    {
+                                                        "key": "Accept",
+                                                        "value": "application/json"
+                                                    }
+                                                ],
+                                                "method": "POST",
+                                                "body": {
+                                                    "mode": "raw",
+                                                    "raw": "{\n  \"TradeDate\": \"<date>\",\n  \"ProcessName\": \"CHECKCONTRACTNOTEGENERATION\",\n  \"UserID\": \"<string>\",\n  \"Segment\": \"MCXPHY\"\n}",
+                                                    "options": {
+                                                        "raw": {
+                                                            "headerFamily": "json",
+                                                            "language": "json"
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            "status": "OK",
+                                            "code": 200,
+                                            "header": [
+                                                {
+                                                    "key": "Content-Type",
+                                                    "value": "application/json"
+                                                }
+                                            ],
+                                            "body": "{\n  \"Status\": \"<string>\",\n  \"Data\": [\n    {\n      \"MSG\": \"<string>\"\n    },\n    {\n      \"MSG\": \"<string>\"\n    }\n  ]\n}",
+                                            "cookie": [],
+                                            "_postman_previewlanguage": "json"
+                                        }
+                                    ],
+                                    "event": [],
+                                    "protocolProfileBehavior": {
+                                        "disableBodyPruning": true
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "name": "get_expected_filename",
+                            "description": "",
+                            "item": [
+                                {
+                                    "id": "abae72cf-3962-4d34-b097-40d023b40621",
+                                    "name": "Step 39: Get Expected Filename by Segment and Upload ID",
+                                    "request": {
+                                        "name": "Step 39: Get Expected Filename by Segment and Upload ID",
+                                        "description": {
+                                            "content": "Returns the expected file name pattern for a given segment and Upload ID. Use this to verify your file is correctly named before upload. The pattern includes the embedded trade date in DDMMYY format.",
+                                            "type": "text/plain"
+                                        },
+                                        "url": {
+                                            "protocol": "http",
+                                            "port": "8087",
+                                            "path": [
+                                                "api",
+                                                "edp",
+                                                "get_expected_filename"
+                                            ],
+                                            "host": [
+                                                "10",
+                                                "167",
+                                                "202",
+                                                "234"
+                                            ],
+                                            "query": [],
+                                            "variable": []
+                                        },
+                                        "header": [
+                                            {
+                                                "key": "Content-Type",
+                                                "value": "application/json"
+                                            },
+                                            {
+                                                "key": "Accept",
+                                                "value": "application/json"
+                                            }
+                                        ],
+                                        "method": "POST",
+                                        "body": {
+                                            "mode": "raw",
+                                            "raw": "{\n  \"segment\": \"NCDEX\",\n  \"uploadid\": \"<string>\"\n}",
+                                            "options": {
+                                                "raw": {
+                                                    "headerFamily": "json",
+                                                    "language": "json"
+                                                }
+                                            }
+                                        },
+                                        "auth": null
+                                    },
+                                    "response": [
+                                        {
+                                            "id": "73227890-e13c-4469-a13d-a87796ce3b97",
+                                            "name": "Expected filename pattern",
+                                            "originalRequest": {
+                                                "url": {
+                                                    "protocol": "http",
+                                                    "port": "8087",
+                                                    "path": [
+                                                        "api",
+                                                        "edp",
+                                                        "get_expected_filename"
+                                                    ],
+                                                    "host": [
+                                                        "10",
+                                                        "167",
+                                                        "202",
+                                                        "234"
+                                                    ],
+                                                    "query": [],
+                                                    "variable": []
+                                                },
+                                                "header": [
+                                                    {
+                                                        "key": "Content-Type",
+                                                        "value": "application/json"
+                                                    },
+                                                    {
+                                                        "key": "Accept",
+                                                        "value": "application/json"
+                                                    }
+                                                ],
+                                                "method": "POST",
+                                                "body": {
+                                                    "mode": "raw",
+                                                    "raw": "{\n  \"segment\": \"NCDEX\",\n  \"uploadid\": \"<string>\"\n}",
+                                                    "options": {
+                                                        "raw": {
+                                                            "headerFamily": "json",
+                                                            "language": "json"
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            "status": "OK",
+                                            "code": 200,
+                                            "header": [
+                                                {
+                                                    "key": "Content-Type",
+                                                    "value": "application/json"
+                                                }
+                                            ],
+                                            "body": "{\n  \"Status\": \"<string>\",\n  \"Data\": [\n    {\n      \"UploadID\": \"<string>\",\n      \"ExpectedFileNamePattern1\": \"<string>\"\n    },\n    {\n      \"UploadID\": \"<string>\",\n      \"ExpectedFileNamePattern1\": \"<string>\"\n    }\n  ]\n}",
+                                            "cookie": [],
+                                            "_postman_previewlanguage": "json"
+                                        }
+                                    ],
+                                    "event": [],
+                                    "protocolProfileBehavior": {
+                                        "disableBodyPruning": true
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "v1",
+            "description": "",
+            "item": [
+                {
+                    "name": "api",
+                    "description": "",
+                    "item": [
+                        {
+                            "name": "process",
+                            "description": "",
+                            "item": [
+                                {
+                                    "name": "getNewTradeProcess",
+                                    "description": "",
+                                    "item": [
+                                        {
+                                            "id": "ee4c9328-df19-4333-89a6-52bf2c982156",
+                                            "name": "Create or trigger a Trade Process (Steps 2, 10, 34)",
+                                            "request": {
+                                                "name": "Create or trigger a Trade Process (Steps 2, 10, 34)",
+                                                "description": {
+                                                    "content": "PROCESSID='0' creates a new Process ID and returns the 28-step pipeline (Step 2), or for GROUPNAME='FOPositionChange' creates the Corporate Action Position Change process (Step 34 Phase 1). Passing the real (non-zero) PROCESSID triggers sequential execution of all pipeline steps (Step 10, or Step 34 Phase 2).",
+                                                    "type": "text/plain"
+                                                },
+                                                "url": {
+                                                    "protocol": "http",
+                                                    "port": "8003",
+                                                    "path": [
+                                                        "v1",
+                                                        "api",
+                                                        "process",
+                                                        "getNewTradeProcess"
+                                                    ],
+                                                    "host": [
+                                                        "10",
+                                                        "167",
+                                                        "202",
+                                                        "164"
+                                                    ],
+                                                    "query": [],
+                                                    "variable": []
+                                                },
+                                                "header": [
+                                                    {
+                                                        "key": "Content-Type",
+                                                        "value": "application/json"
+                                                    },
+                                                    {
+                                                        "key": "Accept",
+                                                        "value": "application/json"
+                                                    }
+                                                ],
+                                                "method": "POST",
+                                                "body": {
+                                                    "mode": "raw",
+                                                    "raw": "{\n  \"GROUPNAME\": \"<string>\",\n  \"LOGINID\": \"<string>\",\n  \"TRADEDATE\": \"<date>\",\n  \"PROCESSID\": \"<string>\"\n}",
+                                                    "options": {
+                                                        "raw": {
+                                                            "headerFamily": "json",
+                                                            "language": "json"
+                                                        }
+                                                    }
+                                                },
+                                                "auth": null
+                                            },
+                                            "response": [
+                                                {
+                                                    "id": "7785aa53-e316-46a2-b66c-72fd8990795b",
+                                                    "name": "Process ID and pipeline step list/status",
+                                                    "originalRequest": {
+                                                        "url": {
+                                                            "protocol": "http",
+                                                            "port": "8003",
+                                                            "path": [
+                                                                "v1",
+                                                                "api",
+                                                                "process",
+                                                                "getNewTradeProcess"
+                                                            ],
+                                                            "host": [
+                                                                "10",
+                                                                "167",
+                                                                "202",
+                                                                "164"
+                                                            ],
+                                                            "query": [],
+                                                            "variable": []
+                                                        },
+                                                        "header": [
+                                                            {
+                                                                "key": "Content-Type",
+                                                                "value": "application/json"
+                                                            },
+                                                            {
+                                                                "key": "Accept",
+                                                                "value": "application/json"
+                                                            }
+                                                        ],
+                                                        "method": "POST",
+                                                        "body": {
+                                                            "mode": "raw",
+                                                            "raw": "{\n  \"GROUPNAME\": \"<string>\",\n  \"LOGINID\": \"<string>\",\n  \"TRADEDATE\": \"<date>\",\n  \"PROCESSID\": \"<string>\"\n}",
+                                                            "options": {
+                                                                "raw": {
+                                                                    "headerFamily": "json",
+                                                                    "language": "json"
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    "status": "OK",
+                                                    "code": 200,
+                                                    "header": [
+                                                        {
+                                                            "key": "Content-Type",
+                                                            "value": "application/json"
+                                                        }
+                                                    ],
+                                                    "body": "{\n  \"Status\": \"<string>\",\n  \"Result\": {\n    \"Table1\": [\n      {\n        \"PROCESSID\": \"<integer>\",\n        \"ISRUNNABLE\": \"<boolean>\",\n        \"ISAUTOUPLOAD\": \"<boolean>\"\n      },\n      {\n        \"PROCESSID\": \"<integer>\",\n        \"ISRUNNABLE\": \"<boolean>\",\n        \"ISAUTOUPLOAD\": \"<boolean>\"\n      }\n    ],\n    \"Table2\": [\n      {\n        \"ID\": \"<integer>\",\n        \"STEPNO\": \"<integer>\",\n        \"NAME\": \"<string>\",\n        \"UPLOADDATETIME\": \"<string>\",\n        \"STARTDATETIME\": \"<string>\",\n        \"ENDDATETIME\": \"<string>\",\n        \"STATUS\": \"<string>\",\n        \"STATUSDESC\": \"<string>\",\n        \"CREATEDBY\": \"<string>\",\n        \"ISOPTIONAL\": \"<boolean>\",\n        \"UPLOADID\": \"<integer>\",\n        \"ISOPTIONALVISIBLE\": \"<boolean>\"\n      },\n      {\n        \"ID\": \"<integer>\",\n        \"STEPNO\": \"<integer>\",\n        \"NAME\": \"<string>\",\n        \"UPLOADDATETIME\": \"<string>\",\n        \"STARTDATETIME\": \"<string>\",\n        \"ENDDATETIME\": \"<string>\",\n        \"STATUS\": \"<string>\",\n        \"STATUSDESC\": \"<string>\",\n        \"CREATEDBY\": \"<string>\",\n        \"ISOPTIONAL\": \"<boolean>\",\n        \"UPLOADID\": \"<integer>\",\n        \"ISOPTIONALVISIBLE\": \"<boolean>\"\n      }\n    ]\n  },\n  \"filename\": \"<string>\",\n  \"PDFData\": \"<string>\"\n}",
+                                                    "cookie": [],
+                                                    "_postman_previewlanguage": "json"
+                                                }
+                                            ],
+                                            "event": [],
+                                            "protocolProfileBehavior": {
+                                                "disableBodyPruning": true
+                                            }
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "GetNewTradeProcessPromodalUploadSettings",
+                                    "description": "",
+                                    "item": [
+                                        {
+                                            "id": "441ef293-6852-4452-b2de-c3b78dae9fe5",
+                                            "name": "Step 4: Get File Upload Settings",
+                                            "request": {
+                                                "name": "Step 4: Get File Upload Settings",
+                                                "description": {
+                                                    "content": "Retrieve file format requirements (name pattern, extension, column count) before uploading, for a given Upload ID.",
+                                                    "type": "text/plain"
+                                                },
+                                                "url": {
+                                                    "protocol": "http",
+                                                    "port": "8003",
+                                                    "path": [
+                                                        "v1",
+                                                        "api",
+                                                        "process",
+                                                        "GetNewTradeProcessPromodalUploadSettings"
+                                                    ],
+                                                    "host": [
+                                                        "10",
+                                                        "167",
+                                                        "202",
+                                                        "164"
+                                                    ],
+                                                    "query": [],
+                                                    "variable": []
+                                                },
+                                                "header": [
+                                                    {
+                                                        "key": "Content-Type",
+                                                        "value": "application/json"
+                                                    },
+                                                    {
+                                                        "key": "Accept",
+                                                        "value": "application/json"
+                                                    }
+                                                ],
+                                                "method": "POST",
+                                                "body": {
+                                                    "mode": "raw",
+                                                    "raw": "{\n  \"UPLOADID\": \"<string>\"\n}",
+                                                    "options": {
+                                                        "raw": {
+                                                            "headerFamily": "json",
+                                                            "language": "json"
+                                                        }
+                                                    }
+                                                },
+                                                "auth": null
+                                            },
+                                            "response": [
+                                                {
+                                                    "id": "f4213c6b-0d9f-468e-830f-787c9119f8de",
+                                                    "name": "File format requirements",
+                                                    "originalRequest": {
+                                                        "url": {
+                                                            "protocol": "http",
+                                                            "port": "8003",
+                                                            "path": [
+                                                                "v1",
+                                                                "api",
+                                                                "process",
+                                                                "GetNewTradeProcessPromodalUploadSettings"
+                                                            ],
+                                                            "host": [
+                                                                "10",
+                                                                "167",
+                                                                "202",
+                                                                "164"
+                                                            ],
+                                                            "query": [],
+                                                            "variable": []
+                                                        },
+                                                        "header": [
+                                                            {
+                                                                "key": "Content-Type",
+                                                                "value": "application/json"
+                                                            },
+                                                            {
+                                                                "key": "Accept",
+                                                                "value": "application/json"
+                                                            }
+                                                        ],
+                                                        "method": "POST",
+                                                        "body": {
+                                                            "mode": "raw",
+                                                            "raw": "{\n  \"UPLOADID\": \"<string>\"\n}",
+                                                            "options": {
+                                                                "raw": {
+                                                                    "headerFamily": "json",
+                                                                    "language": "json"
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    "status": "OK",
+                                                    "code": 200,
+                                                    "header": [
+                                                        {
+                                                            "key": "Content-Type",
+                                                            "value": "application/json"
+                                                        }
+                                                    ],
+                                                    "body": "{\n  \"Status\": \"<string>\",\n  \"Result\": [\n    {\n      \"ID\": \"<integer>\",\n      \"NAME\": \"<string>\",\n      \"FILE NAME\": \"<string>\",\n      \"FILEEXTENSION\": \"<string>\",\n      \"NO. OF COLUMNS\": \"<integer>\"\n    },\n    {\n      \"ID\": \"<integer>\",\n      \"NAME\": \"<string>\",\n      \"FILE NAME\": \"<string>\",\n      \"FILEEXTENSION\": \"<string>\",\n      \"NO. OF COLUMNS\": \"<integer>\"\n    }\n  ]\n}",
+                                                    "cookie": [],
+                                                    "_postman_previewlanguage": "json"
+                                                }
+                                            ],
+                                            "event": [],
+                                            "protocolProfileBehavior": {
+                                                "disableBodyPruning": true
+                                            }
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "SaveTradePromodalUploadChunkFile",
+                                    "description": "",
+                                    "item": [
+                                        {
+                                            "id": "ab46f94c-7011-4caa-b51e-4483a6cd1114",
+                                            "name": "Step 5: File Upload - Chunk API",
+                                            "request": {
+                                                "name": "Step 5: File Upload - Chunk API",
+                                                "description": {
+                                                    "content": "Upload the file in chunks. For files > 1 MB, call this multiple times incrementing CurrentChunk from 0 to TotalChunks-1. A new GUID must be generated per upload.",
+                                                    "type": "text/plain"
+                                                },
+                                                "url": {
+                                                    "protocol": "http",
+                                                    "port": "8003",
+                                                    "path": [
+                                                        "v1",
+                                                        "api",
+                                                        "process",
+                                                        "SaveTradePromodalUploadChunkFile"
+                                                    ],
+                                                    "host": [
+                                                        "10",
+                                                        "167",
+                                                        "202",
+                                                        "164"
+                                                    ],
+                                                    "query": [],
+                                                    "variable": []
+                                                },
+                                                "header": [
+                                                    {
+                                                        "key": "Content-Type",
+                                                        "value": "multipart/form-data"
+                                                    },
+                                                    {
+                                                        "key": "Accept",
+                                                        "value": "application/json"
+                                                    }
+                                                ],
+                                                "method": "POST",
+                                                "body": {
+                                                    "mode": "formdata",
+                                                    "formdata": [
+                                                        {
+                                                            "description": {
+                                                                "content": "(Required) ",
+                                                                "type": "text/plain"
+                                                            },
+                                                            "key": "file",
+                                                            "type": "file"
+                                                        },
+                                                        {
+                                                            "description": {
+                                                                "content": "(Required) ",
+                                                                "type": "text/plain"
+                                                            },
+                                                            "key": "CurrentChunk",
+                                                            "value": "<integer>",
+                                                            "type": "text"
+                                                        },
+                                                        {
+                                                            "description": {
+                                                                "content": "(Required) ",
+                                                                "type": "text/plain"
+                                                            },
+                                                            "key": "TotalChunks",
+                                                            "value": "<integer>",
+                                                            "type": "text"
+                                                        },
+                                                        {
+                                                            "description": {
+                                                                "content": "(Required) New GUID per upload",
+                                                                "type": "text/plain"
+                                                            },
+                                                            "key": "Guid",
+                                                            "value": "<uuid>",
+                                                            "type": "text"
+                                                        },
+                                                        {
+                                                            "description": {
+                                                                "content": "(Required) ",
+                                                                "type": "text/plain"
+                                                            },
+                                                            "key": "FileName",
+                                                            "value": "<string>",
+                                                            "type": "text"
+                                                        }
+                                                    ]
+                                                },
+                                                "auth": null
+                                            },
+                                            "response": [
+                                                {
+                                                    "id": "5e7de74b-e578-404f-bbab-5470dcbf5045",
+                                                    "name": "Chunk upload acknowledgement. Save the returned Guid — it is used as uploadfoldername in Step 7.",
+                                                    "originalRequest": {
+                                                        "url": {
+                                                            "protocol": "http",
+                                                            "port": "8003",
+                                                            "path": [
+                                                                "v1",
+                                                                "api",
+                                                                "process",
+                                                                "SaveTradePromodalUploadChunkFile"
+                                                            ],
+                                                            "host": [
+                                                                "10",
+                                                                "167",
+                                                                "202",
+                                                                "164"
+                                                            ],
+                                                            "query": [],
+                                                            "variable": []
+                                                        },
+                                                        "header": [
+                                                            {
+                                                                "key": "Content-Type",
+                                                                "value": "multipart/form-data"
+                                                            },
+                                                            {
+                                                                "key": "Accept",
+                                                                "value": "application/json"
+                                                            }
+                                                        ],
+                                                        "method": "POST",
+                                                        "body": {
+                                                            "mode": "formdata",
+                                                            "formdata": [
+                                                                {
+                                                                    "description": {
+                                                                        "content": "(Required) ",
+                                                                        "type": "text/plain"
+                                                                    },
+                                                                    "key": "file",
+                                                                    "type": "file"
+                                                                },
+                                                                {
+                                                                    "description": {
+                                                                        "content": "(Required) ",
+                                                                        "type": "text/plain"
+                                                                    },
+                                                                    "key": "CurrentChunk",
+                                                                    "value": "<integer>",
+                                                                    "type": "text"
+                                                                },
+                                                                {
+                                                                    "description": {
+                                                                        "content": "(Required) ",
+                                                                        "type": "text/plain"
+                                                                    },
+                                                                    "key": "TotalChunks",
+                                                                    "value": "<integer>",
+                                                                    "type": "text"
+                                                                },
+                                                                {
+                                                                    "description": {
+                                                                        "content": "(Required) New GUID per upload",
+                                                                        "type": "text/plain"
+                                                                    },
+                                                                    "key": "Guid",
+                                                                    "value": "<uuid>",
+                                                                    "type": "text"
+                                                                },
+                                                                {
+                                                                    "description": {
+                                                                        "content": "(Required) ",
+                                                                        "type": "text/plain"
+                                                                    },
+                                                                    "key": "FileName",
+                                                                    "value": "<string>",
+                                                                    "type": "text"
+                                                                }
+                                                            ]
+                                                        }
+                                                    },
+                                                    "status": "OK",
+                                                    "code": 200,
+                                                    "header": [
+                                                        {
+                                                            "key": "Content-Type",
+                                                            "value": "application/json"
+                                                        }
+                                                    ],
+                                                    "body": "{\n  \"Status\": \"<string>\",\n  \"Guid\": \"<uuid>\",\n  \"FileName\": \"<string>\",\n  \"currentChunk\": \"<string>\",\n  \"totalChunks\": \"<string>\",\n  \"fCount\": \"<string>\"\n}",
+                                                    "cookie": [],
+                                                    "_postman_previewlanguage": "json"
+                                                }
+                                            ],
+                                            "event": [],
+                                            "protocolProfileBehavior": {
+                                                "disableBodyPruning": true
+                                            }
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "SaveNewTradeProcessPromodalUploadFile",
+                                    "description": "",
+                                    "item": [
+                                        {
+                                            "id": "1f4e9a33-921c-4dbd-87b3-b28a2862ee43",
+                                            "name": "Step 7: File Details Entry in CBOS Source",
+                                            "request": {
+                                                "name": "Step 7: File Details Entry in CBOS Source",
+                                                "description": {
+                                                    "content": "Register the uploaded file in CBOS so the backend EXE picks it up from the GUID folder. Must be called once per file. The GUID in uploadfoldername must exactly match the GUID returned in Step 5.",
+                                                    "type": "text/plain"
+                                                },
+                                                "url": {
+                                                    "protocol": "http",
+                                                    "port": "8003",
+                                                    "path": [
+                                                        "v1",
+                                                        "api",
+                                                        "process",
+                                                        "SaveNewTradeProcessPromodalUploadFile"
+                                                    ],
+                                                    "host": [
+                                                        "10",
+                                                        "167",
+                                                        "202",
+                                                        "164"
+                                                    ],
+                                                    "query": [],
+                                                    "variable": []
+                                                },
+                                                "header": [
+                                                    {
+                                                        "key": "Content-Type",
+                                                        "value": "application/json"
+                                                    },
+                                                    {
+                                                        "key": "Accept",
+                                                        "value": "application/json"
+                                                    }
+                                                ],
+                                                "method": "POST",
+                                                "body": {
+                                                    "mode": "raw",
+                                                    "raw": "{\n  \"uploadid\": \"<integer>\",\n  \"loginid\": \"<string>\",\n  \"uploadfoldername\": \"<uuid>\",\n  \"uploadfilename\": \"<string>\",\n  \"paraM9\": \"<string>\",\n  \"ipaddress\": \"<string>\",\n  \"file\": \"<string>\",\n  \"paraM1\": \"<string>\",\n  \"paraM2\": \"<string>\",\n  \"paraM3\": \"<string>\",\n  \"paraM4\": \"<string>\",\n  \"paraM5\": \"<string>\",\n  \"paraM6\": \"<string>\",\n  \"paraM7\": \"<string>\",\n  \"paraM8\": \"<string>\",\n  \"chunkFileUpload\": \"<string>\"\n}",
+                                                    "options": {
+                                                        "raw": {
+                                                            "headerFamily": "json",
+                                                            "language": "json"
+                                                        }
+                                                    }
+                                                },
+                                                "auth": null
+                                            },
+                                            "response": [
+                                                {
+                                                    "id": "aa276b88-6157-48c9-bd38-b174084d2547",
+                                                    "name": "File entry registered for backend EXE pickup",
+                                                    "originalRequest": {
+                                                        "url": {
+                                                            "protocol": "http",
+                                                            "port": "8003",
+                                                            "path": [
+                                                                "v1",
+                                                                "api",
+                                                                "process",
+                                                                "SaveNewTradeProcessPromodalUploadFile"
+                                                            ],
+                                                            "host": [
+                                                                "10",
+                                                                "167",
+                                                                "202",
+                                                                "164"
+                                                            ],
+                                                            "query": [],
+                                                            "variable": []
+                                                        },
+                                                        "header": [
+                                                            {
+                                                                "key": "Content-Type",
+                                                                "value": "application/json"
+                                                            },
+                                                            {
+                                                                "key": "Accept",
+                                                                "value": "application/json"
+                                                            }
+                                                        ],
+                                                        "method": "POST",
+                                                        "body": {
+                                                            "mode": "raw",
+                                                            "raw": "{\n  \"uploadid\": \"<integer>\",\n  \"loginid\": \"<string>\",\n  \"uploadfoldername\": \"<uuid>\",\n  \"uploadfilename\": \"<string>\",\n  \"paraM9\": \"<string>\",\n  \"ipaddress\": \"<string>\",\n  \"file\": \"<string>\",\n  \"paraM1\": \"<string>\",\n  \"paraM2\": \"<string>\",\n  \"paraM3\": \"<string>\",\n  \"paraM4\": \"<string>\",\n  \"paraM5\": \"<string>\",\n  \"paraM6\": \"<string>\",\n  \"paraM7\": \"<string>\",\n  \"paraM8\": \"<string>\",\n  \"chunkFileUpload\": \"<string>\"\n}",
+                                                            "options": {
+                                                                "raw": {
+                                                                    "headerFamily": "json",
+                                                                    "language": "json"
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    "status": "OK",
+                                                    "code": 200,
+                                                    "header": [
+                                                        {
+                                                            "key": "Content-Type",
+                                                            "value": "application/json"
+                                                        }
+                                                    ],
+                                                    "body": "{\n  \"Status\": \"<string>\",\n  \"Result\": \"<string>\"\n}",
+                                                    "cookie": [],
+                                                    "_postman_previewlanguage": "json"
+                                                }
+                                            ],
+                                            "event": [],
+                                            "protocolProfileBehavior": {
+                                                "disableBodyPruning": true
+                                            }
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "UpdateNewTradeProcessProcessDetailsIsMandatory",
+                                    "description": "",
+                                    "item": [
+                                        {
+                                            "id": "88f81288-7f07-4e2e-b768-d0ced52abc32",
+                                            "name": "Step 8: Skip Optional Subprocess in Template",
+                                            "request": {
+                                                "name": "Step 8: Skip Optional Subprocess in Template",
+                                                "description": {
+                                                    "content": "Used when an optional file upload step is not required for a given trade date. Marks the step as skippable before triggering the process. Applies to steps where ISOPTIONALVISIBLE=true in the Step 2 response.",
+                                                    "type": "text/plain"
+                                                },
+                                                "url": {
+                                                    "protocol": "http",
+                                                    "port": "8003",
+                                                    "path": [
+                                                        "v1",
+                                                        "api",
+                                                        "process",
+                                                        "UpdateNewTradeProcessProcessDetailsIsMandatory"
+                                                    ],
+                                                    "host": [
+                                                        "10",
+                                                        "167",
+                                                        "202",
+                                                        "164"
+                                                    ],
+                                                    "query": [],
+                                                    "variable": []
+                                                },
+                                                "header": [
+                                                    {
+                                                        "key": "Content-Type",
+                                                        "value": "application/json"
+                                                    },
+                                                    {
+                                                        "key": "Accept",
+                                                        "value": "application/json"
+                                                    }
+                                                ],
+                                                "method": "POST",
+                                                "body": {
+                                                    "mode": "raw",
+                                                    "raw": "{\n  \"PROCESSID\": \"<string>\",\n  \"STEPNO\": \"<string>\",\n  \"ISOPTIONAL\": \"<string>\"\n}",
+                                                    "options": {
+                                                        "raw": {
+                                                            "headerFamily": "json",
+                                                            "language": "json"
+                                                        }
+                                                    }
+                                                },
+                                                "auth": null
+                                            },
+                                            "response": [
+                                                {
+                                                    "id": "2a8fdced-1087-499e-a9c9-ca0c7c6b91b8",
+                                                    "name": "Update confirmation",
+                                                    "originalRequest": {
+                                                        "url": {
+                                                            "protocol": "http",
+                                                            "port": "8003",
+                                                            "path": [
+                                                                "v1",
+                                                                "api",
+                                                                "process",
+                                                                "UpdateNewTradeProcessProcessDetailsIsMandatory"
+                                                            ],
+                                                            "host": [
+                                                                "10",
+                                                                "167",
+                                                                "202",
+                                                                "164"
+                                                            ],
+                                                            "query": [],
+                                                            "variable": []
+                                                        },
+                                                        "header": [
+                                                            {
+                                                                "key": "Content-Type",
+                                                                "value": "application/json"
+                                                            },
+                                                            {
+                                                                "key": "Accept",
+                                                                "value": "application/json"
+                                                            }
+                                                        ],
+                                                        "method": "POST",
+                                                        "body": {
+                                                            "mode": "raw",
+                                                            "raw": "{\n  \"PROCESSID\": \"<string>\",\n  \"STEPNO\": \"<string>\",\n  \"ISOPTIONAL\": \"<string>\"\n}",
+                                                            "options": {
+                                                                "raw": {
+                                                                    "headerFamily": "json",
+                                                                    "language": "json"
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    "status": "OK",
+                                                    "code": 200,
+                                                    "header": [
+                                                        {
+                                                            "key": "Content-Type",
+                                                            "value": "application/json"
+                                                        }
+                                                    ],
+                                                    "body": "{\n  \"Result\": {\n    \"Table1\": [\n      {\n        \"MSG\": \"<string>\"\n      },\n      {\n        \"MSG\": \"<string>\"\n      }\n    ]\n  }\n}",
+                                                    "cookie": [],
+                                                    "_postman_previewlanguage": "json"
+                                                }
+                                            ],
+                                            "event": [],
+                                            "protocolProfileBehavior": {
+                                                "disableBodyPruning": true
+                                            }
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "GetCollateralValuation",
+                                    "description": "",
+                                    "item": [
+                                        {
+                                            "id": "ed858c0d-5aef-4a28-b868-32608d040714",
+                                            "name": "Collateral Valuation - Check Status / Trigger (Steps 17-18)",
+                                            "request": {
+                                                "name": "Collateral Valuation - Check Status / Trigger (Steps 17-18)",
+                                                "description": {
+                                                    "content": "BUTTONNAME=REFRESH polls whether a valuation run is in progress (Step 17; empty Table1 = not yet triggered). BUTTONNAME=COLLATERAL_VALUATION_DATEWISE triggers date-wise Collateral Valuation (Step 18). This starts the process asynchronously — re-check the GTG endpoint until MSG=TRUE.",
+                                                    "type": "text/plain"
+                                                },
+                                                "url": {
+                                                    "protocol": "http",
+                                                    "port": "8003",
+                                                    "path": [
+                                                        "v1",
+                                                        "api",
+                                                        "process",
+                                                        "GetCollateralValuation"
+                                                    ],
+                                                    "host": [
+                                                        "10",
+                                                        "167",
+                                                        "202",
+                                                        "164"
+                                                    ],
+                                                    "query": [],
+                                                    "variable": []
+                                                },
+                                                "header": [
+                                                    {
+                                                        "key": "Content-Type",
+                                                        "value": "application/json"
+                                                    },
+                                                    {
+                                                        "key": "Accept",
+                                                        "value": "application/json"
+                                                    }
+                                                ],
+                                                "method": "POST",
+                                                "body": {
+                                                    "mode": "raw",
+                                                    "raw": "{\n  \"BUTTONNAME\": \"REFRESH\",\n  \"LOGINID\": \"<string>\",\n  \"MARGINDATE\": \"<string>\"\n}",
+                                                    "options": {
+                                                        "raw": {
+                                                            "headerFamily": "json",
+                                                            "language": "json"
+                                                        }
+                                                    }
+                                                },
+                                                "auth": null
+                                            },
+                                            "response": [
+                                                {
+                                                    "id": "296d0250-4ef1-4e6d-8dc8-8b9155ebd382",
+                                                    "name": "Table1 empty = not yet triggered; populated = process started/running",
+                                                    "originalRequest": {
+                                                        "url": {
+                                                            "protocol": "http",
+                                                            "port": "8003",
+                                                            "path": [
+                                                                "v1",
+                                                                "api",
+                                                                "process",
+                                                                "GetCollateralValuation"
+                                                            ],
+                                                            "host": [
+                                                                "10",
+                                                                "167",
+                                                                "202",
+                                                                "164"
+                                                            ],
+                                                            "query": [],
+                                                            "variable": []
+                                                        },
+                                                        "header": [
+                                                            {
+                                                                "key": "Content-Type",
+                                                                "value": "application/json"
+                                                            },
+                                                            {
+                                                                "key": "Accept",
+                                                                "value": "application/json"
+                                                            }
+                                                        ],
+                                                        "method": "POST",
+                                                        "body": {
+                                                            "mode": "raw",
+                                                            "raw": "{\n  \"BUTTONNAME\": \"REFRESH\",\n  \"LOGINID\": \"<string>\",\n  \"MARGINDATE\": \"<string>\"\n}",
+                                                            "options": {
+                                                                "raw": {
+                                                                    "headerFamily": "json",
+                                                                    "language": "json"
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    "status": "OK",
+                                                    "code": 200,
+                                                    "header": [
+                                                        {
+                                                            "key": "Content-Type",
+                                                            "value": "application/json"
+                                                        }
+                                                    ],
+                                                    "body": "{\n  \"Status\": \"<string>\",\n  \"Result\": {\n    \"Table1\": [\n      {\n        \"MSG\": \"<string>\"\n      },\n      {\n        \"MSG\": \"<string>\"\n      }\n    ]\n  }\n}",
+                                                    "cookie": [],
+                                                    "_postman_previewlanguage": "json"
+                                                }
+                                            ],
+                                            "event": [],
+                                            "protocolProfileBehavior": {
+                                                "disableBodyPruning": true
+                                            }
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "MTFTradeProcessCollateralAllocation",
+                                    "description": "",
+                                    "item": [
+                                        {
+                                            "id": "7c354799-fde3-474e-ab48-29717976cb80",
+                                            "name": "Step 21: Collateral Allocation - Trigger",
+                                            "request": {
+                                                "name": "Step 21: Collateral Allocation - Trigger",
+                                                "description": {
+                                                    "content": "Triggers MTF Collateral Allocation. Re-poll the Collateral Allocation GTG (Step 19) to confirm completion before proceeding to Fund Transfer.",
+                                                    "type": "text/plain"
+                                                },
+                                                "url": {
+                                                    "protocol": "http",
+                                                    "port": "8003",
+                                                    "path": [
+                                                        "v1",
+                                                        "api",
+                                                        "process",
+                                                        "MTFTradeProcessCollateralAllocation"
+                                                    ],
+                                                    "host": [
+                                                        "10",
+                                                        "167",
+                                                        "202",
+                                                        "164"
+                                                    ],
+                                                    "query": [],
+                                                    "variable": []
+                                                },
+                                                "header": [
+                                                    {
+                                                        "key": "Content-Type",
+                                                        "value": "application/json"
+                                                    },
+                                                    {
+                                                        "key": "Accept",
+                                                        "value": "application/json"
+                                                    }
+                                                ],
+                                                "method": "POST",
+                                                "body": {
+                                                    "mode": "raw",
+                                                    "raw": "{\n  \"LOGINID\": \"<string>\",\n  \"TRADEDATE\": \"<string>\"\n}",
+                                                    "options": {
+                                                        "raw": {
+                                                            "headerFamily": "json",
+                                                            "language": "json"
+                                                        }
+                                                    }
+                                                },
+                                                "auth": null
+                                            },
+                                            "response": [
+                                                {
+                                                    "id": "182ae4f6-f883-4987-a187-6c544ce13372",
+                                                    "name": "Process started confirmation",
+                                                    "originalRequest": {
+                                                        "url": {
+                                                            "protocol": "http",
+                                                            "port": "8003",
+                                                            "path": [
+                                                                "v1",
+                                                                "api",
+                                                                "process",
+                                                                "MTFTradeProcessCollateralAllocation"
+                                                            ],
+                                                            "host": [
+                                                                "10",
+                                                                "167",
+                                                                "202",
+                                                                "164"
+                                                            ],
+                                                            "query": [],
+                                                            "variable": []
+                                                        },
+                                                        "header": [
+                                                            {
+                                                                "key": "Content-Type",
+                                                                "value": "application/json"
+                                                            },
+                                                            {
+                                                                "key": "Accept",
+                                                                "value": "application/json"
+                                                            }
+                                                        ],
+                                                        "method": "POST",
+                                                        "body": {
+                                                            "mode": "raw",
+                                                            "raw": "{\n  \"LOGINID\": \"<string>\",\n  \"TRADEDATE\": \"<string>\"\n}",
+                                                            "options": {
+                                                                "raw": {
+                                                                    "headerFamily": "json",
+                                                                    "language": "json"
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    "status": "OK",
+                                                    "code": 200,
+                                                    "header": [
+                                                        {
+                                                            "key": "Content-Type",
+                                                            "value": "application/json"
+                                                        }
+                                                    ],
+                                                    "body": "{\n  \"Status\": \"<string>\",\n  \"Result\": {\n    \"Table1\": [\n      {\n        \"MSG\": \"<string>\"\n      },\n      {\n        \"MSG\": \"<string>\"\n      }\n    ]\n  }\n}",
+                                                    "cookie": [],
+                                                    "_postman_previewlanguage": "json"
+                                                }
+                                            ],
+                                            "event": [],
+                                            "protocolProfileBehavior": {
+                                                "disableBodyPruning": true
+                                            }
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "MTFTradeProcessFundTransfer",
+                                    "description": "",
+                                    "item": [
+                                        {
+                                            "id": "a4fa4437-7245-402c-b7e2-a37ed8cc0ad1",
+                                            "name": "Step 24: Fund Transfer - Trigger",
+                                            "request": {
+                                                "name": "Step 24: Fund Transfer - Trigger",
+                                                "description": {
+                                                    "content": "Triggers MTF Fund Transfer. Requires the SQL Server Agent job 'MTF_RISK_UPDATE' to exist on the target server — otherwise returns an error indicating the job does not exist.",
+                                                    "type": "text/plain"
+                                                },
+                                                "url": {
+                                                    "protocol": "http",
+                                                    "port": "8003",
+                                                    "path": [
+                                                        "v1",
+                                                        "api",
+                                                        "process",
+                                                        "MTFTradeProcessFundTransfer"
+                                                    ],
+                                                    "host": [
+                                                        "10",
+                                                        "167",
+                                                        "202",
+                                                        "164"
+                                                    ],
+                                                    "query": [],
+                                                    "variable": []
+                                                },
+                                                "header": [
+                                                    {
+                                                        "key": "Content-Type",
+                                                        "value": "application/json"
+                                                    },
+                                                    {
+                                                        "key": "Accept",
+                                                        "value": "application/json"
+                                                    }
+                                                ],
+                                                "method": "POST",
+                                                "body": {
+                                                    "mode": "raw",
+                                                    "raw": "{\n  \"LOGINID\": \"<string>\",\n  \"TRADEDATE\": \"<string>\"\n}",
+                                                    "options": {
+                                                        "raw": {
+                                                            "headerFamily": "json",
+                                                            "language": "json"
+                                                        }
+                                                    }
+                                                },
+                                                "auth": null
+                                            },
+                                            "response": [
+                                                {
+                                                    "id": "2f4ca946-117a-4482-90fe-503baee946d3",
+                                                    "name": "Fund transfer result (or SQL job-not-found error)",
+                                                    "originalRequest": {
+                                                        "url": {
+                                                            "protocol": "http",
+                                                            "port": "8003",
+                                                            "path": [
+                                                                "v1",
+                                                                "api",
+                                                                "process",
+                                                                "MTFTradeProcessFundTransfer"
+                                                            ],
+                                                            "host": [
+                                                                "10",
+                                                                "167",
+                                                                "202",
+                                                                "164"
+                                                            ],
+                                                            "query": [],
+                                                            "variable": []
+                                                        },
+                                                        "header": [
+                                                            {
+                                                                "key": "Content-Type",
+                                                                "value": "application/json"
+                                                            },
+                                                            {
+                                                                "key": "Accept",
+                                                                "value": "application/json"
+                                                            }
+                                                        ],
+                                                        "method": "POST",
+                                                        "body": {
+                                                            "mode": "raw",
+                                                            "raw": "{\n  \"LOGINID\": \"<string>\",\n  \"TRADEDATE\": \"<string>\"\n}",
+                                                            "options": {
+                                                                "raw": {
+                                                                    "headerFamily": "json",
+                                                                    "language": "json"
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    "status": "OK",
+                                                    "code": 200,
+                                                    "header": [
+                                                        {
+                                                            "key": "Content-Type",
+                                                            "value": "application/json"
+                                                        }
+                                                    ],
+                                                    "body": "{\n  \"Status\": \"<string>\",\n  \"Result\": [\n    {\n      \"Result\": \"<string>\"\n    },\n    {\n      \"Result\": \"<string>\"\n    }\n  ]\n}",
+                                                    "cookie": [],
+                                                    "_postman_previewlanguage": "json"
+                                                }
+                                            ],
+                                            "event": [],
+                                            "protocolProfileBehavior": {
+                                                "disableBodyPruning": true
+                                            }
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "MTFTradeProcess",
+                                    "description": "",
+                                    "item": [
+                                        {
+                                            "id": "40ba9bf4-5b5c-47f4-be4c-f185cab5ebea",
+                                            "name": "MTF Buy/Sell/Weekly-Closure Process (Steps 26, 27, 29, 32)",
+                                            "request": {
+                                                "name": "MTF Buy/Sell/Weekly-Closure Process (Steps 26, 27, 29, 32)",
+                                                "description": {
+                                                    "content": "Runs a specific MTF sub-process for the given date, selected via the TYPE field: BUY PROCESS (Step 26), BUY POSTING (Step 27), SELL PROCESS AND POSTING (Step 29), WEEKLY AUTOCLOSURE (Step 32, run only at 4 PM on trading days). MTF processes depend on EQ Bill Posting having completed (see Step 25 GTG).",
+                                                    "type": "text/plain"
+                                                },
+                                                "url": {
+                                                    "protocol": "http",
+                                                    "port": "8003",
+                                                    "path": [
+                                                        "v1",
+                                                        "api",
+                                                        "process",
+                                                        "MTFTradeProcess"
+                                                    ],
+                                                    "host": [
+                                                        "10",
+                                                        "167",
+                                                        "202",
+                                                        "164"
+                                                    ],
+                                                    "query": [],
+                                                    "variable": []
+                                                },
+                                                "header": [
+                                                    {
+                                                        "key": "Content-Type",
+                                                        "value": "application/json"
+                                                    },
+                                                    {
+                                                        "key": "Accept",
+                                                        "value": "application/json"
+                                                    }
+                                                ],
+                                                "method": "POST",
+                                                "body": {
+                                                    "mode": "raw",
+                                                    "raw": "{\n  \"LOGINID\": \"<string>\",\n  \"TRADEDATE\": \"<string>\",\n  \"TYPE\": \"BUY PROCESS\"\n}",
+                                                    "options": {
+                                                        "raw": {
+                                                            "headerFamily": "json",
+                                                            "language": "json"
+                                                        }
+                                                    }
+                                                },
+                                                "auth": null
+                                            },
+                                            "response": [
+                                                {
+                                                    "id": "7cf9f510-df84-4057-961e-3dbfd3408330",
+                                                    "name": "Process completion result",
+                                                    "originalRequest": {
+                                                        "url": {
+                                                            "protocol": "http",
+                                                            "port": "8003",
+                                                            "path": [
+                                                                "v1",
+                                                                "api",
+                                                                "process",
+                                                                "MTFTradeProcess"
+                                                            ],
+                                                            "host": [
+                                                                "10",
+                                                                "167",
+                                                                "202",
+                                                                "164"
+                                                            ],
+                                                            "query": [],
+                                                            "variable": []
+                                                        },
+                                                        "header": [
+                                                            {
+                                                                "key": "Content-Type",
+                                                                "value": "application/json"
+                                                            },
+                                                            {
+                                                                "key": "Accept",
+                                                                "value": "application/json"
+                                                            }
+                                                        ],
+                                                        "method": "POST",
+                                                        "body": {
+                                                            "mode": "raw",
+                                                            "raw": "{\n  \"LOGINID\": \"<string>\",\n  \"TRADEDATE\": \"<string>\",\n  \"TYPE\": \"BUY PROCESS\"\n}",
+                                                            "options": {
+                                                                "raw": {
+                                                                    "headerFamily": "json",
+                                                                    "language": "json"
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    "status": "OK",
+                                                    "code": 200,
+                                                    "header": [
+                                                        {
+                                                            "key": "Content-Type",
+                                                            "value": "application/json"
+                                                        }
+                                                    ],
+                                                    "body": "{\n  \"Status\": \"<string>\",\n  \"Result\": [\n    {\n      \"MSG\": \"<string>\"\n    },\n    {\n      \"MSG\": \"<string>\"\n    }\n  ]\n}",
+                                                    "cookie": [],
+                                                    "_postman_previewlanguage": "json"
+                                                }
+                                            ],
+                                            "event": [],
+                                            "protocolProfileBehavior": {
+                                                "disableBodyPruning": true
+                                            }
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "CombinedMarginProcess",
+                                    "description": "",
+                                    "item": [
+                                        {
+                                            "id": "4739f86b-dc64-4e3c-a2c8-90362444ea1d",
+                                            "name": "Daily Margin Reporting - Check Status / Trigger (Steps 35-36)",
+                                            "request": {
+                                                "name": "Daily Margin Reporting - Check Status / Trigger (Steps 35-36)",
+                                                "description": {
+                                                    "content": "BUTTONNAME=REFRESH polls the combined margin engine (Step 35; empty Table1 = not triggered yet). BUTTONNAME=COMBINEDMARGIN_PROCESS triggers the combined daily margin reporting process for the given date (Step 36).",
+                                                    "type": "text/plain"
+                                                },
+                                                "url": {
+                                                    "protocol": "http",
+                                                    "port": "8003",
+                                                    "path": [
+                                                        "v1",
+                                                        "api",
+                                                        "process",
+                                                        "CombinedMarginProcess"
+                                                    ],
+                                                    "host": [
+                                                        "10",
+                                                        "167",
+                                                        "202",
+                                                        "164"
+                                                    ],
+                                                    "query": [],
+                                                    "variable": []
+                                                },
+                                                "header": [
+                                                    {
+                                                        "key": "Content-Type",
+                                                        "value": "application/json"
+                                                    },
+                                                    {
+                                                        "key": "Accept",
+                                                        "value": "application/json"
+                                                    }
+                                                ],
+                                                "method": "POST",
+                                                "body": {
+                                                    "mode": "raw",
+                                                    "raw": "{\n  \"BUTTONNAME\": \"REFRESH\",\n  \"LOGINID\": \"<string>\",\n  \"MARGINDATE\": \"<string>\"\n}",
+                                                    "options": {
+                                                        "raw": {
+                                                            "headerFamily": "json",
+                                                            "language": "json"
+                                                        }
+                                                    }
+                                                },
+                                                "auth": null
+                                            },
+                                            "response": [
+                                                {
+                                                    "id": "2d9da2eb-cdfe-4b18-82a9-77ca75fd9cf3",
+                                                    "name": "Table1 empty = not yet triggered; populated = process started/running",
+                                                    "originalRequest": {
+                                                        "url": {
+                                                            "protocol": "http",
+                                                            "port": "8003",
+                                                            "path": [
+                                                                "v1",
+                                                                "api",
+                                                                "process",
+                                                                "CombinedMarginProcess"
+                                                            ],
+                                                            "host": [
+                                                                "10",
+                                                                "167",
+                                                                "202",
+                                                                "164"
+                                                            ],
+                                                            "query": [],
+                                                            "variable": []
+                                                        },
+                                                        "header": [
+                                                            {
+                                                                "key": "Content-Type",
+                                                                "value": "application/json"
+                                                            },
+                                                            {
+                                                                "key": "Accept",
+                                                                "value": "application/json"
+                                                            }
+                                                        ],
+                                                        "method": "POST",
+                                                        "body": {
+                                                            "mode": "raw",
+                                                            "raw": "{\n  \"BUTTONNAME\": \"REFRESH\",\n  \"LOGINID\": \"<string>\",\n  \"MARGINDATE\": \"<string>\"\n}",
+                                                            "options": {
+                                                                "raw": {
+                                                                    "headerFamily": "json",
+                                                                    "language": "json"
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    "status": "OK",
+                                                    "code": 200,
+                                                    "header": [
+                                                        {
+                                                            "key": "Content-Type",
+                                                            "value": "application/json"
+                                                        }
+                                                    ],
+                                                    "body": "{\n  \"Status\": \"<string>\",\n  \"Result\": {\n    \"Table1\": [\n      {\n        \"MSG\": \"<string>\"\n      },\n      {\n        \"MSG\": \"<string>\"\n      }\n    ]\n  }\n}",
+                                                    "cookie": [],
+                                                    "_postman_previewlanguage": "json"
+                                                }
+                                            ],
+                                            "event": [],
+                                            "protocolProfileBehavior": {
+                                                "disableBodyPruning": true
+                                            }
+                                        }
+                                    ]
+                                }
+                            ]
+                        },
+                        {
+                            "name": "brokerage",
+                            "description": "",
+                            "item": [
+                                {
+                                    "name": "getdropdown",
+                                    "description": "",
+                                    "item": [
+                                        {
+                                            "id": "3fb3ee73-ec92-4db4-a102-2f724985a85b",
+                                            "name": "Step 6: Get Existing Process ID",
+                                            "request": {
+                                                "name": "Step 6: Get Existing Process ID",
+                                                "description": {
+                                                    "content": "Look up the Process ID for the current segment and trade date to confirm what was created in Step 2.",
+                                                    "type": "text/plain"
+                                                },
+                                                "url": {
+                                                    "protocol": "http",
+                                                    "port": "8003",
+                                                    "path": [
+                                                        "v1",
+                                                        "api",
+                                                        "brokerage",
+                                                        "getdropdown"
+                                                    ],
+                                                    "host": [
+                                                        "10",
+                                                        "167",
+                                                        "202",
+                                                        "164"
+                                                    ],
+                                                    "query": [],
+                                                    "variable": []
+                                                },
+                                                "header": [
+                                                    {
+                                                        "key": "Content-Type",
+                                                        "value": "application/json"
+                                                    },
+                                                    {
+                                                        "key": "Accept",
+                                                        "value": "application/json"
+                                                    }
+                                                ],
+                                                "method": "POST",
+                                                "body": {
+                                                    "mode": "raw",
+                                                    "raw": "{\n  \"TAG\": \"<string>\",\n  \"LOGINID\": \"<string>\",\n  \"FILTER1\": \"NCDEXPHY\",\n  \"FILTER2\": \"<date>\",\n  \"extraoption2\": \"<string>\",\n  \"extraoption3\": \"<string>\"\n}",
+                                                    "options": {
+                                                        "raw": {
+                                                            "headerFamily": "json",
+                                                            "language": "json"
+                                                        }
+                                                    }
+                                                },
+                                                "auth": null
+                                            },
+                                            "response": [
+                                                {
+                                                    "id": "7afcd427-0f86-41ea-961c-4a4a07514d41",
+                                                    "name": "Matching Process ID(s)",
+                                                    "originalRequest": {
+                                                        "url": {
+                                                            "protocol": "http",
+                                                            "port": "8003",
+                                                            "path": [
+                                                                "v1",
+                                                                "api",
+                                                                "brokerage",
+                                                                "getdropdown"
+                                                            ],
+                                                            "host": [
+                                                                "10",
+                                                                "167",
+                                                                "202",
+                                                                "164"
+                                                            ],
+                                                            "query": [],
+                                                            "variable": []
+                                                        },
+                                                        "header": [
+                                                            {
+                                                                "key": "Content-Type",
+                                                                "value": "application/json"
+                                                            },
+                                                            {
+                                                                "key": "Accept",
+                                                                "value": "application/json"
+                                                            }
+                                                        ],
+                                                        "method": "POST",
+                                                        "body": {
+                                                            "mode": "raw",
+                                                            "raw": "{\n  \"TAG\": \"<string>\",\n  \"LOGINID\": \"<string>\",\n  \"FILTER1\": \"NCDEXPHY\",\n  \"FILTER2\": \"<date>\",\n  \"extraoption2\": \"<string>\",\n  \"extraoption3\": \"<string>\"\n}",
+                                                            "options": {
+                                                                "raw": {
+                                                                    "headerFamily": "json",
+                                                                    "language": "json"
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    "status": "OK",
+                                                    "code": 200,
+                                                    "header": [
+                                                        {
+                                                            "key": "Content-Type",
+                                                            "value": "application/json"
+                                                        }
+                                                    ],
+                                                    "body": "{\n  \"Status\": \"<string>\",\n  \"Result\": [\n    {\n      \"_KEY\": \"<integer>\",\n      \"_DESC\": \"<string>\"\n    },\n    {\n      \"_KEY\": \"<integer>\",\n      \"_DESC\": \"<string>\"\n    }\n  ]\n}",
+                                                    "cookie": [],
+                                                    "_postman_previewlanguage": "json"
+                                                }
+                                            ],
+                                            "event": [],
+                                            "protocolProfileBehavior": {
+                                                "disableBodyPruning": true
+                                            }
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "event": [],
+    "variable": [
+        {
+            "key": "baseUrl",
+            "value": "http://10.167.202.234:8087"
+        }
+    ],
+    "info": {
+        "_postman_id": "19144bb9-a68d-4c43-9445-c7285d087aea",
+        "name": "EDP Trade Process API",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+        "description": {
+            "content": "API Reference & Integration Guide for the EDP Trade Process — a 39-step workflow (Steps 1-39) covering Segment selection, Process ID creation, file upload, process triggering, post-process status checks, collateral & fund transfer, MTF process suite, corporate actions, and margin reporting. The same 39-step workflow applies to all 10 supported market segments (EQ, DR, CUR, SLB, NCDEX, NCDEXPHY, MCX, MCXPHY, NSECOM, MF) — only the Segment code and relevant file names change.\n\nStep type legend: GTG = Good to Go, CHK = Check Status, TRG = Trigger, MTF = MTF Process, CORE = Core API.\n\nV5 change: a `TradeDate` field (format YYYY-MM-DD) was added to every `file_process_status` call (Steps 1, 3, 9, 11-16, 19-20, 22-23, 25, 28, 30-31, 33, 37-38). It appears immediately after `Segment` where present, or as the first field where `Segment` is absent. All other steps (2, 4-8, 10, 17-18, 21, 24, 26-27, 29, 32, 34-36, 39) are unchanged from V4.",
+            "type": "text/plain"
+        }
+    }
+}

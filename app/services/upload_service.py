@@ -260,10 +260,17 @@ def _process_batch(task: SegmentBatchTask) -> None:
         # and fetch each UploadID's matching rule, up front. Bounded retry so a
         # transient CBOS blip doesn't hot-loop the batch forever - after
         # cbos_max_retries attempts the files are routed to uploadFailed.
+        # Reuse this segment/date's PROCESSID if CBOS already has one (Step 6,
+        # getdropdown(EXISTINGPROCESSID)) instead of minting a new one on every
+        # rescan - see BaseCBOSClient.find_existing_process_id.
+        existing_process_id = client.find_existing_process_id(task.segment, trade_date) or "0"
+        if existing_process_id != "0":
+            logger.info("Batch %s: reusing existing PROCESSID=%s", task.key, existing_process_id)
+
         reservation = rules = None
         for attempt in range(1, settings.cbos_max_retries + 1):
             try:
-                reservation = client.reserve_process(task.segment, trade_date)
+                reservation = client.reserve_process(task.segment, trade_date, existing_process_id)
                 rules = upload_matching.fetch_upload_rules(reservation.candidates, client)
                 break
             except CBOSUploadError as exc:
@@ -303,6 +310,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
 
         uploaded_candidates: list[tuple] = []  # (record, dest_file_path, request_log)
         filled_upload_ids: set[str] = set()    # UploadIDs that actually received a file (Steps 5+7)
+        candidates_by_upload_id = {c.upload_id: c for c in reservation.candidates}
 
         for file_path, exchange in files:
             record = repo.create_audit_record(file_path, task.folder_date, task.segment, exchange)
@@ -330,6 +338,20 @@ def _process_batch(task: SegmentBatchTask) -> None:
                 cbos_upload_settings=json.dumps(rule.raw_settings, default=str),
             )
             repo.commit()
+
+            # CBOS-side idempotency: reusing an EXISTING PROCESSID (see
+            # find_existing_process_id above) reads back each Table2 slot's
+            # real STATUS instead of resetting it to PENDING. A slot CBOS
+            # already reports as done must not receive another file - move
+            # it out of the source without re-uploading.
+            candidate = candidates_by_upload_id.get(str(rule.upload_id))
+            if candidate is not None and not candidate.needs_upload:
+                logger.info("Idempotent skip: %s already accepted by CBOS (UploadID=%s, ProcessID=%s, STATUS=%s)",
+                            file_path.name, rule.upload_id, process_id, candidate.status)
+                request_log.append({"step": "idempotent_skip", "reason": "cbos_status", "status": candidate.status})
+                apply_outcome(repo, record, file_path, upload_outcome.idempotent_skip(), request_log)
+                filled_upload_ids.add(str(rule.upload_id))
+                continue
 
             # Idempotency: if this exact file already reached CBOS for this
             # segment/date/UploadID (e.g. a re-drop after a Step-9 timeout), it's
@@ -383,14 +405,19 @@ def _process_batch(task: SegmentBatchTask) -> None:
         except CBOSUploadError as exc:
             logger.warning("Batch %s: getdropdown(EXISTINGPROCESSID) failed (non-fatal): %s", task.key, exc)
 
-        # Step 8: mark every non-zero Table2 slot that received NO file optional,
-        # so CBOS's FILEUPLOAD good-to-go isn't held waiting on a file that doesn't
-        # exist today. Non-fatal per slot. NOTE: the trigger (Step 10) and every
+        # Step 8 (Skip Optional Subprocess in Template): every Table2 slot that
+        # did NOT receive a file this batch gets marked skippable - both the
+        # non-zero UploadID slots nothing was uploaded to, AND the zero-UploadID
+        # slots (computation/posting steps - Brokerage Computation, Bill
+        # Posting, ...) that never take a file at all, so those steps can still
+        # move forward. Already-resolved slots (needs_upload False - an earlier
+        # batch on this PROCESSID already filled or skipped them) are left
+        # alone. Non-fatal per slot. NOTE: the trigger (Step 10) and every
         # downstream step are owned by the EDP_Billing scheduler, not this repo -
         # our job ends at "make FILEUPLOAD go TRUE". See docs/CBOS_HANDOFF_CONTRACT.md.
         empty_slots = [
             c for c in reservation.candidates
-            if c.expects_a_file and c.upload_id not in filled_upload_ids
+            if c.needs_upload and c.upload_id not in filled_upload_ids
         ]
         for candidate in empty_slots:
             try:
@@ -409,7 +436,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
         # missed, mis-matched, or genuinely still processing on CBOS's side.
         marked_optional = [str(c.upload_id) for c in empty_slots]
         logger.info(
-            "Batch %s: Step 9 gate - %d slot(s) expecting a file: filled=%s marked-optional=%s",
+            "Batch %s: Step 9 gate - %d Table2 slot(s) considered: filled=%s marked-optional/skipped=%s",
             task.key,
             len(marked_optional) + len(filled_upload_ids),
             sorted(filled_upload_ids) or "none",

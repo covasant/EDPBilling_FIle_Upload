@@ -40,7 +40,7 @@ REAL_RESERVE_RESULT = {
 
 
 class _RealPayloadClient(MockCBOSClient):
-    def _get_new_trade_process(self, segment, trade_date):
+    def _get_new_trade_process(self, segment, trade_date, process_id="0"):
         return {"Status": "Success", "Result": REAL_RESERVE_RESULT, "filename": None, "PDFData": None}
 
     def _get_upload_settings(self, upload_id):
@@ -114,7 +114,7 @@ from app.clients.cbos_client import CBOSUploadError, _decode_body
 class _DoubleEncodedClient(MockCBOSClient):
     """Returns bodies exactly as the UAT server does - one extra JSON layer."""
 
-    def _get_new_trade_process(self, segment, trade_date):
+    def _get_new_trade_process(self, segment, trade_date, process_id="0"):
         return json.dumps(json.dumps({"Status": "Success", "Result": REAL_RESERVE_RESULT}))
 
     def _get_upload_settings(self, upload_id):
