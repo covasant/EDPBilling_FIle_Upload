@@ -117,7 +117,7 @@ def test_setup_failure_routes_to_failed_not_loop(monkeypatch):
 # --- H5: FILEUPLOAD FALSE after upload must not route to uploadFailed ----------
 
 class _GtgFalse(MockCBOSClient):
-    def _file_upload_status(self, segment):
+    def _file_upload_status(self, segment, trade_date):
         return {"Status": "Success", "Data": [{"MSG": "FALSE"}]}
 
 
@@ -406,7 +406,7 @@ def test_skip_means_proceed_not_skip(monkeypatch):
     get_settings.cache_clear()
 
     client = cbos_client.get_cbos_client()
-    assert client.may_begin_upload("MCX") is True
+    assert client.may_begin_upload("MCX", "14-07-2026") is True
 
 
 def test_holiday_check_is_observe_only_by_default(monkeypatch):

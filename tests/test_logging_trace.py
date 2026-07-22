@@ -116,7 +116,7 @@ def test_long_response_is_truncated_but_says_so(caplog, mock_client):
     mock_client._check_process_id_exist = lambda *_a, **_k: {
         "Data": [{"MSG": "x" * 5000}]
     }
-    mock_client.check_process_exists("MCX")
+    mock_client.check_process_exists("MCX", "14-07-2026")
 
     line = next(m for m in _messages(caplog) if "Step 3 CheckProcessIDExist RESPONSE" in m)
     assert "LOG_LEVEL=DEBUG" in line, "truncation must be marked and point at the fix"

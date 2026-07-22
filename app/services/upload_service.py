@@ -235,7 +235,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
     # acting on it would be a new way for the uploader to refuse to upload -
     # silently, and looking just like a day with no files.
     try:
-        if not client.may_begin_upload(task.segment):
+        if not client.may_begin_upload(task.segment, trade_date):
             if settings.cbos_holiday_check_enforced:
                 logger.warning("Batch %s: CBOS reports today is not a processing day for segment %s - "
                                "leaving files in place for the next scan", task.key, task.segment)
@@ -300,7 +300,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
         # 2026-07-21 this call answered 17741 while we filled 17747, and because
         # its reply was discarded, that took a day to find.
         try:
-            gtg_message = client.check_process_exists(task.segment)
+            gtg_message = client.check_process_exists(task.segment, trade_date)
             _warn_if_process_id_differs(gtg_message, process_id, task)
         except CBOSUploadError as exc:
             logger.warning("Batch %s: CheckProcessIDExist failed (non-fatal): %s", task.key, exc)
@@ -442,7 +442,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
             sorted(filled_upload_ids) or "none",
             marked_optional or "none",
         )
-        poll_message = client.confirm_upload(task.segment)
+        poll_message = client.confirm_upload(task.segment, trade_date)
         outcome = upload_outcome.from_poll_result(poll_message)
         for record, file_path, request_log in uploaded_candidates:
             request_log.append({"step": "file_process_status", "result": poll_message})
