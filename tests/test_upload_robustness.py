@@ -86,7 +86,7 @@ def test_manual_upload_then_process_does_not_collide(monkeypatch):
 # --- H4: transient setup failure must not hot-loop -----------------------------
 
 class _ReserveFails(MockCBOSClient):
-    def _get_new_trade_process(self, segment, trade_date):
+    def _get_new_trade_process(self, segment, trade_date, process_id="0"):
         raise CBOSUploadError("simulated transient CBOS blip")
 
 

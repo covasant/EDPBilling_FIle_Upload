@@ -23,7 +23,7 @@ def test_reserve_process_raises_when_cbos_returns_no_process_id():
     must fail here, not surface as a None somewhere downstream."""
 
     class _NoProcessId(MockCBOSClient):
-        def _get_new_trade_process(self, segment, trade_date):
+        def _get_new_trade_process(self, segment, trade_date, process_id="0"):
             return {"Status": "Success", "Result": {"Table1": [], "Table2": [{"UPLOADID": 81}]}}
 
     with pytest.raises(CBOSUploadError, match="PROCESSID"):
@@ -32,7 +32,7 @@ def test_reserve_process_raises_when_cbos_returns_no_process_id():
 
 def test_reserve_process_raises_when_table2_is_empty():
     class _NoTable2(MockCBOSClient):
-        def _get_new_trade_process(self, segment, trade_date):
+        def _get_new_trade_process(self, segment, trade_date, process_id="0"):
             return {"Status": "Success", "Result": {"Table1": [{"PROCESSID": 1}], "Table2": []}}
 
     with pytest.raises(CBOSUploadError, match="Table2"):

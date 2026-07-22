@@ -1,0 +1,693 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "EDP Trade Process API",
+    "description": "API Reference & Integration Guide for the EDP Trade Process — a 39-step workflow (Steps 1-39) covering Segment selection, Process ID creation, file upload, process triggering, post-process status checks, collateral & fund transfer, MTF process suite, corporate actions, and margin reporting. The same 39-step workflow applies to all 10 supported market segments (EQ, DR, CUR, SLB, NCDEX, NCDEXPHY, MCX, MCXPHY, NSECOM, MF) — only the Segment code and relevant file names change.\n\nStep type legend: GTG = Good to Go, CHK = Check Status, TRG = Trigger, MTF = MTF Process, CORE = Core API.\n\nV5 change: a `TradeDate` field (format YYYY-MM-DD) was added to every `file_process_status` call (Steps 1, 3, 9, 11-16, 19-20, 22-23, 25, 28, 30-31, 33, 37-38). It appears immediately after `Segment` where present, or as the first field where `Segment` is absent. All other steps (2, 4-8, 10, 17-18, 21, 24, 26-27, 29, 32, 34-36, 39) are unchanged from V4.",
+    "version": "5.0.0"
+  },
+  "servers": [
+    { "url": "http://10.167.202.234:8087", "description": "EDP Status/GTG Service" },
+    { "url": "http://10.167.202.164:8003", "description": "CBOS Trade Process Service" }
+  ],
+  "tags": [
+    { "name": "Core Trade Process", "description": "Steps 1-10: Segment selection, Process ID creation, file upload, process trigger" },
+    { "name": "Post-Process Status Checks", "description": "Steps 11-15: Bill posting, Recon, Contract Note Generation" },
+    { "name": "Collateral & Fund Transfer", "description": "Steps 16-24: Collateral Valuation, Allocation, Fund Transfer" },
+    { "name": "MTF Process Suite", "description": "Steps 25-32: MTF Buy/Sell, Weekly Auto Closure, Cash Bill Posting GTG" },
+    { "name": "Corporate Actions", "description": "Steps 33-34: Position Change template process (FO DR segment)" },
+    { "name": "Margin & Reporting", "description": "Steps 35-39: Daily Margin Reporting, Margin Statement, Expected Filename lookup" }
+  ],
+  "components": {
+    "schemas": {
+      "Segment": {
+        "type": "string",
+        "description": "Market segment code. Same 39-step workflow applies to all segments.",
+        "enum": ["EQ", "DR", "CUR", "SLB", "NCDEX", "NCDEXPHY", "MCX", "MCXPHY", "NSECOM", "MF"]
+      },
+      "FileProcessStatusRequest": {
+        "type": "object",
+        "required": ["TradeDate", "ProcessName", "UserID"],
+        "properties": {
+          "Segment": { "$ref": "#/components/schemas/Segment", "description": "Required for segment-scoped ProcessNames (e.g. BeginFileUpload, CheckProcessIDExist, FILEUPLOAD, BILLPOSTING, RECON, CONTRACTNOTEGENERATION). Omit for global processes (e.g. CollateralValuation, FundTransfer)." },
+          "TradeDate": { "type": "string", "format": "date", "description": "V5: required on every file_process_status call. Format: YYYY-MM-DD. Appears immediately after Segment where present, or as the first field where Segment is absent.", "example": "2026-06-29" },
+          "ProcessName": {
+            "type": "string",
+            "description": "Distinguishes which of the 25 status checks/GTGs this call performs.",
+            "enum": [
+              "BeginFileUpload", "CheckProcessIDExist", "FILEUPLOAD", "BILLPOSTING", "RECON", "CHECKRECON",
+              "CONTRACTNOTEGENERATION", "CHECKCONTRACTNOTEGENERATION", "CollateralValuation", "CollateralAllocation",
+              "MTFCOLLALLOC", "FundTransfer", "MTFFUNDTRAN", "EARLYPAYIN", "WEEKLYAUTOCLOSURE",
+              "CHECKWEEKLYAUTOCLOSURE", "CHECKDAILYMARGINSTATEMENT", "DAILYMARGINSTATEMENT"
+            ]
+          },
+          "UserID": { "type": "string", "example": "CV0001" }
+        }
+      },
+      "FileProcessStatusResponse": {
+        "type": "object",
+        "properties": {
+          "Status": { "type": "string", "example": "Success" },
+          "Data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "MSG": { "type": "string", "description": "Result message. For boolean-style checks: TRUE/True = proceed, FALSE/False = not yet ready. For CHK steps: free-text status message." }
+              }
+            }
+          }
+        }
+      },
+      "GetNewTradeProcessRequest": {
+        "type": "object",
+        "required": ["GROUPNAME", "LOGINID", "TRADEDATE", "PROCESSID"],
+        "properties": {
+          "GROUPNAME": { "type": "string", "description": "Segment Name (or 'FOPositionChange' for Step 34 Corporate Action)", "example": "EQ" },
+          "LOGINID": { "type": "string", "example": "CV0001" },
+          "TRADEDATE": { "type": "string", "format": "date", "description": "Format: YYYY-MM-DD", "example": "2026-06-29" },
+          "PROCESSID": { "type": "string", "description": "'0' creates a new process. A non-zero value (returned from the '0' call) triggers sequential execution of all pipeline steps.", "example": "0" }
+        }
+      },
+      "GetNewTradeProcessResponse": {
+        "type": "object",
+        "description": "Observed live shape (MCX, PROCESSID=0 call) includes two extra top-level fields beyond Status/Result: filename and PDFData, both null on every call seen so far - not yet observed populated, kept nullable.",
+        "properties": {
+          "Status": { "type": "string", "example": "Success" },
+          "Result": {
+            "type": "object",
+            "properties": {
+              "Table1": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "PROCESSID": { "type": "integer", "example": 17741 },
+                    "ISRUNNABLE": { "type": "boolean" },
+                    "ISAUTOUPLOAD": { "type": "boolean", "description": "Observed false on a live MCX PROCESSID=0 call - do not assume true." }
+                  }
+                }
+              },
+              "Table2": {
+                "type": "array",
+                "description": "The segment's processing pipeline for this Process ID (28 steps for EQ; fewer for segments like MCX which only has 3 file-upload steps followed by internal calculation/posting steps). UPLOADID=0 (not null) marks a step with no file to upload.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "ID": { "type": "integer", "description": "Internal row id for this process-step instance, distinct from STEPNO.", "example": 144372 },
+                    "STEPNO": { "type": "integer", "example": 1 },
+                    "NAME": { "type": "string", "description": "May include trailing \\r\\n on some rows (observed on calculation/posting step names) - trim before comparing.", "example": "Contract Master Upload - MCXCOM" },
+                    "UPLOADDATETIME": { "type": "string", "nullable": true, "example": null },
+                    "STARTDATETIME": { "type": "string", "nullable": true, "example": null },
+                    "ENDDATETIME": { "type": "string", "nullable": true, "example": null },
+                    "STATUS": { "type": "string", "example": "PENDING" },
+                    "STATUSDESC": { "type": "string", "nullable": true, "example": null },
+                    "CREATEDBY": { "type": "string", "example": "CV0001" },
+                    "ISOPTIONAL": { "type": "boolean" },
+                    "UPLOADID": { "type": "integer", "description": "0 = no file upload for this step (internal calculation/posting step), not null.", "example": 127 },
+                    "ISOPTIONALVISIBLE": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          },
+          "filename": { "type": "string", "nullable": true, "example": null },
+          "PDFData": { "type": "string", "nullable": true, "example": null }
+        }
+      },
+      "UploadSettingsRequest": {
+        "type": "object",
+        "required": ["UPLOADID"],
+        "properties": {
+          "UPLOADID": { "type": "string", "description": "Upload ID from getNewTradeProcess Table2", "example": "81" }
+        }
+      },
+      "UploadSettingsResponse": {
+        "type": "object",
+        "properties": {
+          "Status": { "type": "string", "example": "Success" },
+          "Result": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "ID": { "type": "integer", "example": 81 },
+                "NAME": { "type": "string", "example": "BSE SCRIP" },
+                "FILE NAME": { "type": "string", "description": "File name must CONTAIN this string", "example": "SCRIP" },
+                "FILEEXTENSION": { "type": "string", "example": "TXT" },
+                "NO. OF COLUMNS": { "type": "integer", "example": 30 }
+              }
+            }
+          }
+        }
+      },
+      "ChunkUploadResponse": {
+        "type": "object",
+        "properties": {
+          "Status": { "type": "string", "example": "ChunkUploaded" },
+          "Guid": { "type": "string", "format": "uuid", "description": "Save this — it is the folder name used as uploadfoldername in SaveNewTradeProcessPromodalUploadFile" },
+          "FileName": { "type": "string", "example": "SCRIP_190626.TXT" },
+          "currentChunk": { "type": "string", "example": "0" },
+          "totalChunks": { "type": "string", "example": "1" },
+          "fCount": { "type": "string", "example": "2" }
+        }
+      },
+      "GetDropdownRequest": {
+        "type": "object",
+        "required": ["TAG", "LOGINID", "FILTER1", "FILTER2"],
+        "properties": {
+          "TAG": { "type": "string", "example": "EXISTINGPROCESSID" },
+          "LOGINID": { "type": "string", "example": "CV0001" },
+          "FILTER1": { "$ref": "#/components/schemas/Segment" },
+          "FILTER2": { "type": "string", "format": "date", "description": "Trade Date (YYYY-MM-DD)", "example": "2026-06-29" },
+          "extraoption2": { "type": "string", "example": "" },
+          "extraoption3": { "type": "string", "example": "" }
+        }
+      },
+      "GetDropdownResponse": {
+        "type": "object",
+        "properties": {
+          "Status": { "type": "string", "example": "Success" },
+          "Result": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "_KEY": { "type": "integer", "example": 17658 },
+                "_DESC": { "type": "string", "example": "17658 - CV0001 - Jun 29 2026 2:19PM" }
+              }
+            }
+          }
+        }
+      },
+      "SaveUploadFileRequest": {
+        "type": "object",
+        "required": ["uploadid", "loginid", "uploadfoldername", "uploadfilename", "paraM9"],
+        "properties": {
+          "uploadid": { "type": "integer", "example": 81 },
+          "loginid": { "type": "string", "example": "CV001" },
+          "uploadfoldername": { "type": "string", "format": "uuid", "description": "Must exactly match the GUID returned by SaveTradePromodalUploadChunkFile" },
+          "uploadfilename": { "type": "string", "example": "SCRIP_190626.TXT" },
+          "ipaddress": { "type": "string", "example": "10.167.202.164" },
+          "file": { "type": "string", "example": "" },
+          "paraM1": { "type": "string", "description": "Trade Date", "example": "2026-06-22" },
+          "paraM2": { "type": "string", "example": "" },
+          "paraM3": { "type": "string", "example": "" },
+          "paraM4": { "type": "string", "example": "" },
+          "paraM5": { "type": "string", "example": "" },
+          "paraM6": { "type": "string", "example": "" },
+          "paraM7": { "type": "string", "example": "" },
+          "paraM8": { "type": "string", "example": "" },
+          "paraM9": { "type": "string", "description": "Process ID", "example": "17649" },
+          "chunkFileUpload": { "type": "string", "example": "YES" }
+        }
+      },
+      "SimpleResultResponse": {
+        "type": "object",
+        "properties": {
+          "Status": { "type": "string", "example": "Success" },
+          "Result": { "type": "string", "example": "File entry saved successfully" }
+        }
+      },
+      "IsMandatoryRequest": {
+        "type": "object",
+        "required": ["PROCESSID", "STEPNO", "ISOPTIONAL"],
+        "properties": {
+          "PROCESSID": { "type": "string", "example": "17649" },
+          "STEPNO": { "type": "string", "description": "Step number to mark as optional", "example": "12" },
+          "ISOPTIONAL": { "type": "string", "description": "'0' = skip this step", "example": "0" }
+        }
+      },
+      "IsMandatoryResponse": {
+        "type": "object",
+        "properties": {
+          "Result": {
+            "type": "object",
+            "properties": {
+              "Table1": {
+                "type": "array",
+                "items": { "type": "object", "properties": { "MSG": { "type": "string", "example": "Updated Successfully" } } }
+              }
+            }
+          }
+        }
+      },
+      "CollateralValuationRequest": {
+        "type": "object",
+        "required": ["BUTTONNAME", "LOGINID"],
+        "properties": {
+          "BUTTONNAME": { "type": "string", "enum": ["REFRESH", "COLLATERAL_VALUATION_DATEWISE"] },
+          "LOGINID": { "type": "string", "example": "CV0001" },
+          "MARGINDATE": { "type": "string", "description": "Format: DD-MMM-YYYY. Required when BUTTONNAME=COLLATERAL_VALUATION_DATEWISE", "example": "19-Jun-2026" }
+        }
+      },
+      "TableResultResponse": {
+        "type": "object",
+        "properties": {
+          "Status": { "type": "string", "example": "Success" },
+          "Result": {
+            "type": "object",
+            "properties": {
+              "Table1": {
+                "type": "array",
+                "description": "Empty array = not yet triggered. Populated = running/complete.",
+                "items": { "type": "object", "properties": { "MSG": { "type": "string", "example": "Process started successfully ! Click Refresh Button for Current Status." } } }
+              }
+            }
+          }
+        }
+      },
+      "MTFDateRequest": {
+        "type": "object",
+        "required": ["LOGINID", "TRADEDATE"],
+        "properties": {
+          "LOGINID": { "type": "string", "example": "CV0001" },
+          "TRADEDATE": { "type": "string", "description": "Format: DD-MMM-YYYY", "example": "19-Jun-2026" }
+        }
+      },
+      "MTFTradeProcessRequest": {
+        "type": "object",
+        "required": ["LOGINID", "TRADEDATE", "TYPE"],
+        "properties": {
+          "LOGINID": { "type": "string", "example": "CV0001" },
+          "TRADEDATE": { "type": "string", "description": "Format: DD-MMM-YYYY", "example": "30-JUN-2026" },
+          "TYPE": {
+            "type": "string",
+            "description": "Controls which MTF sub-process runs",
+            "enum": ["BUY PROCESS", "BUY POSTING", "SELL PROCESS AND POSTING", "WEEKLY AUTOCLOSURE"]
+          }
+        }
+      },
+      "MTFTradeProcessResponse": {
+        "type": "object",
+        "properties": {
+          "Status": { "type": "string", "example": "Success" },
+          "Result": {
+            "type": "array",
+            "items": { "type": "object", "properties": { "MSG": { "type": "string", "example": "Process completed successfully" } } }
+          }
+        }
+      },
+      "CombinedMarginProcessRequest": {
+        "type": "object",
+        "required": ["BUTTONNAME", "LOGINID"],
+        "properties": {
+          "BUTTONNAME": { "type": "string", "enum": ["REFRESH", "COMBINEDMARGIN_PROCESS"] },
+          "LOGINID": { "type": "string", "example": "CV0001" },
+          "MARGINDATE": { "type": "string", "description": "Format: DD-MMM-YYYY. Required when BUTTONNAME=COMBINEDMARGIN_PROCESS", "example": "19-Jun-2026" }
+        }
+      },
+      "ExpectedFilenameRequest": {
+        "type": "object",
+        "required": ["segment", "uploadid"],
+        "properties": {
+          "segment": { "$ref": "#/components/schemas/Segment" },
+          "uploadid": { "type": "string", "example": "81" }
+        }
+      },
+      "ExpectedFilenameResponse": {
+        "type": "object",
+        "properties": {
+          "Status": { "type": "string", "example": "Success" },
+          "Data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "UploadID": { "type": "string", "example": "81" },
+                "ExpectedFileNamePattern1": { "type": "string", "description": "Includes embedded date, format DDMMYY", "example": "SCRIP_100726.txt" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/edp/file_process_status": {
+      "post": {
+        "summary": "Segment/process status check (GTG / CHK)",
+        "description": "Single multiplexed endpoint used by Steps 1, 3, 9, 11-16, 19-20, 22-23, 25, 28, 30-31, 33, 37-38. The `ProcessName` field distinguishes which check is performed; `Segment` is required for segment-scoped checks and omitted for global ones. V5: `TradeDate` (YYYY-MM-DD) is now required on every call to this endpoint.",
+        "operationId": "checkFileProcessStatus",
+        "tags": ["Core Trade Process", "Post-Process Status Checks", "Collateral & Fund Transfer", "MTF Process Suite", "Corporate Actions", "Margin & Reporting"],
+        "servers": [{ "url": "http://10.167.202.234:8087" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/FileProcessStatusRequest" },
+              "examples": {
+                "Step1_CheckHoliday": { "summary": "Step 1: Check Holiday (GTG)", "value": { "Segment": "EQ", "TradeDate": "2026-06-29", "ProcessName": "BeginFileUpload", "UserID": "CV0001" } },
+                "Step3_CheckProcessIDExist": { "summary": "Step 3: Check Process ID Created/Triggered (GTG)", "value": { "Segment": "EQ", "TradeDate": "2026-06-29", "ProcessName": "CheckProcessIDExist", "UserID": "CV0001" } },
+                "Step9_FileUploadStatus": { "summary": "Step 9: File Upload Status (GTG)", "value": { "Segment": "EQ", "TradeDate": "2026-06-29", "ProcessName": "FILEUPLOAD", "UserID": "CV0001" } },
+                "Step11_BillPosting": { "summary": "Step 11: Check EDP Bill Posting (GTG)", "value": { "Segment": "EQ", "TradeDate": "2026-06-29", "ProcessName": "BILLPOSTING", "UserID": "CV0001" } },
+                "Step12_Recon": { "summary": "Step 12: Segment Recon (GTG)", "value": { "Segment": "DR", "TradeDate": "2026-06-29", "ProcessName": "RECON", "UserID": "CV0001" } },
+                "Step13_CheckRecon": { "summary": "Step 13: Segment Recon - Check Trigger Status (CHK)", "value": { "TradeDate": "2026-06-29", "Segment": "DR", "ProcessName": "CHECKRECON", "UserID": "CV0001" } },
+                "Step14_ContractNoteGeneration": { "summary": "Step 14: Contract Note Generation (GTG)", "value": { "Segment": "DR", "TradeDate": "2026-06-29", "ProcessName": "CONTRACTNOTEGENERATION", "UserID": "CV0001" } },
+                "Step15_CheckContractNoteGeneration": { "summary": "Step 15: Contract Note Generation - Check Trigger Status (CHK)", "value": { "TradeDate": "2026-06-29", "Segment": "DR", "ProcessName": "CHECKCONTRACTNOTEGENERATION", "UserID": "CV0001" } },
+                "Step16_CollateralValuation": { "summary": "Step 16: Collateral Valuation (GTG) - no Segment required", "value": { "TradeDate": "2026-06-29", "ProcessName": "CollateralValuation", "UserID": "CV0001" } },
+                "Step19_CollateralAllocation": { "summary": "Step 19: Collateral Allocation (GTG)", "value": { "TradeDate": "2026-06-29", "ProcessName": "CollateralAllocation", "UserID": "CV0001" } },
+                "Step20_MTFCollAlloc": { "summary": "Step 20: Collateral Allocation - Check Status (CHK)", "value": { "TradeDate": "2026-06-29", "ProcessName": "MTFCOLLALLOC", "UserID": "CV0001" } },
+                "Step22_FundTransfer": { "summary": "Step 22: Fund Transfer (GTG)", "value": { "TradeDate": "2026-06-29", "ProcessName": "FundTransfer", "UserID": "CV0001" } },
+                "Step23_MTFFundTran": { "summary": "Step 23: Fund Transfer - Check Status (CHK)", "value": { "TradeDate": "2026-06-29", "ProcessName": "MTFFUNDTRAN", "UserID": "CV0001" } },
+                "Step25_CashBillPostingGTG": { "summary": "Step 25: Cash Bill Posting GTG - Pre-MTF Buy Check", "value": { "Segment": "EQ", "TradeDate": "2026-06-29", "ProcessName": "BILLPOSTING", "UserID": "CV0001" } },
+                "Step28_EarlyPayin": { "summary": "Step 28: MTF Sell Process GTG - EarlyPayin Check", "value": { "TradeDate": "2026-06-29", "ProcessName": "EARLYPAYIN", "UserID": "CV0001" } },
+                "Step30_WeeklyAutoClosure": { "summary": "Step 30: Weekly Auto Closure (GTG)", "value": { "TradeDate": "2026-06-29", "ProcessName": "WEEKLYAUTOCLOSURE", "UserID": "CV0001" } },
+                "Step31_CheckWeeklyAutoClosure": { "summary": "Step 31: Weekly Auto Closure - Check Already Triggered (CHK)", "value": { "TradeDate": "2026-06-29", "ProcessName": "CHECKWEEKLYAUTOCLOSURE", "UserID": "CV0001" } },
+                "Step33_CorpActionBillPostingGTG": { "summary": "Step 33: Corporate Action Position Change - Bill Posting GTG (FO DR)", "value": { "Segment": "DR", "TradeDate": "2026-06-29", "ProcessName": "BILLPOSTING", "UserID": "CV0001" } },
+                "Step37_CheckDailyMarginStatement": { "summary": "Step 37: Daily Margin Statement - Check Already Triggered (CHK)", "value": { "TradeDate": "2026-06-29", "ProcessName": "CHECKDAILYMARGINSTATEMENT", "UserID": "CV0001" } },
+                "Step38_DailyMarginStatement": { "summary": "Step 38: Daily Margin Statement (GTG)", "value": { "TradeDate": "2026-06-29", "ProcessName": "DAILYMARGINSTATEMENT", "UserID": "CV0001" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Status check result. MSG=SKIP (holiday check) or TRUE/True means proceed; FALSE/False means not yet ready.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FileProcessStatusResponse" } } }
+          }
+        }
+      }
+    },
+    "/v1/api/process/getNewTradeProcess": {
+      "post": {
+        "summary": "Create or trigger a Trade Process (Steps 2, 10, 34)",
+        "description": "PROCESSID='0' creates a new Process ID and returns the 28-step pipeline (Step 2), or for GROUPNAME='FOPositionChange' creates the Corporate Action Position Change process (Step 34 Phase 1). Passing the real (non-zero) PROCESSID triggers sequential execution of all pipeline steps (Step 10, or Step 34 Phase 2).",
+        "operationId": "getNewTradeProcess",
+        "tags": ["Core Trade Process", "Corporate Actions"],
+        "servers": [{ "url": "http://10.167.202.164:8003" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GetNewTradeProcessRequest" },
+              "examples": {
+                "Step2_CreateProcessID": { "summary": "Step 2: Create new Process ID (PROCESSID=0)", "value": { "GROUPNAME": "EQ", "LOGINID": "CV0001", "TRADEDATE": "2026-06-29", "PROCESSID": "0" } },
+                "Step10_TriggerProcess": { "summary": "Step 10: Trigger with real Process ID", "value": { "GROUPNAME": "EQ", "LOGINID": "CV0001", "TRADEDATE": "2026-06-29", "PROCESSID": "17658" } },
+                "Step34_Phase1_CreateCorpAction": { "summary": "Step 34 Phase 1: Create Corporate Action Position Change Process ID", "value": { "GROUPNAME": "FOPositionChange", "LOGINID": "CV0001", "TRADEDATE": "2026-06-29", "PROCESSID": "0" } },
+                "Step34_Phase2_TriggerCorpAction": { "summary": "Step 34 Phase 2: Trigger Corporate Action Position Change", "value": { "GROUPNAME": "FOPositionChange", "LOGINID": "CV0001", "TRADEDATE": "2026-06-29", "PROCESSID": "18756" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Process ID and pipeline step list/status",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GetNewTradeProcessResponse" },
+                "examples": {
+                  "MCX_Step2_Response": {
+                    "summary": "Live MCX response (PROCESSID=0 call) - 3 file-upload steps followed by internal calculation/posting steps",
+                    "value": {
+                      "Status": "Success",
+                      "Result": {
+                        "Table1": [{ "PROCESSID": 17741, "ISRUNNABLE": true, "ISAUTOUPLOAD": false }],
+                        "Table2": [
+                          { "ID": 144372, "STEPNO": 1, "NAME": "Contract Master Upload - MCXCOM", "UPLOADDATETIME": null, "STARTDATETIME": null, "ENDDATETIME": null, "STATUS": "PENDING", "STATUSDESC": null, "CREATEDBY": "CV0001", "ISOPTIONAL": false, "UPLOADID": 127, "ISOPTIONALVISIBLE": false },
+                          { "ID": 144374, "STEPNO": 2, "NAME": "MCX COM Trade File Upload - UDIFF", "UPLOADDATETIME": null, "STARTDATETIME": null, "ENDDATETIME": null, "STATUS": "PENDING", "STATUSDESC": null, "CREATEDBY": "CV0001", "ISOPTIONAL": false, "UPLOADID": 535, "ISOPTIONALVISIBLE": false },
+                          { "ID": 144373, "STEPNO": 3, "NAME": "Position File Upload - UDIFF", "UPLOADDATETIME": null, "STARTDATETIME": null, "ENDDATETIME": null, "STATUS": "PENDING", "STATUSDESC": null, "CREATEDBY": "CV0001", "ISOPTIONAL": false, "UPLOADID": 534, "ISOPTIONALVISIBLE": false },
+                          { "ID": 144388, "STEPNO": 4, "NAME": "Trade data Merger", "UPLOADDATETIME": null, "STARTDATETIME": null, "ENDDATETIME": null, "STATUS": "PENDING", "STATUSDESC": null, "CREATEDBY": "CV0001", "ISOPTIONAL": false, "UPLOADID": 0, "ISOPTIONALVISIBLE": false }
+                        ]
+                      },
+                      "filename": null,
+                      "PDFData": null
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/api/process/GetNewTradeProcessPromodalUploadSettings": {
+      "post": {
+        "summary": "Step 4: Get File Upload Settings",
+        "description": "Retrieve file format requirements (name pattern, extension, column count) before uploading, for a given Upload ID.",
+        "operationId": "getFileUploadSettings",
+        "tags": ["Core Trade Process"],
+        "servers": [{ "url": "http://10.167.202.164:8003" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UploadSettingsRequest" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "File format requirements",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UploadSettingsResponse" } } }
+          }
+        }
+      }
+    },
+    "/v1/api/process/SaveTradePromodalUploadChunkFile": {
+      "post": {
+        "summary": "Step 5: File Upload - Chunk API",
+        "description": "Upload the file in chunks. For files > 1 MB, call this multiple times incrementing CurrentChunk from 0 to TotalChunks-1. A new GUID must be generated per upload.",
+        "operationId": "saveTradeUploadChunkFile",
+        "tags": ["Core Trade Process"],
+        "servers": [{ "url": "http://10.167.202.164:8003" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file", "CurrentChunk", "TotalChunks", "Guid", "FileName"],
+                "properties": {
+                  "file": { "type": "string", "format": "binary" },
+                  "CurrentChunk": { "type": "integer", "example": 0 },
+                  "TotalChunks": { "type": "integer", "example": 1 },
+                  "Guid": { "type": "string", "format": "uuid", "description": "New GUID per upload", "example": "a1b2c3d4-e5f6-4789-abcd-ef0123456789" },
+                  "FileName": { "type": "string", "example": "SCRIP_190626.TXT" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Chunk upload acknowledgement. Save the returned Guid — it is used as uploadfoldername in Step 7.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ChunkUploadResponse" } } }
+          }
+        }
+      }
+    },
+    "/v1/api/brokerage/getdropdown": {
+      "post": {
+        "summary": "Step 6: Get Existing Process ID",
+        "description": "Look up the Process ID for the current segment and trade date to confirm what was created in Step 2.",
+        "operationId": "getExistingProcessId",
+        "tags": ["Core Trade Process"],
+        "servers": [{ "url": "http://10.167.202.164:8003" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GetDropdownRequest" },
+              "examples": {
+                "Step6_ExistingProcessId": { "value": { "TAG": "EXISTINGPROCESSID", "LOGINID": "CV0001", "FILTER1": "EQ", "FILTER2": "2026-06-29", "extraoption2": "", "extraoption3": "" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Matching Process ID(s)",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GetDropdownResponse" } } }
+          }
+        }
+      }
+    },
+    "/v1/api/process/SaveNewTradeProcessPromodalUploadFile": {
+      "post": {
+        "summary": "Step 7: File Details Entry in CBOS Source",
+        "description": "Register the uploaded file in CBOS so the backend EXE picks it up from the GUID folder. Must be called once per file. The GUID in uploadfoldername must exactly match the GUID returned in Step 5.",
+        "operationId": "saveNewTradeProcessUploadFile",
+        "tags": ["Core Trade Process"],
+        "servers": [{ "url": "http://10.167.202.164:8003" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SaveUploadFileRequest" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "File entry registered for backend EXE pickup",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SimpleResultResponse" } } }
+          }
+        }
+      }
+    },
+    "/v1/api/process/UpdateNewTradeProcessProcessDetailsIsMandatory": {
+      "post": {
+        "summary": "Step 8: Skip Optional Subprocess in Template",
+        "description": "Used when an optional file upload step is not required for a given trade date. Marks the step as skippable before triggering the process. Applies to steps where ISOPTIONALVISIBLE=true in the Step 2 response.",
+        "operationId": "updateProcessDetailsIsMandatory",
+        "tags": ["Core Trade Process"],
+        "servers": [{ "url": "http://10.167.202.164:8003" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IsMandatoryRequest" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Update confirmation",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IsMandatoryResponse" } } }
+          }
+        }
+      }
+    },
+    "/v1/api/process/GetCollateralValuation": {
+      "post": {
+        "summary": "Collateral Valuation - Check Status / Trigger (Steps 17-18)",
+        "description": "BUTTONNAME=REFRESH polls whether a valuation run is in progress (Step 17; empty Table1 = not yet triggered). BUTTONNAME=COLLATERAL_VALUATION_DATEWISE triggers date-wise Collateral Valuation (Step 18). This starts the process asynchronously — re-check the GTG endpoint until MSG=TRUE.",
+        "operationId": "getCollateralValuation",
+        "tags": ["Collateral & Fund Transfer"],
+        "servers": [{ "url": "http://10.167.202.164:8003" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CollateralValuationRequest" },
+              "examples": {
+                "Step17_Refresh": { "summary": "Step 17: Check Status (Refresh)", "value": { "BUTTONNAME": "REFRESH", "LOGINID": "CV0001" } },
+                "Step18_Trigger": { "summary": "Step 18: Trigger date-wise valuation", "value": { "BUTTONNAME": "COLLATERAL_VALUATION_DATEWISE", "LOGINID": "CV0001", "MARGINDATE": "19-Jun-2026" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Table1 empty = not yet triggered; populated = process started/running",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TableResultResponse" } } }
+          }
+        }
+      }
+    },
+    "/v1/api/process/MTFTradeProcessCollateralAllocation": {
+      "post": {
+        "summary": "Step 21: Collateral Allocation - Trigger",
+        "description": "Triggers MTF Collateral Allocation. Re-poll the Collateral Allocation GTG (Step 19) to confirm completion before proceeding to Fund Transfer.",
+        "operationId": "triggerCollateralAllocation",
+        "tags": ["Collateral & Fund Transfer"],
+        "servers": [{ "url": "http://10.167.202.164:8003" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MTFDateRequest" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Process started confirmation",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TableResultResponse" } } }
+          }
+        }
+      }
+    },
+    "/v1/api/process/MTFTradeProcessFundTransfer": {
+      "post": {
+        "summary": "Step 24: Fund Transfer - Trigger",
+        "description": "Triggers MTF Fund Transfer. Requires the SQL Server Agent job 'MTF_RISK_UPDATE' to exist on the target server — otherwise returns an error indicating the job does not exist.",
+        "operationId": "triggerFundTransfer",
+        "tags": ["Collateral & Fund Transfer"],
+        "servers": [{ "url": "http://10.167.202.164:8003" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MTFDateRequest" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Fund transfer result (or SQL job-not-found error)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "Status": { "type": "string", "example": "Success" },
+                    "Result": {
+                      "type": "array",
+                      "items": { "type": "object", "properties": { "Result": { "type": "string", "example": "The specified @job_name ('MTF_RISK_UPDATE') does not exist." } } }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/api/process/MTFTradeProcess": {
+      "post": {
+        "summary": "MTF Buy/Sell/Weekly-Closure Process (Steps 26, 27, 29, 32)",
+        "description": "Runs a specific MTF sub-process for the given date, selected via the TYPE field: BUY PROCESS (Step 26), BUY POSTING (Step 27), SELL PROCESS AND POSTING (Step 29), WEEKLY AUTOCLOSURE (Step 32, run only at 4 PM on trading days). MTF processes depend on EQ Bill Posting having completed (see Step 25 GTG).",
+        "operationId": "runMtfTradeProcess",
+        "tags": ["MTF Process Suite"],
+        "servers": [{ "url": "http://10.167.202.164:8003" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MTFTradeProcessRequest" },
+              "examples": {
+                "Step26_MTFBuyProcess": { "summary": "Step 26: MTF Buy Trade Process", "value": { "LOGINID": "CV0001", "TRADEDATE": "30-JUN-2026", "TYPE": "BUY PROCESS" } },
+                "Step27_MTFBuyPosting": { "summary": "Step 27: MTF Buy Trade Posting", "value": { "LOGINID": "CV0001", "TRADEDATE": "30-JUN-2026", "TYPE": "BUY POSTING" } },
+                "Step29_MTFSellProcessAndPosting": { "summary": "Step 29: MTF Sell Process & Posting", "value": { "LOGINID": "CV0001", "TRADEDATE": "30-JUN-2026", "TYPE": "SELL PROCESS AND POSTING" } },
+                "Step32_WeeklyAutoClosure": { "summary": "Step 32: Weekly Auto Closure Run", "value": { "LOGINID": "CV0001", "TRADEDATE": "30-JUN-2026", "TYPE": "WEEKLY AUTOCLOSURE" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Process completion result",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MTFTradeProcessResponse" } } }
+          }
+        }
+      }
+    },
+    "/v1/api/process/CombinedMarginProcess": {
+      "post": {
+        "summary": "Daily Margin Reporting - Check Status / Trigger (Steps 35-36)",
+        "description": "BUTTONNAME=REFRESH polls the combined margin engine (Step 35; empty Table1 = not triggered yet). BUTTONNAME=COMBINEDMARGIN_PROCESS triggers the combined daily margin reporting process for the given date (Step 36).",
+        "operationId": "combinedMarginProcess",
+        "tags": ["Margin & Reporting"],
+        "servers": [{ "url": "http://10.167.202.164:8003" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CombinedMarginProcessRequest" },
+              "examples": {
+                "Step35_Refresh": { "summary": "Step 35: Check Status (Refresh)", "value": { "BUTTONNAME": "REFRESH", "LOGINID": "CV0001" } },
+                "Step36_Trigger": { "summary": "Step 36: Trigger combined margin process", "value": { "BUTTONNAME": "COMBINEDMARGIN_PROCESS", "LOGINID": "CV0001", "MARGINDATE": "19-Jun-2026" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Table1 empty = not yet triggered; populated = process started/running",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TableResultResponse" } } }
+          }
+        }
+      }
+    },
+    "/api/edp/get_expected_filename": {
+      "post": {
+        "summary": "Step 39: Get Expected Filename by Segment and Upload ID",
+        "description": "Returns the expected file name pattern for a given segment and Upload ID. Use this to verify your file is correctly named before upload. The pattern includes the embedded trade date in DDMMYY format.",
+        "operationId": "getExpectedFilename",
+        "tags": ["Margin & Reporting"],
+        "servers": [{ "url": "http://10.167.202.234:8087" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExpectedFilenameRequest" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Expected filename pattern",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExpectedFilenameResponse" } } }
+          }
+        }
+      }
+    }
+  }
+}

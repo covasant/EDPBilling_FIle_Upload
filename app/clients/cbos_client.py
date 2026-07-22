@@ -231,14 +231,25 @@ def _raise_on_failed_status(path: str, body: dict) -> None:
 @dataclass(frozen=True)
 class UploadCandidate:
     """One Table2 slot from a batch's reservation. A non-zero upload_id means
-    CBOS expects a file at this step today."""
+    CBOS expects a file at this step today. status is Table2's STATUS field -
+    "PENDING" until a file has been accepted for this slot on this PROCESSID;
+    reserving an EXISTING PROCESSID (see BaseCBOSClient.find_existing_process_id)
+    reads back each slot's current status instead of resetting it to PENDING."""
     upload_id: str
     step_no: object | None
     name: str
+    status: str | None = None
 
     @property
     def expects_a_file(self) -> bool:
         return self.upload_id not in ("0", "")
+
+    @property
+    def needs_upload(self) -> bool:
+        """False once this slot already has a file for the reserved
+        PROCESSID (STATUS anything other than PENDING/blank) - re-uploading
+        would duplicate a file CBOS already accepted."""
+        return self.status is None or self.status.strip().upper() == "PENDING"
 
 
 @dataclass(frozen=True)
@@ -387,8 +398,9 @@ class BaseCBOSClient(ABC):
     # ---- the raw CBOS calls an adapter must provide -----------------------
 
     @abstractmethod
-    def _get_new_trade_process(self, segment: str, trade_date: str) -> dict:
-        """Step 2 raw call."""
+    def _get_new_trade_process(self, segment: str, trade_date: str, process_id: str = "0") -> dict:
+        """Step 2 raw call. process_id="0" means "create new"; passing an
+        already-reserved PROCESSID re-fetches/validates that one instead."""
 
     @abstractmethod
     def _begin_file_upload(self, segment: str) -> dict:
@@ -426,15 +438,22 @@ class BaseCBOSClient(ABC):
 
     # ---- the interface callers use ----------------------------------------
 
-    def reserve_process(self, segment: str, trade_date: str) -> ProcessReservation:
+    def reserve_process(self, segment: str, trade_date: str, process_id: str = "0") -> ProcessReservation:
         """Step 2. Reserve one PROCESSID for this batch and read back every
         UploadID slot its segment expects.
+
+        process_id defaults to "0" (create new). Pass an already-reserved
+        PROCESSID for this segment/date (see
+        BaseCBOSClient.find_existing_process_id) to reuse it instead of
+        minting a new one every time the same day is rescanned - Table2's
+        STATUS per slot then reflects that PROCESSID's real progress instead
+        of resetting to PENDING.
 
         Raises CBOSUploadError if CBOS returns no PROCESSID or an empty Table2 -
         either makes the batch unprocessable.
         """
         raw = self._call(2, "getNewTradeProcess",
-                         lambda: self._get_new_trade_process(segment, trade_date),
+                         lambda: self._get_new_trade_process(segment, trade_date, process_id),
                          segment=segment, trade_date=trade_date)
         response = _decode_body(raw, "getNewTradeProcess")
         result = response.get("Result") or {}
@@ -453,6 +472,7 @@ class BaseCBOSClient(ABC):
                 upload_id=str(row.get("UPLOADID", "0")),
                 step_no=row.get("STEPNO"),
                 name=str(row.get("NAME") or ""),
+                status=row.get("STATUS"),
             )
             for row in table2
         ]
@@ -561,6 +581,26 @@ class BaseCBOSClient(ABC):
         self._call(6, "getdropdown(EXISTINGPROCESSID)",
                    lambda: self._get_existing_process_id(segment, trade_date),
                    segment=segment, trade_date=trade_date)
+
+    def find_existing_process_id(self, segment: str, trade_date: str) -> str | None:
+        """Same Step 6 call as existing_process(), used up front (before Step 2)
+        to check whether this segment/date already has a PROCESSID, so
+        reserve_process can reuse it instead of minting a new one on every
+        rescan. Returns None on no match or a failed call - a miss just means
+        "create new", not a batch failure."""
+        try:
+            raw = self._call(6, "getdropdown(EXISTINGPROCESSID)",
+                             lambda: self._get_existing_process_id(segment, trade_date),
+                             segment=segment, trade_date=trade_date)
+        except CBOSUploadError as exc:
+            logger.warning("find_existing_process_id: getdropdown(EXISTINGPROCESSID) failed (non-fatal): %s", exc)
+            return None
+
+        response = _decode_body(raw, "getdropdown(EXISTINGPROCESSID)")
+        result = response.get("Result") or []
+        if not result or result[0].get("_KEY") is None:
+            return None
+        return str(result[0]["_KEY"])
 
     def register_file(self, upload_id: str, guid: str, file_name: str, process_id: str,
                       trade_date: str) -> None:
@@ -688,13 +728,13 @@ class CBOSClient(BaseCBOSClient):
             raise CBOSUploadError(f"Request to {url} failed: {exc}") from exc
         return self._handle(url, response)
 
-    def _get_new_trade_process(self, segment: str, trade_date: str) -> dict:
+    def _get_new_trade_process(self, segment: str, trade_date: str, process_id: str = "0") -> dict:
         payload = {
             "GROUPNAME": segment,
             "LOGINID": settings.cbos_login_id,
             "PASSWORD": settings.cbos_password,
             "TRADEDATE": _to_cbos_date(trade_date),
-            "PROCESSID": "0",  # "0" = create a new process; read back from Table1/Table2
+            "PROCESSID": process_id,  # "0" = create new; otherwise re-fetch/validate this one
         }
         return self._post(self._core_url(GET_NEW_TRADE_PROCESS_PATH), payload)
 
@@ -760,7 +800,11 @@ class CBOSClient(BaseCBOSClient):
         # ISOPTIONAL="0" is the doc's (counter-intuitive) value for "make this
         # step optional / not mandatory". Unverified against real CBOS - if it
         # wants "1", this is the one line to change.
-        payload = {"PROCESSID": process_id, "STEPNO": step_no, "ISOPTIONAL": "0"}
+        #
+        # PROCESSID and STEPNO are both quoted strings in the doc's example
+        # payload ("17649", "12") even though Table2 hands STEPNO back as a
+        # JSON number - stringify both here rather than relying on the caller.
+        payload = {"PROCESSID": str(process_id), "STEPNO": str(step_no), "ISOPTIONAL": "0"}
         return self._post(self._core_url(UPDATE_IS_MANDATORY_PATH), payload)
 
     def _file_upload_status(self, segment: str) -> dict:
@@ -797,6 +841,8 @@ class MockCBOSClient(BaseCBOSClient):
         self.marked_optional: list[tuple] = []  # (process_id, step_no) per Step-8 call, for assertions
         self.upload_calls: list[tuple] = []     # (upload_id, file_name) per Step-5 chunk, for assertions
         self.reserve_calls = 0                  # count of Step-2 reservations, for assertions
+        self._reserved_process_ids: dict[tuple, str] = {}  # (segment, trade_date) -> PROCESSID reserved so far
+        self._filled_upload_ids: dict[str, set] = {}  # process_id -> UPLOADIDs already registered (Step 7)
 
     def _decide_outcome(self, file_names: list[str]) -> bool:
         """True = succeed, False = fail. See class docstring for the rules."""
@@ -807,19 +853,32 @@ class MockCBOSClient(BaseCBOSClient):
             return False
         return random.random() < settings.cbos_mock_random_success_rate
 
-    def _get_new_trade_process(self, segment: str, trade_date: str) -> dict:
+    def _get_new_trade_process(self, segment: str, trade_date: str, process_id: str = "0") -> dict:
         from mock_cbos import data
 
         self.reserve_calls += 1
-        process_id = self._next_process_id
-        self._next_process_id += 1
-        logger.debug("[MOCK] Process ID created: PROCESSID=%s (GROUPNAME=%s, TRADEDATE=%s)",
-                    process_id, segment, trade_date)
+        key = (segment, trade_date)
+        if process_id and str(process_id) != "0":
+            logger.debug("[MOCK] Reusing existing PROCESSID=%s (GROUPNAME=%s, TRADEDATE=%s)",
+                        process_id, segment, trade_date)
+        else:
+            process_id = self._next_process_id
+            self._next_process_id += 1
+            logger.debug("[MOCK] Process ID created: PROCESSID=%s (GROUPNAME=%s, TRADEDATE=%s)",
+                        process_id, segment, trade_date)
+        self._reserved_process_ids[key] = str(process_id)
+
+        table2 = data.table2_for(segment)
+        filled = self._filled_upload_ids.get(str(process_id), set())
+        for row in table2:
+            if str(row.get("UPLOADID")) in filled:
+                row["STATUS"] = "SUCCESS"
+
         return {
             "Status": "Success",
             "Result": {
                 "Table1": [{"PROCESSID": process_id, "ISRUNNABLE": True, "ISAUTOUPLOAD": True}],
-                "Table2": data.table2_for(segment),
+                "Table2": table2,
             },
         }
 
@@ -844,14 +903,18 @@ class MockCBOSClient(BaseCBOSClient):
         return {"Status": "ChunkUploaded", "Guid": guid}
 
     def _get_existing_process_id(self, segment: str, trade_date: str) -> dict:
-        logger.debug("[MOCK] Existing process id lookup: segment=%s trade_date=%s", segment, trade_date)
+        pid = self._reserved_process_ids.get((segment, trade_date))
+        logger.debug("[MOCK] Existing process id lookup: segment=%s trade_date=%s -> %s", segment, trade_date, pid)
+        if pid is None:
+            return {"Status": "Success", "Result": []}
         return {"Status": "Success",
-                "Result": [{"_KEY": self._next_process_id - 1, "_DESC": f"{segment} - {trade_date}"}]}
+                "Result": [{"_KEY": pid, "_DESC": f"{segment} - {trade_date}"}]}
 
     def _create_file_entry(self, upload_id: str, guid: str, file_name: str, process_id: str,
                            trade_date: str) -> dict:
         logger.debug("[MOCK] File entry created: %s (upload_id=%s, guid=%s)", file_name, upload_id, guid)
         self._segment_file_names.setdefault(trade_date, []).append(file_name)
+        self._filled_upload_ids.setdefault(str(process_id), set()).add(str(upload_id))
         return {"Status": "Success", "Result": "File entry saved successfully"}
 
     def _update_step_optional(self, process_id: str, step_no) -> dict:
