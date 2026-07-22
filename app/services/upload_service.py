@@ -285,6 +285,19 @@ def _process_batch(task: SegmentBatchTask) -> None:
                     return
         process_id = reservation.process_id
 
+        # ISRUNNABLE (Table1, Step 2) - CBOS's own signal for whether this
+        # PROCESSID can currently take files, replacing the ISAUTOUPLOAD flag
+        # this used to watch. ISAUTOUPLOAD flips to False the moment an
+        # EXISTING PROCESSID is re-fetched (see find_existing_process_id
+        # above) even though the process is perfectly usable, so gating on it
+        # would have refused every reused process. Files are left in place
+        # for the next scan, same as the holiday check above - nothing has
+        # been attempted, so nothing needs recording.
+        if not reservation.is_runnable:
+            logger.warning("Batch %s: PROCESSID=%s is not runnable (Table1.ISRUNNABLE=False) - "
+                           "leaving files in place for the next scan", task.key, process_id)
+            return
+
         # Step 3: confirm the PROCESSID we just reserved is the one CBOS's
         # good-to-go side is tracking for this segment.
         #
@@ -311,6 +324,14 @@ def _process_batch(task: SegmentBatchTask) -> None:
         uploaded_candidates: list[tuple] = []  # (record, dest_file_path, request_log)
         filled_upload_ids: set[str] = set()    # UploadIDs that actually received a file (Steps 5+7)
         candidates_by_upload_id = {c.upload_id: c for c in reservation.candidates}
+        # Step 5 done, Step 7 not yet - (record, file_path, rule, guid, request_log).
+        # Every file's chunks must land before ANY file is registered: CBOS's
+        # backend EXE (Step 7 = "the main process that makes the file entry")
+        # only picked files up correctly when every Step 5 for the batch ran
+        # first and every Step 7 ran after - interleaving them per file left
+        # Table2 STATUS stuck at PENDING and FILEUPLOAD never went TRUE, even
+        # though each call answered Success individually.
+        pending_registration: list[tuple] = []
 
         for file_path, exchange in files:
             record = repo.create_audit_record(file_path, task.folder_date, task.segment, exchange)
@@ -378,10 +399,17 @@ def _process_batch(task: SegmentBatchTask) -> None:
                             file_path.name, rule.upload_id, guid)
                 client.upload_file(file_path, rule.upload_id, guid)
                 request_log.append({"step": "SaveTradePromodalUploadChunkFile", "upload_id": rule.upload_id, "guid": guid})
+                pending_registration.append((record, file_path, rule, guid, request_log))
+            except Exception as exc:
+                logger.error("Batch %s: upload sequence failed for %s: %s", task.key, file_path.name, exc)
+                request_log.append({"step": "error", "error": str(exc)})
+                apply_outcome(repo, record, file_path, upload_outcome.failed(exc), request_log)
 
-                # Step 7: register the uploaded file (Step 6's existing-process
-                # lookup is a non-critical confirmation call, done once per
-                # batch below rather than once per file).
+        # Step 7: register every uploaded file - once every Step 5 in the batch
+        # has completed, not interleaved with them (see pending_registration's
+        # comment above).
+        for record, file_path, rule, guid, request_log in pending_registration:
+            try:
                 client.register_file(rule.upload_id, guid, file_path.name, process_id, trade_date)
                 request_log.append({"step": "SaveNewTradeProcessPromodalUploadFile", "upload_id": rule.upload_id})
                 logger.info("CBOS entry created = %s (UploadID=%s, GUID=%s)", file_path.name, rule.upload_id, guid)
@@ -389,7 +417,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
                 uploaded_candidates.append((record, file_path, request_log))
                 filled_upload_ids.add(str(rule.upload_id))
             except Exception as exc:
-                logger.error("Batch %s: upload sequence failed for %s: %s", task.key, file_path.name, exc)
+                logger.error("Batch %s: registration failed for %s: %s", task.key, file_path.name, exc)
                 request_log.append({"step": "error", "error": str(exc)})
                 apply_outcome(repo, record, file_path, upload_outcome.failed(exc), request_log)
 
