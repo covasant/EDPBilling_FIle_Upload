@@ -228,17 +228,23 @@ def _raise_on_failed_status(path: str, body: dict) -> None:
 # What the interface hands back.
 # --------------------------------------------------------------------------
 
+_UPLOAD_PENDING_DESC = "UPLOAD FILE PENDING"
+
+
 @dataclass(frozen=True)
 class UploadCandidate:
     """One Table2 slot from a batch's reservation. A non-zero upload_id means
-    CBOS expects a file at this step today. status is Table2's STATUS field -
-    "PENDING" until a file has been accepted for this slot on this PROCESSID;
-    reserving an EXISTING PROCESSID (see BaseCBOSClient.find_existing_process_id)
-    reads back each slot's current status instead of resetting it to PENDING."""
+    CBOS expects a file at this step today. status/status_desc are Table2's
+    STATUS/STATUSDESC fields - STATUS stays "PENDING" (STATUSDESC
+    "UPLOAD FILE PENDING") until a file has been accepted for this slot on
+    this PROCESSID; reserving an EXISTING PROCESSID (see
+    BaseCBOSClient.find_existing_process_id) reads back each slot's current
+    status instead of resetting it to PENDING."""
     upload_id: str
     step_no: object | None
     name: str
     status: str | None = None
+    status_desc: str | None = None
 
     @property
     def expects_a_file(self) -> bool:
@@ -247,16 +253,33 @@ class UploadCandidate:
     @property
     def needs_upload(self) -> bool:
         """False once this slot already has a file for the reserved
-        PROCESSID (STATUS anything other than PENDING/blank) - re-uploading
-        would duplicate a file CBOS already accepted."""
-        return self.status is None or self.status.strip().upper() == "PENDING"
+        PROCESSID - re-uploading would duplicate a file CBOS already
+        accepted.
+
+        STATUS alone is enough for the zero-UploadID steps (computation/
+        posting - there's no "file" for STATUSDESC to describe). For a
+        file-expecting slot, only trust STATUS=PENDING once STATUSDESC also
+        confirms it's specifically the file upload that's pending
+        ("UPLOAD FILE PENDING") - a missing STATUSDESC is treated as "needs
+        upload" rather than silently skipping a file CBOS is still waiting on.
+        """
+        if self.status is None:
+            return True
+        if self.status.strip().upper() != "PENDING":
+            return False
+        if self.expects_a_file and self.status_desc is not None:
+            return _UPLOAD_PENDING_DESC in self.status_desc.strip().upper()
+        return True
 
 
 @dataclass(frozen=True)
 class ProcessReservation:
     """The result of reserving a batch (Step 2): the PROCESSID every file in
-    the batch shares, plus every UploadID slot the segment's pipeline offers."""
+    the batch shares, whether CBOS considers this process runnable
+    (Table1.ISRUNNABLE), and every UploadID slot the segment's pipeline
+    offers."""
     process_id: str
+    is_runnable: bool
     candidates: list[UploadCandidate]
 
 
@@ -462,6 +485,9 @@ class BaseCBOSClient(ABC):
         if not table1 or table1[0].get("PROCESSID") is None:
             raise CBOSUploadError(f"getNewTradeProcess response had no Table1[0].PROCESSID: {response}")
         process_id = str(table1[0]["PROCESSID"])
+        # Default True: a missing ISRUNNABLE (mock/older responses) must not
+        # block every batch - only an explicit False stops one.
+        is_runnable = bool(table1[0].get("ISRUNNABLE", True))
 
         table2 = result.get("Table2") or []
         if not table2:
@@ -473,6 +499,7 @@ class BaseCBOSClient(ABC):
                 step_no=row.get("STEPNO"),
                 name=str(row.get("NAME") or ""),
                 status=row.get("STATUS"),
+                status_desc=row.get("STATUSDESC"),
             )
             for row in table2
         ]
@@ -480,9 +507,10 @@ class BaseCBOSClient(ABC):
         # expects a file at today. Logged once here so a run's later "why is
         # FILEUPLOAD still FALSE" can be answered from the log alone.
         expects = [c.upload_id for c in candidates if c.expects_a_file]
-        logger.info("Step 2 reserved ProcessID=%s segment=%s: %d Table2 slot(s), %d expecting a file %s",
-                    process_id, segment, len(candidates), len(expects), expects)
-        return ProcessReservation(process_id=process_id, candidates=candidates)
+        logger.info("Step 2 reserved ProcessID=%s segment=%s ISRUNNABLE=%s: %d Table2 slot(s), "
+                    "%d expecting a file %s",
+                    process_id, segment, is_runnable, len(candidates), len(expects), expects)
+        return ProcessReservation(process_id=process_id, is_runnable=is_runnable, candidates=candidates)
 
     def may_begin_upload(self, segment: str, trade_date: str) -> bool:
         """Step 1 - Check Holiday. True when CBOS says to go ahead.
