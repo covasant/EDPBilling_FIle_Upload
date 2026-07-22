@@ -403,11 +403,11 @@ class BaseCBOSClient(ABC):
         already-reserved PROCESSID re-fetches/validates that one instead."""
 
     @abstractmethod
-    def _begin_file_upload(self, segment: str) -> dict:
+    def _begin_file_upload(self, segment: str, trade_date: str) -> dict:
         """Step 1 raw call."""
 
     @abstractmethod
-    def _check_process_id_exist(self, segment: str) -> dict:
+    def _check_process_id_exist(self, segment: str, trade_date: str) -> dict:
         """Step 3 raw call."""
 
     @abstractmethod
@@ -433,7 +433,7 @@ class BaseCBOSClient(ABC):
         """Step 8 raw call, one per empty slot."""
 
     @abstractmethod
-    def _file_upload_status(self, segment: str) -> dict:
+    def _file_upload_status(self, segment: str, trade_date: str) -> dict:
         """Step 9 raw call, one poll."""
 
     # ---- the interface callers use ----------------------------------------
@@ -484,7 +484,7 @@ class BaseCBOSClient(ABC):
                     process_id, segment, len(candidates), len(expects), expects)
         return ProcessReservation(process_id=process_id, candidates=candidates)
 
-    def may_begin_upload(self, segment: str) -> bool:
+    def may_begin_upload(self, segment: str, trade_date: str) -> bool:
         """Step 1 - Check Holiday. True when CBOS says to go ahead.
 
         The market being open is the precondition for everything after it, so
@@ -498,20 +498,20 @@ class BaseCBOSClient(ABC):
         bool named for what they actually want to know.
         """
         msg = self._gtg_msg(self._call(1, "file_process_status(BeginFileUpload)",
-                                       lambda: self._begin_file_upload(segment),
-                                       segment=segment)).upper()
+                                       lambda: self._begin_file_upload(segment, trade_date),
+                                       segment=segment, trade_date=trade_date)).upper()
         proceeding = msg == BEGIN_UPLOAD_PROCEED
         logger.info("Step 1 BeginFileUpload segment=%s MSG=%s -> %s",
                     segment, msg,
                     "proceed" if proceeding else "HOLIDAY/not a processing day, batch skipped")
         return proceeding
 
-    def check_process_exists(self, segment: str) -> str:
+    def check_process_exists(self, segment: str, trade_date: str) -> str:
         """Step 3. Confirmation that Step 2's PROCESSID registered. Diagnostic
         only - never a gate. Returns CBOS's message."""
         return self._gtg_msg(self._call(3, "CheckProcessIDExist",
-                                        lambda: self._check_process_id_exist(segment),
-                                        segment=segment))
+                                        lambda: self._check_process_id_exist(segment, trade_date),
+                                        segment=segment, trade_date=trade_date))
 
     def upload_settings(self, upload_id: str, fallback_name: str = "") -> UploadRule | None:
         """Step 4. This UploadID's matching rule, decoded. Returns None if CBOS
@@ -617,10 +617,10 @@ class BaseCBOSClient(ABC):
                    lambda: self._update_step_optional(process_id, step_no),
                    process_id=process_id, step_no=step_no)
 
-    def confirm_upload(self, segment: str) -> str:
+    def confirm_upload(self, segment: str, trade_date: str) -> str:
         """Step 9. Poll FILEUPLOAD per SEGMENT (matching the documented payload
-        shape - it carries no PROCESSID/UPLOADID/GUID), up to
-        cbos_poll_max_attempts times.
+        shape - it carries no PROCESSID/UPLOADID/GUID, only TradeDate as of
+        V5), up to cbos_poll_max_attempts times.
 
         Returns CBOS's own last message, uppercased - "TRUE", "FALSE", "SKIP",
         or POLL_TIMED_OUT if the budget ran out. Callers must not read anything
@@ -642,8 +642,8 @@ class BaseCBOSClient(ABC):
             # attempt line below already carries the verdict, which is the part
             # that matters.
             raw = self._call(9, "file_process_status(FILEUPLOAD)",
-                             lambda: self._file_upload_status(segment),
-                             level=logging.DEBUG, segment=segment,
+                             lambda: self._file_upload_status(segment, trade_date),
+                             level=logging.DEBUG, segment=segment, trade_date=trade_date,
                              attempt=attempt, max_attempts=settings.cbos_poll_max_attempts)
             msg = self._gtg_msg(raw).upper()
             logger.info("Step 9 FILEUPLOAD poll %d/%d segment=%s MSG=%s",
@@ -738,14 +738,16 @@ class CBOSClient(BaseCBOSClient):
         }
         return self._post(self._core_url(GET_NEW_TRADE_PROCESS_PATH), payload)
 
-    def _begin_file_upload(self, segment: str) -> dict:
-        payload = {"Segment": segment, "ProcessName": PROCESS_NAME_BEGIN_FILE_UPLOAD,
-                   "UserID": settings.cbos_login_id}
+    def _begin_file_upload(self, segment: str, trade_date: str) -> dict:
+        # V5: TradeDate is now required, immediately after Segment (Shape A).
+        payload = {"Segment": segment, "TradeDate": _to_cbos_date(trade_date),
+                   "ProcessName": PROCESS_NAME_BEGIN_FILE_UPLOAD, "UserID": settings.cbos_login_id}
         return self._post(self._gtg_url(FILE_PROCESS_STATUS_PATH), payload)
 
-    def _check_process_id_exist(self, segment: str) -> dict:
-        payload = {"Segment": segment, "ProcessName": PROCESS_NAME_CHECK_PROCESS_ID,
-                   "UserID": settings.cbos_login_id}
+    def _check_process_id_exist(self, segment: str, trade_date: str) -> dict:
+        # V5: TradeDate is now required, immediately after Segment (Shape A).
+        payload = {"Segment": segment, "TradeDate": _to_cbos_date(trade_date),
+                   "ProcessName": PROCESS_NAME_CHECK_PROCESS_ID, "UserID": settings.cbos_login_id}
         return self._post(self._gtg_url(FILE_PROCESS_STATUS_PATH), payload)
 
     def _get_upload_settings(self, upload_id: str) -> dict:
@@ -807,9 +809,10 @@ class CBOSClient(BaseCBOSClient):
         payload = {"PROCESSID": str(process_id), "STEPNO": str(step_no), "ISOPTIONAL": "0"}
         return self._post(self._core_url(UPDATE_IS_MANDATORY_PATH), payload)
 
-    def _file_upload_status(self, segment: str) -> dict:
-        payload = {"Segment": segment, "ProcessName": PROCESS_NAME_FILE_UPLOAD_STATUS,
-                   "UserID": settings.cbos_login_id}
+    def _file_upload_status(self, segment: str, trade_date: str) -> dict:
+        # V5: TradeDate is now required, immediately after Segment (Shape A).
+        payload = {"Segment": segment, "TradeDate": _to_cbos_date(trade_date),
+                   "ProcessName": PROCESS_NAME_FILE_UPLOAD_STATUS, "UserID": settings.cbos_login_id}
         return self._post(self._gtg_url(FILE_PROCESS_STATUS_PATH), payload)
 
     def get_expected_filename(self, segment: str, upload_id: str) -> dict:
@@ -882,9 +885,10 @@ class MockCBOSClient(BaseCBOSClient):
             },
         }
 
-    def _check_process_id_exist(self, segment: str) -> dict:
+    def _check_process_id_exist(self, segment: str, trade_date: str) -> dict:
         pid = self._next_process_id - 1
-        logger.debug("[MOCK] Check process id exist: segment=%s -> PROCESSID=%s", segment, pid)
+        logger.debug("[MOCK] Check process id exist: segment=%s trade_date=%s -> PROCESSID=%s",
+                    segment, trade_date, pid)
         return {"Status": "Success", "Data": [{"MSG": f"PROCESS ID ALREADY GENERATED : {pid}"}]}
 
     def _get_upload_settings(self, upload_id: str) -> dict:
@@ -922,17 +926,17 @@ class MockCBOSClient(BaseCBOSClient):
         logger.debug("[MOCK] Marked step optional: process_id=%s stepno=%s", process_id, step_no)
         return {"Status": "Success", "Result": {"Table1": [{"MSG": "Updated Successfully"}]}}
 
-    def _begin_file_upload(self, segment: str) -> dict:
+    def _begin_file_upload(self, segment: str, trade_date: str) -> dict:
         """Step 1. Answers "proceed" unless CBOS_MOCK_HOLIDAY is set, so the
         holiday branch is reachable in tests and in a local dry run without
         waiting for an actual market holiday."""
         msg = "HOLIDAY" if settings.cbos_mock_holiday else BEGIN_UPLOAD_PROCEED
-        logger.debug("[MOCK] BeginFileUpload segment=%s -> %s", segment, msg)
+        logger.debug("[MOCK] BeginFileUpload segment=%s trade_date=%s -> %s", segment, trade_date, msg)
         return {"Status": "Success", "Data": [{"MSG": msg}]}
 
-    def _file_upload_status(self, segment: str) -> dict:
+    def _file_upload_status(self, segment: str, trade_date: str) -> dict:
         # Poll state is tracked per segment (the real Step 9 payload carries no
-        # per-batch trade_date handle either).
+        # PROCESSID/UPLOADID/GUID handle either, only TradeDate as of V5).
         state = self._segment_poll_state.setdefault(segment, {"attempts": 0, "outcome": None})
         state["attempts"] += 1
 

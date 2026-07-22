@@ -114,7 +114,7 @@ def test_confirm_upload_resolves_true_for_a_success_file(monkeypatch):
 
     client = cbos_client.get_cbos_client()
     client.register_file("81", "guid-1", "success_file.txt", "17658", "14-07-2026")
-    assert client.confirm_upload("MCX") == "TRUE"
+    assert client.confirm_upload("MCX", "14-07-2026") == "TRUE"
 
 
 def test_confirm_upload_returns_false_after_exhausting_attempts(monkeypatch):
@@ -127,11 +127,11 @@ def test_confirm_upload_returns_false_after_exhausting_attempts(monkeypatch):
     class _AlwaysFalse(MockCBOSClient):
         polls = 0
 
-        def _file_upload_status(self, segment):
+        def _file_upload_status(self, segment, trade_date):
             _AlwaysFalse.polls += 1
             return {"Status": "Success", "Data": [{"MSG": "FALSE"}]}
 
-    assert _AlwaysFalse().confirm_upload("MCX") == cbos_client.POLL_TIMED_OUT
+    assert _AlwaysFalse().confirm_upload("MCX", "14-07-2026") == cbos_client.POLL_TIMED_OUT
     assert _AlwaysFalse.polls == 3, "should poll exactly the configured number of times"
 
 
@@ -159,11 +159,11 @@ def test_skip_is_a_verdict_and_stops_polling(monkeypatch):
     class _AlwaysSkip(MockCBOSClient):
         polls = 0
 
-        def _file_upload_status(self, segment):
+        def _file_upload_status(self, segment, trade_date):
             _AlwaysSkip.polls += 1
             return {"Status": "Success", "Data": [{"MSG": "SKIP"}]}
 
-    assert _AlwaysSkip().confirm_upload("MCX") == "SKIP"
+    assert _AlwaysSkip().confirm_upload("MCX", "14-07-2026") == "SKIP"
     assert _AlwaysSkip.polls == 1, "SKIP must not be retried - it is not a pending state"
 
 
@@ -177,7 +177,7 @@ def test_zero_poll_attempts_does_not_crash(monkeypatch):
 
     get_settings.cache_clear()
 
-    assert MockCBOSClient().confirm_upload("MCX") == cbos_client.POLL_TIMED_OUT
+    assert MockCBOSClient().confirm_upload("MCX", "14-07-2026") == cbos_client.POLL_TIMED_OUT
 
 
 def test_upload_ip_address_prefers_the_configured_value(monkeypatch):

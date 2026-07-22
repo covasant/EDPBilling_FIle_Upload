@@ -120,7 +120,7 @@ class _DoubleEncodedClient(MockCBOSClient):
     def _get_upload_settings(self, upload_id):
         return json.dumps(json.dumps({"Status": "Success", "Result": [REAL_UPLOAD_SETTINGS_127]}))
 
-    def _file_upload_status(self, segment):
+    def _file_upload_status(self, segment, trade_date):
         return json.dumps(json.dumps({"Status": "Success", "Data": [{"MSG": "TRUE"}]}))
 
 
@@ -142,7 +142,7 @@ def test_double_encoded_gtg_still_parses(monkeypatch):
     from app.core.config import get_settings
 
     get_settings.cache_clear()
-    assert _DoubleEncodedClient().confirm_upload("MCX") == "TRUE"
+    assert _DoubleEncodedClient().confirm_upload("MCX", "14-07-2026") == "TRUE"
 
 
 def test_singly_encoded_bodies_are_untouched():
