@@ -79,7 +79,13 @@ boundary so the two sides don't collide.
 - The real MCX `Table2` (which UPLOADIDs, legacy vs UDIFF) — reconstructed in the
   mock, not captured. Ground it from a real reservation response.
 - `UpdateNewTradeProcessProcessDetailsIsMandatory` flag: doc uses `ISOPTIONAL="0"`
-  to mean *optional* — unverified.
+  to mean *optional* — unverified. The **Table2 readback** side is equally
+  unverified: the mock answers Python booleans, but real CBOS sends numbers
+  and strings interchangeably elsewhere, so the uploader parses ISOPTIONAL
+  via a strict truthy allowlist (`_parse_isoptional` in `cbos_client.py`) —
+  unknown values read as "not optional" so the completeness gate fails
+  closed. Verify the real readback vocabulary (and whether it inherits the
+  Step-8 `"0"`-means-optional inversion) in UAT.
 - ~~The uploader is on API doc v4; `EDP_Billing`'s client is pinned to v3.~~
   ✅ *Resolved on `feat/edpb-alignment`:* both repos now target **V6**
   (V5's TradeDate everywhere + V6's Step-10 Insti Trade gate), with wire

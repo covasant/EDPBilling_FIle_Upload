@@ -472,7 +472,8 @@ def _process_batch(task: SegmentBatchTask) -> None:
         # takes a file - both get marked skippable so FILEUPLOAD can go TRUE.
         # Already-resolved slots (needs_upload False - an earlier batch on
         # this PROCESSID filled or skipped them) are left alone. Non-fatal per
-        # slot. NOTE: the trigger (Step 10) and every downstream step are
+        # slot. NOTE: the trigger (Step 11 in V6; the new Step 10 is the
+        # engine's Insti Trade GTG) and every downstream step are
         # owned by the EDP_Billing scheduler, not this repo - our job ends at
         # "make FILEUPLOAD go TRUE". See docs/CBOS_HANDOFF_CONTRACT.md.
         for candidate in empty_slots:

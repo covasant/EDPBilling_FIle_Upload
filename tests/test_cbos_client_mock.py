@@ -216,3 +216,21 @@ def test_optional_slot_readback_is_satisfied():
     still_required = UploadCandidate(upload_id="551", step_no=1, name="Settlement Master NSE Upload",
                                      status="PENDING", status_desc="UPLOAD FILE PENDING")
     assert still_required.needs_upload is True
+
+
+def test_isoptional_readback_parsing_is_a_strict_allowlist():
+    """Review finding on the E2E fix: bool("0") is True in Python, so a
+    string-typed ISOPTIONAL readback ("0"/"1", plausible since CBOS sends
+    numbers-as-strings elsewhere) parsed via bool() would mark EVERY slot
+    optional and hollow out the completeness gate. The parser must be a
+    strict truthy allowlist that fails closed on anything unrecognized."""
+    from app.clients.cbos_client import _parse_isoptional
+
+    # Optional - explicit truthy vocabulary only.
+    for value in (True, 1, "1", "true", "TRUE", "True", "Y", "YES", "yes"):
+        assert _parse_isoptional(value) is True, value
+
+    # NOT optional - includes the catastrophic bool("0") case and the
+    # unknown/absent values the gate must fail closed on.
+    for value in (False, 0, "0", "false", "FALSE", "", None, "N", "NO", "2", "null"):
+        assert _parse_isoptional(value) is False, value

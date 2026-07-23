@@ -353,3 +353,78 @@ def test_declared_empty_manifest_parks_incomplete_at_gate(client):
     assert status["status"] == "incomplete"
     missing = {s["upload_id"] for s in status["status_detail"]["missing_slots"]}
     assert missing == {"127", "534", "535"}, "all mandatory slots unfilled and reported"
+
+
+def test_repost_requeues_stranded_uploading_batch(client):
+    """Round-2 fix (2bf019a), previously untested: a process death mid-batch
+    strands the row at UPLOADING with the in-memory queue gone. Re-POSTing
+    the manifest must re-enqueue UPLOADING rows exactly like QUEUED ones."""
+    manifest_path = _make_batch_dir(_root(), batch_id="MCX-2026-07-20-55555555")
+    client.post("/batches", json={"manifest_path": str(manifest_path)})
+
+    # Simulate the mid-processing crash: the worker claimed the task and set
+    # UPLOADING, then died before finishing; queue is empty on restart.
+    queue = client.app.state.batch_queue
+    task = queue.get(); queue.task_done(); queue.release(task.key)
+    from app.core.database import get_sessionmaker
+    from app.repositories.batch_repository import BatchRepository
+    from edpb_core.batch_api import BatchStatus
+    with get_sessionmaker()() as s:
+        repo = BatchRepository(s)
+        repo.set_status(repo.find_by_batch_id("MCX-2026-07-20-55555555"), BatchStatus.UPLOADING)
+        s.commit()
+    assert client.get("/batches/MCX-2026-07-20-55555555").json()["status"] == "uploading"
+
+    r = client.post("/batches", json={"manifest_path": str(manifest_path)})
+    assert r.status_code == 200
+    assert queue.size == 1
+    _pump(client)
+    assert client.get("/batches/MCX-2026-07-20-55555555").json()["status"] == "confirmed"
+
+
+def test_no_files_on_disk_fails_superseded_not_stranded(client):
+    """Round-2 fix (2bf019a), previously untested: a batch whose listed files
+    vanished between intake and processing (moved away by a newer batch's
+    run) must land terminally FAILED ("superseded"), never sit queued."""
+    manifest_path = _make_batch_dir(_root(), batch_id="MCX-2026-07-20-66666666")
+    client.post("/batches", json={"manifest_path": str(manifest_path)})
+
+    # Between intake (checksums verified) and processing, the files go away.
+    for name, _ in FULL_MCX_FILES:
+        (manifest_path.parent / name).unlink()
+
+    _pump(client)
+    body = client.get("/batches/MCX-2026-07-20-66666666").json()
+    assert body["status"] == "failed"
+    assert "superseded" in json.dumps(body["status_detail"])
+
+
+def test_batch_details_files_are_per_batch_not_commingled(client):
+    """Round-2 fix (2bf019a), previously untested: GET /batches/{id} must
+    report only that batch's audit rows. Two batches for the SAME
+    (segment, date) - one confirmed, one failed-superseded - must not leak
+    file rows into each other."""
+    a = _make_batch_dir(_root(), batch_id="MCX-2026-07-20-77777777")
+    client.post("/batches", json={"manifest_path": str(a)})
+    _pump(client)
+    assert client.get("/batches/MCX-2026-07-20-77777777").json()["status"] == "confirmed"
+
+    # Superseding manifest for the same segment/date; its files were already
+    # moved to uploaded/ by batch A, so it fails "superseded" with its own
+    # audit rows carrying batch_id B.
+    b = _make_batch_dir(_root(), batch_id="MCX-2026-07-20-88888888")
+    client.post("/batches", json={"manifest_path": str(b)})
+    for name, _ in FULL_MCX_FILES:
+        p = b.parent / name
+        if p.exists():
+            p.unlink()
+    _pump(client)
+
+    files_a = client.get("/batches/MCX-2026-07-20-77777777").json()["files"]
+    files_b = client.get("/batches/MCX-2026-07-20-88888888").json()["files"]
+    assert len(files_a) == 3 and all(f["status"] == "uploaded" for f in files_a)
+    # The no-files supersede path writes no per-file audit rows of its own -
+    # so batch B must report an EMPTY file list, not batch A's rows. (Before
+    # the per-batch_id filter, the (date, segment) query leaked A's 3
+    # uploaded rows into B's response - the commingling the fix removed.)
+    assert files_b == []
