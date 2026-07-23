@@ -240,10 +240,37 @@ wheels = [
 ]
 
 [[package]]
+name = "edpb-core"
+version = "0.1.0"
+source = { editable = "../EDP_Billing/packages/edpb-core" }
+dependencies = [
+    { name = "jsonschema" },
+]
+
+[package.optional-dependencies]
+mock = [
+    { name = "fastapi" },
+    { name = "pydantic" },
+    { name = "python-multipart" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", marker = "extra == 'mock'", specifier = ">=0.110" },
+    { name = "jsonschema", specifier = ">=4.21" },
+    { name = "pydantic", marker = "extra == 'mock'", specifier = ">=2.6" },
+    { name = "python-multipart", marker = "extra == 'mock'", specifier = ">=0.0.9" },
+    { name = "uvicorn", marker = "extra == 'mock'", specifier = ">=0.29" },
+]
+provides-extras = ["mock"]
+
+[[package]]
 name = "edpbilling-file-upload"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "edpb-core", extra = ["mock"] },
     { name = "fastapi" },
     { name = "jsonschema" },
     { name = "psycopg2-binary" },
@@ -269,6 +296,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "edpb-core", extras = ["mock"], editable = "../EDP_Billing/packages/edpb-core" },
     { name = "fastapi", specifier = "==0.115.0" },
     { name = "jsonschema", specifier = ">=4.21" },
     { name = "psycopg2-binary", specifier = "==2.9.9" },
