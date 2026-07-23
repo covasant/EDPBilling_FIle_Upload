@@ -107,6 +107,26 @@ class UploadedFileRepository:
         record.file_path = new_path
         self.session.flush()
 
+    def find_for_batch(self, batch_id: str, folder_date: str, segment: str) -> list[UploadedFile]:
+        """Audit rows for one batch (contract: "the audit trail keeps history
+        per batch_id"). Falls back to the batch's (date, segment) for rows
+        written before the batch_id column existed - restricted to rows with
+        NO batch_id so a legacy row is never attributed to a newer batch."""
+        rows = (
+            self.session.query(UploadedFile)
+            .filter(UploadedFile.batch_id == batch_id)
+            .all()
+        )
+        if rows:
+            return rows
+        return (
+            self.session.query(UploadedFile)
+            .filter(UploadedFile.folder_date == folder_date,
+                    UploadedFile.segment == segment,
+                    UploadedFile.batch_id.is_(None))
+            .all()
+        )
+
     def find_completed(self, segment: str, folder_date: str, upload_id, file_name: str) -> UploadedFile | None:
         """Idempotency lookup: a prior row for this (segment, date, UploadID,
         file name) that already reached 'uploaded'. If present, the file is

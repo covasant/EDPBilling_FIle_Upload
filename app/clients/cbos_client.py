@@ -8,7 +8,8 @@ EDP_Trade_Process_API_Documentation_v4.docx:
   CORE host (settings.cbos_core_base_url) - process/brokerage CORE calls
 
 This repo owns the UPLOAD lane only - see CONTEXT.md for the handoff. Our job
-ends at "make FILEUPLOAD go TRUE"; the trigger (Step 10) and everything
+ends at "make FILEUPLOAD go TRUE"; the V6 Step-10 Insti Trade GTG, the
+trigger (Step 11) and everything
 downstream belong to the EDP_Billing scheduler.
 
 One file-upload batch (one segment + one trade date):
@@ -229,6 +230,25 @@ def _raise_on_failed_status(path: str, body: dict) -> None:
 # --------------------------------------------------------------------------
 
 _UPLOAD_PENDING_DESC = "UPLOAD FILE PENDING"
+
+# Values accepted as "this slot IS optional" in Table2's ISOPTIONAL readback.
+# Deliberately a strict allowlist, NOT bool(): CBOS sends numbers and strings
+# interchangeably elsewhere (PROCESSID: 17658 vs "17658"), and bool("0") is
+# True in Python - which would silently mark EVERY slot optional, hollow out
+# the completeness gate, and let FILEUPLOAD go TRUE with mandatory files
+# missing. Mis-parsing in the other direction merely re-parks a batch ops
+# already approved (annoying, recoverable), so unknown values read as "not
+# optional" - the gate fails closed.
+#
+# KNOWN-UNKNOWN (CBOS_HANDOFF_CONTRACT.md): the API doc uses ISOPTIONAL="0"
+# in the *Step-8 request* to mean "make optional" - whether the *readback*
+# mirrors that inversion is unverified. The mock answers Python booleans.
+# Verify the real readback vocabulary in UAT before trusting "1" here.
+_ISOPTIONAL_TRUE = {True, 1, "1", "true", "TRUE", "True", "Y", "YES", "yes"}
+
+
+def _parse_isoptional(value: object) -> bool:
+    return value in _ISOPTIONAL_TRUE
 
 
 @dataclass(frozen=True)
@@ -509,7 +529,7 @@ class BaseCBOSClient(ABC):
                 name=str(row.get("NAME") or ""),
                 status=row.get("STATUS"),
                 status_desc=row.get("STATUSDESC"),
-                is_optional=bool(row.get("ISOPTIONAL", False)),
+                is_optional=_parse_isoptional(row.get("ISOPTIONAL")),
             )
             for row in table2
         ]

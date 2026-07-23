@@ -20,8 +20,8 @@ from sqlalchemy.orm import Session
 
 from app.core.queue import BatchQueue, SegmentBatchTask
 from app.models.batch import Batch
-from app.models.uploaded_file import UploadedFile
 from app.repositories.batch_repository import BatchRepository
+from app.repositories.uploaded_file_repository import UploadedFileRepository
 from app.services import file_service, manifest_service
 from app.services.manifest_service import ChecksumMismatchError, LoadedManifest, ManifestError
 
@@ -128,19 +128,8 @@ def get_batch_details(session: Session, batch_id: str) -> dict:
     batch = BatchRepository(session).find_by_batch_id(batch_id)
     if batch is None:
         raise UnknownBatchError(batch_id)
-    # Per-batch audit rows (contract: "the audit trail keeps history per
-    # batch_id"). Falls back to (date, segment) for rows written before the
-    # batch_id column existed.
-    files = (
-        session.query(UploadedFile)
-        .filter(UploadedFile.batch_id == batch.batch_id)
-        .all()
-    ) or (
-        session.query(UploadedFile)
-        .filter(UploadedFile.folder_date == batch.folder_date,
-                UploadedFile.segment == batch.segment,
-                UploadedFile.batch_id.is_(None))
-        .all()
+    files = UploadedFileRepository(session).find_for_batch(
+        batch.batch_id, batch.folder_date, batch.segment,
     )
     return {
         "batch_id": batch.batch_id,
