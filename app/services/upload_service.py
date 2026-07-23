@@ -153,7 +153,7 @@ def _fail_all_files(repo: UploadedFileRepository, files: list, task: SegmentBatc
     for file_path, exchange in files:
         record = repo.create_audit_record(
             file_path, task.folder_date, task.segment, exchange,
-            correlation_id=task.correlation_id,
+            correlation_id=task.correlation_id, batch_id=task.batch_id,
         )
         apply_outcome(repo, record, file_path, upload_outcome.failed(error),
                       [{"step": "batch_setup_error", "error": str(error)}])
@@ -183,9 +183,22 @@ def process_batch(task: SegmentBatchTask) -> None:
 
 def _process_batch(task: SegmentBatchTask) -> None:
     files = [(Path(p), exch) for p, exch in task.files if Path(p).exists()]
-    if not files:
-        logger.warning("Batch %s: no files still exist on disk, skipping", task.key)
+    if task.files and not files:
+        # The manifest LISTED files but every one is gone from the source
+        # dir - in practice a SUPERSEDED batch: a newer manifest's run
+        # already uploaded and moved them. Terminal, not silent: leaving
+        # this row 'queued' made re-POST/rescan recovery re-enqueue it into
+        # the same no-op forever.
+        logger.warning("Batch %s: no listed file still exists on disk - marking FAILED "
+                       "(superseded or already processed)", task.key)
+        _set_batch_status(task, BatchStatus.FAILED, {
+            "reason": "no listed file exists on disk - superseded by a newer batch "
+                      "or already processed; submit the current manifest instead",
+        })
         return
+    # A DECLARED-EMPTY manifest (the bot's all-no_data partial run) falls
+    # through deliberately: the completeness gate is the single authority,
+    # and it can only park the batch INCOMPLETE if the batch runs the lane.
 
     trade_date = task.folder_date
     client = cbos_client.get_cbos_client()
@@ -209,7 +222,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
         if not client.may_begin_upload(task.segment, trade_date):
             if settings.cbos_holiday_check_enforced:
                 logger.warning("Batch %s: CBOS reports today is not a processing day for segment %s - "
-                               "leaving files in place for the next scan", task.key, task.segment)
+                               "leaving files in place for the next submission/rescan", task.key, task.segment)
                 _set_batch_status(task, BatchStatus.QUEUED,
                                   {"deferred": "holiday check - not a processing day"})
                 return
@@ -270,7 +283,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
         # been attempted, so nothing needs recording.
         if not reservation.is_runnable:
             logger.warning("Batch %s: PROCESSID=%s is not runnable (Table1.ISRUNNABLE=False) - "
-                           "leaving files in place for the next scan", task.key, process_id)
+                           "leaving files in place for the next submission/rescan", task.key, process_id)
             _set_batch_status(task, BatchStatus.QUEUED,
                               {"deferred": f"PROCESSID={process_id} not runnable (ISRUNNABLE=False)"})
             return
@@ -313,7 +326,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
         for file_path, exchange in files:
             record = repo.create_audit_record(
                 file_path, task.folder_date, task.segment, exchange,
-                correlation_id=task.correlation_id,
+                correlation_id=task.correlation_id, batch_id=task.batch_id,
             )
             request_log: list = []
 
@@ -401,7 +414,9 @@ def _process_batch(task: SegmentBatchTask) -> None:
                 request_log.append({"step": "error", "error": str(exc)})
                 apply_outcome(repo, record, file_path, upload_outcome.failed(exc), request_log)
 
-        if not uploaded_candidates and not filled_upload_ids:
+        if task.files and not uploaded_candidates and not filled_upload_ids:
+            # Files were declared and attempted, but none reached (or was
+            # already in) CBOS - everything rejected/failed.
             logger.info("Batch %s: no file reached or was found in CBOS - nothing to confirm", task.key)
             _set_batch_status(task, BatchStatus.FAILED,
                               {"reason": "no files uploaded (all rejected/failed)"})

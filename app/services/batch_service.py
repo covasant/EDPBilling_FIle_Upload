@@ -63,7 +63,7 @@ def submit_manifest(session: Session, queue: BatchQueue, manifest_path: Path) ->
         return _acknowledge_known(queue, manifest, existing)
 
     try:
-        manifest_service.verify_checksums(manifest_path)
+        manifest_service.verify_checksums(manifest_path, manifest.raw)
     except ChecksumMismatchError as exc:
         # Recorded for audit (GET /batches/{id} answers "why was it
         # rejected"); files stay in place — a superseding manifest is the fix.
@@ -100,11 +100,15 @@ def submit_manifest(session: Session, queue: BatchQueue, manifest_path: Path) ->
 
 
 def _acknowledge_known(queue: BatchQueue, manifest: LoadedManifest, existing: Batch) -> IntakeResult:
-    """A batch_id we already recorded. Still-QUEUED rows are re-enqueued
-    (idempotently — the in-memory guard drops the duplicate if the task is
-    genuinely still queued/in flight), which is what recovers a row stranded
-    by a crash-after-record or a superseded-and-dropped task."""
-    if existing.status == BatchStatus.QUEUED:
+    """A batch_id we already recorded. Non-terminal (QUEUED/UPLOADING) rows
+    are re-enqueued — idempotently: the in-memory guard drops the duplicate
+    if the task is genuinely still queued or in flight."""
+    if existing.status in (BatchStatus.QUEUED, BatchStatus.UPLOADING):
+        # QUEUED: crash between record and enqueue, or a dropped duplicate.
+        # UPLOADING: the process died mid-batch and the in-memory queue was
+        # lost - without this, that row was stranded forever. A LIVE mid-
+        # flight batch is safe: its guard key is still held, so this enqueue
+        # is dropped.
         _enqueue_checked(queue, manifest)
     logger.info("submit_manifest: batch %s already known (status=%s)",
                 existing.batch_id, existing.status)
@@ -124,10 +128,18 @@ def get_batch_details(session: Session, batch_id: str) -> dict:
     batch = BatchRepository(session).find_by_batch_id(batch_id)
     if batch is None:
         raise UnknownBatchError(batch_id)
+    # Per-batch audit rows (contract: "the audit trail keeps history per
+    # batch_id"). Falls back to (date, segment) for rows written before the
+    # batch_id column existed.
     files = (
         session.query(UploadedFile)
+        .filter(UploadedFile.batch_id == batch.batch_id)
+        .all()
+    ) or (
+        session.query(UploadedFile)
         .filter(UploadedFile.folder_date == batch.folder_date,
-                UploadedFile.segment == batch.segment)
+                UploadedFile.segment == batch.segment,
+                UploadedFile.batch_id.is_(None))
         .all()
     )
     return {

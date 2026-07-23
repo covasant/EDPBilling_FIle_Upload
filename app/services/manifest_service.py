@@ -36,6 +36,7 @@ class ChecksumMismatchError(Exception):
 
 @dataclass(frozen=True)
 class LoadedManifest:
+    raw: dict  # the parsed manifest - lets verify_checksums skip a re-read
     batch_id: str
     segment: str
     trade_date: str          # ISO YYYY-MM-DD, as in the manifest
@@ -70,6 +71,7 @@ def load_manifest(manifest_path: Path) -> LoadedManifest:
         for f in data["files"]
     ]
     return LoadedManifest(
+        raw=data,
         batch_id=data["batch_id"],
         segment=data["segment"],
         trade_date=trade_date,

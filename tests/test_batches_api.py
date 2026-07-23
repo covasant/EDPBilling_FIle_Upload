@@ -31,7 +31,8 @@ FULL_MCX_FILES = [
 
 
 def _make_batch_dir(root: Path, *, segment="MCX", trade_date="2026-07-20",
-                    folder_date="20-07-2026", files=None, batch_id=None) -> Path:
+                    folder_date="20-07-2026", files=None, batch_id=None,
+                    outcome=None) -> Path:
     """Write real files + a valid manifest.json, exactly as the bot's
     finalization protocol produces them."""
     files = FULL_MCX_FILES if files is None else files
@@ -56,7 +57,7 @@ def _make_batch_dir(root: Path, *, segment="MCX", trade_date="2026-07-20",
         "producer": {"name": "mofsl_file_download_rpa_bot", "version": "test", "action": "all"},
         "created_at": f"{trade_date}T03:12:45+05:30",
         "files": entries,
-        "download_outcome": {"status": "success", "no_data": [], "failed": []},
+        "download_outcome": outcome or {"status": "success", "no_data": [], "failed": []},
     }
     (seg_dir / "manifest.json").write_text(json.dumps(manifest))
     return seg_dir / "manifest.json"
@@ -335,3 +336,20 @@ def test_rescan_requeues_stranded_queued_batch(client):
     assert queue.size == 1
     _pump(client)
     assert client.get("/batches/MCX-2026-07-20-44444444").json()["status"] == "confirmed"
+
+
+def test_declared_empty_manifest_parks_incomplete_at_gate(client):
+    """Round-2 review: the bot finalizes an EMPTY partial manifest when every
+    sub-action was no_data — the gate (single authority) must see the batch
+    and park it INCOMPLETE, not have it misdiagnosed as superseded."""
+    manifest_path = _make_batch_dir(
+        _root(), files=[], batch_id="MCX-2026-07-20-55555555",
+        outcome={"status": "partial", "no_data": ["trade", "position"], "failed": []},
+    )
+    client.post("/batches", json={"manifest_path": str(manifest_path)})
+    _pump(client)
+
+    status = client.get("/batches/MCX-2026-07-20-55555555").json()
+    assert status["status"] == "incomplete"
+    missing = {s["upload_id"] for s in status["status_detail"]["missing_slots"]}
+    assert missing == {"127", "534", "535"}, "all mandatory slots unfilled and reported"

@@ -70,11 +70,15 @@ Rules:
    anything missed.
 
 Why no `.part` staging: the uploader only ever acts on files LISTED in a
-manifest received after its commit point and verifies each sha256 before
-queueing — a torn or in-progress file fails checksum verification (422,
-batch rejected, files left in place) rather than being uploaded. A re-run
-supersedes with a fresh manifest. The checksums, not staging names, are the
-torn-batch defence.
+manifest received after its commit point and verifies each sha256 **at
+intake** — a torn or in-progress file fails verification (422, batch
+rejected, files left in place) rather than being queued. A re-run
+supersedes with a fresh manifest; the superseded batch terminates as
+FAILED ("superseded") when its files are gone. Known window: intake-time
+checksums do not protect a batch already mid-upload when the bot re-runs
+over the same files — the engine-driven flow avoids this by issuing one
+download per segment-day cycle; ops re-runs should wait for the in-flight
+batch to reach a terminal status first.
 
 ## POST /batches (uploader side)
 
