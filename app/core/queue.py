@@ -15,12 +15,24 @@ class SegmentBatchTask:
     exchange would reserve two PIDs for e.g. EQ's BSE + NSE folders and half the
     files would never trigger.
 
-    Each file keeps its own exchange (the sub-folder it came from) for matching
-    (upload_matching tie-breaks by exchange) and audit - exchange is per-file
-    metadata, not a partition key."""
+    Each file keeps its own exchange (from the manifest's per-file metadata -
+    there is no exchange folder level) for matching (upload_matching
+    tie-breaks by exchange) and audit - exchange is per-file metadata, not a
+    partition key.
+
+    batch_id/correlation_id tie the task back to its manifest and Batch row
+    (docs/BATCH_HANDOFF_CONTRACT.md). mode="proceed" is the audited
+    force-proceed path for an INCOMPLETE batch: no files to upload - just
+    mark the named slots optional and re-confirm (see
+    upload_service.proceed_batch)."""
     folder_date: str
     segment: str
     files: list[tuple[str, str]] = field(default_factory=list)  # (file_path, exchange)
+    batch_id: str | None = None
+    correlation_id: str | None = None
+    mode: str = "upload"                                        # "upload" | "proceed"
+    proceed_slots: list[str] = field(default_factory=list)      # UploadIDs ops chose (mode="proceed")
+    proceed_reason: str | None = None
 
     @property
     def key(self) -> str:

@@ -6,7 +6,6 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi==0.115.0",
     "uvicorn[standard]==0.30.6",
-    "APScheduler==3.10.4",
     "SQLAlchemy==2.0.35",
     "psycopg2-binary==2.9.9",
     "python-dotenv==1.0.1",
@@ -14,6 +13,8 @@ dependencies = [
     "pydantic==2.9.2",
     "pydantic-settings==2.5.2",
     "python-multipart==0.0.12",
+    "jsonschema>=4.21",
+    "PyYAML>=6.0",
 ]
 
 [dependency-groups]

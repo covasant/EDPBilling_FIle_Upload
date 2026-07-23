@@ -26,7 +26,7 @@ def get_sessionmaker() -> sessionmaker:
 
 
 def init_db() -> None:
-    from app.models import uploaded_file  # noqa: F401 - registers models before create_all
+    from app.models import batch, uploaded_file  # noqa: F401 - registers models before create_all
 
     engine = get_engine()
     logger.debug("init_db: creating tables (create_all) against %s", engine.url)

@@ -2,8 +2,6 @@ import logging
 
 from fastapi import APIRouter, Request
 
-from app.services.upload_service import discover_and_enqueue
-
 logger = logging.getLogger("system_endpoint")
 router = APIRouter(tags=["system"])
 
@@ -12,14 +10,6 @@ router = APIRouter(tags=["system"])
 def health():
     logger.debug("GET /health")
     return {"status": "ok"}
-
-
-@router.post("/run-now")
-def run_now(request: Request):
-    logger.info("POST /run-now: manual discovery scan triggered")
-    discover_and_enqueue(request.app.state.batch_queue)
-    logger.info("POST /run-now: discovery scan complete")
-    return {"status": "triggered"}
 
 
 @router.get("/queue-status")

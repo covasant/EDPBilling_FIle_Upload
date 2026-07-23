@@ -1,10 +1,11 @@
-"""Filesystem-only concerns: walking the segment/date tree, and moving files
-between source/upload/fail locations. No database, queue, or network calls
-happen here - see upload_service.py for orchestration."""
+"""Filesystem-only concerns: moving processed files between source/uploaded/
+failed locations. No database, queue, or network calls happen here - see
+upload_service.py for orchestration and manifest_service.py for how work is
+declared (there is no directory scanning anymore; the manifest lists the
+files)."""
 
 import logging
 import shutil
-from datetime import datetime, timedelta
 from pathlib import Path
 
 from app.core.config import settings
@@ -13,109 +14,13 @@ logger = logging.getLogger("file_service")
 
 UPLOAD_SUBFOLDER = "uploaded"
 FAILED_SUBFOLDER = "uploadFailed"
-# Recorded as the exchange for segments that don't split by one (MCX, CD, ...).
+# Recorded as the exchange for files whose manifest entry carries none.
 # Audit/tie-break only - the exchange is never sent to CBOS.
 NO_EXCHANGE = "NA"
-# Never treated as a segment/date folder / never scanned for source files.
-_PROCESSED_SUBFOLDER_NAMES = {UPLOAD_SUBFOLDER, FAILED_SUBFOLDER}
 
 
 def get_root() -> Path:
     return Path(settings.file_root_path)
-
-
-def get_today_folder_name() -> str:
-    return datetime.now().strftime(settings.date_folder_format)
-
-
-def get_processing_dates() -> list[str]:
-    """Dates the scheduler should scan, most recent first: [T, T-1, ...]."""
-    today = datetime.now()
-    dates = []
-    for i in range(settings.scan_days_back + 1):
-        d = today - timedelta(days=i)
-        dates.append(d.strftime(settings.date_folder_format))
-    return dates
-
-
-def list_subdirs(folder: Path) -> list[Path]:
-    if not folder.is_dir():
-        return []
-    return [
-        p
-        for p in folder.iterdir()
-        if p.is_dir() and p.name not in _PROCESSED_SUBFOLDER_NAMES
-    ]
-
-
-def list_files(folder: Path) -> list[Path]:
-    """Files directly under `folder`. Never recurses, so uploaded/ and uploadFailed/
-    subfolders are naturally excluded."""
-    if not folder.is_dir():
-        return []
-    return [p for p in folder.iterdir() if p.is_file()]
-
-
-def discover_files_for_date(root: Path, folder_date: str):
-    """Yields (file_path, segment, exchange) for every source file found under
-    root/{folder_date}/{segment}/, with or without an exchange level:
-
-        {date}/EQ/BSE/file.csv  -> exchange "BSE"
-        {date}/MCX/file.csv     -> exchange NO_EXCHANGE
-
-    The downloader only creates an exchange folder for segments that actually
-    split by one (EQ -> BSE/NSE). MCX and friends write straight into the
-    segment folder. Requiring the exchange level made those files invisible -
-    list_subdirs returned nothing, so they were never even looked at, and a
-    whole segment silently went unbilled. Both shapes are accepted here so
-    that neither side has to invent placeholder folders.
-
-    A segment folder may hold both at once (loose files plus exchange
-    sub-folders); everything found is yielded."""
-    date_folder = root / folder_date
-    logger.debug("discover_files_for_date: scanning %s", date_folder)
-    if not date_folder.is_dir():
-        logger.debug("discover_files_for_date: %s does not exist, skipping", date_folder)
-        return
-
-    for segment_folder in list_subdirs(date_folder):
-        # Files sitting directly in the segment folder - no exchange split.
-        loose_files = list_files(segment_folder)
-        if loose_files:
-            logger.debug(
-                "discover_files_for_date: %s (no exchange folder) -> %d file(s)",
-                segment_folder.name, len(loose_files),
-            )
-            for file_path in loose_files:
-                yield file_path, segment_folder.name, NO_EXCHANGE
-
-        for exchange_folder in list_subdirs(segment_folder):
-            files = list_files(exchange_folder)
-            logger.debug(
-                "discover_files_for_date: %s/%s -> %d file(s)",
-                segment_folder.name, exchange_folder.name, len(files),
-            )
-            for file_path in files:
-                yield file_path, segment_folder.name, exchange_folder.name
-
-
-def build_destination_dir(segment: str, exchange: str, folder_date: str | None = None) -> Path:
-    """Build {FILE_ROOT_PATH}/{date}/{segment}/{exchange}/ for a given segment and exchange."""
-    folder_date = folder_date or get_today_folder_name()
-    return get_root() / folder_date / segment / exchange
-
-
-def save_uploaded_file(content: bytes, file_name: str, segment: str, exchange: str) -> Path:
-    """Write uploaded bytes to the standard segment/exchange/date folder, creating dirs as needed."""
-    dest_dir = build_destination_dir(segment, exchange)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    dest_path = dest_dir / file_name
-    with open(dest_path, "wb") as fh:
-        fh.write(content)
-    logger.info("save_uploaded_file: wrote %s (%d bytes)", dest_path, len(content))
-
-    return dest_path
 
 
 def move_to_uploaded(file_path: Path) -> Path:

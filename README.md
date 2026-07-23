@@ -1,23 +1,26 @@
 # File Upload Handler
 
-A FastAPI service that watches a date/segment/exchange folder tree for trade
-files and uploads each one to CBOS's real trade-upload API, recording the
-outcome in PostgreSQL for audit purposes. Runs fully automatically: a
-scheduler scans on an interval, discovered files are queued, and a single
-background worker uploads them one at a time.
+A FastAPI service that uploads manifest-declared batches of trade files to
+CBOS's real trade-upload API, recording per-file outcomes in PostgreSQL and
+per-batch status in a `batches` table. Work enters ONLY through the batches
+API (`POST /batches` with a `manifest.json` written by the download bot -
+see `docs/BATCH_HANDOFF_CONTRACT.md`); there is no filesystem scanner. A
+single background worker uploads one batch at a time.
 
-The only decision point in the whole pipeline is **the CBOS upload result**:
-every discovered file is attempted through CBOS's full Steps 2->7 sequence
-with no pre-upload validation of any kind. CBOS succeeding or failing is the
-sole thing that decides whether a file ends up in `uploaded/` or
-`uploadFailed/`.
+Two decision points govern a batch:
+1. **CBOS's own upload results** (Steps 1->9) decide each file's fate
+   (`uploaded/` vs `uploadFailed/`), and
+2. **the completeness gate** decides the batch's: Step 8 may only auto-mark
+   `app/config/optional_slots.yaml`-allowlisted slots optional - any other
+   unfilled mandatory Table2 slot parks the batch `incomplete` (FILEUPLOAD
+   stays FALSE) until a superseding manifest or an audited
+   `POST /batches/{id}/proceed`.
 
 ```
 Server Start
   -> Initialize DB
   -> Start Queue Worker
-  -> Start Scheduler
-  -> Begin File Processing (automatic, no manual steps)
+  -> Await POST /batches (bot callback, engine, or ops)
 ```
 
 ---
@@ -27,32 +30,34 @@ Server Start
 ```
 FastAPI (app.main)
   |
-  |-- Scheduler (APScheduler, runs every POLL_INTERVAL_SECONDS)
-  |     -> discovers files, enqueues them
-  |     -> never uploads, never touches the database
+  |-- Batches API (POST /batches | GET /batches/{id} | POST /batches/rescan
+  |                 | POST /batches/{id}/proceed)
+  |     -> manifest_service: schema-validate (docs/manifest.schema.json),
+  |        sha256-verify, record Batch row, enqueue
   |
   |-- Queue Worker (background thread, started at app startup)
-  |     -> consumes one queued file at a time
-  |     -> calls upload_service.process_task() for the actual work
+  |     -> consumes one queued batch at a time
+  |     -> calls upload_service.process_batch() for the actual work
   |
-  |-- upload_service (orchestration - the only decision point is CBOS's result)
-  |     -> file_service   (filesystem: discover / move files)
-  |     -> cbos_client    (network: the real CBOS Steps 2/3/4/6/7)
-  |     -> repository     (database: audit log only, never read for decisions)
+  |-- upload_service (orchestration: Steps 1->9 + completeness gate)
+  |     -> optional_slots (the gate's allowlist, app/config/optional_slots.yaml)
+  |     -> file_service   (filesystem: move files)
+  |     -> cbos_client    (network: the real CBOS Steps 1-9)
+  |     -> repositories   (uploaded_files audit + batches status)
   |
-  |-- PostgreSQL (uploaded_files table - audit trail)
+  |-- PostgreSQL (uploaded_files audit trail + batches status)
 ```
 
 ### Project layout
 
 ```
 app/
-├── main.py                    FastAPI app + lifespan (DB, worker, scheduler startup)
+├── main.py                    FastAPI app + lifespan (DB, worker startup)
 ├── api/v1/
 │   ├── router.py               aggregates all v1 routes
 │   └── endpoints/
-│       ├── upload.py           POST /upload (manual upload edge case)
-│       └── system.py           GET /health, POST /run-now, GET /queue-status
+│       ├── batches.py          POST /batches, GET /batches/{id}, rescan, proceed
+│       └── system.py           GET /health, GET /queue-status
 ├── core/
 │   ├── config.py               Settings (pydantic-settings, reads .env)
 │   ├── database.py             SQLAlchemy engine/session, init_db()
@@ -66,56 +71,56 @@ app/
 ├── repositories/
 │   └── uploaded_file_repository.py   audit-log writer for uploaded_files - write-only, never queried for decisions
 ├── services/
-│   ├── file_service.py          filesystem-only: discover, move files
-│   └── upload_service.py        orchestrates discovery -> queue -> CBOS Steps 2-7 -> audit write
+│   ├── manifest_service.py      manifest intake: schema-validate, sha256-verify, task-build
+│   ├── optional_slots.py        completeness-gate allowlist loader
+│   ├── file_service.py          filesystem-only: move files
+│   └── upload_service.py        orchestrates queue -> CBOS Steps 1-9 + gate -> audit write
+├── config/
+│   └── optional_slots.yaml      the gate's allowlist (code-reviewed; see BATCH_HANDOFF_CONTRACT.md)
 ├── clients/
-│   └── cbos_client.py           the real CBOS trade-upload API (Steps 2/3/4/6/7)
-├── workers/
-│   └── upload_worker.py         background loop consuming the queue
-└── scheduler/
-    └── scheduler.py             APScheduler wiring, triggers scans only
+│   └── cbos_client.py           the real CBOS trade-upload API (Steps 1-9)
+└── workers/
+    └── upload_worker.py         background loop consuming the queue
 
 scripts/                        local dev tooling - never imported by app/
 ```
 
 ---
 
-## Folder structure the service watches
+## Folder structure (flat - see docs/BATCH_HANDOFF_CONTRACT.md)
 
 ```
-{FILE_ROOT_PATH}/{date}/{segment}/{exchange}/{file}
+{FILE_ROOT_PATH}/{date}/{SEGMENT}/{files + manifest.json}
 ```
 
 Example:
 
 ```
 edpb/
-├── 06-07-2026/
-│   ├── EQ/
-│   │   └── BSE/
-│   │       ├── trade_001.csv
-│   │       ├── trade_002.csv
-│   │       ├── uploaded/          <- successfully uploaded files land here
-│   │       │   └── trade_003.csv
-│   │       └── uploadFailed/      <- failed uploads land here
-│   │           └── trade_004.csv
-│   ├── FO/
-│   ├── CUR/
+├── 20-07-2026/
 │   ├── MCX/
-│   └── SLBM/
+│   │   ├── manifest.json          <- the batch declaration (bot-written, atomic)
+│   │   ├── Trade_MCX_....csv
+│   │   ├── Position_MCXCCL_....csv
+│   │   ├── uploaded/              <- successfully uploaded files land here
+│   │   └── uploadFailed/          <- failed uploads land here
+│   ├── EQ/
+│   └── CUR/
 ```
 
-- `date` uses `DATE_FOLDER_FORMAT` (default `%d-%m-%Y`).
-- Every scan checks **T (today) through T-`SCAN_DAYS_BACK`** (default: today and yesterday).
-- `uploaded/` and `uploadFailed/` are created automatically and are always
-  excluded from discovery - the scheduler never re-scans its own output
-  folders, and a file that has already been moved into either one can never
-  be rediscovered. This filesystem exclusion is the *entire* dedup
-  mechanism; nothing in the database is consulted to decide whether to
-  process a file.
-- On success (CBOS Step 7 confirms completion), the file is moved to
-  `uploaded/`. On any failure anywhere in the CBOS sequence, it's moved to
-  `uploadFailed/` and the audit row's `retry_count` is incremented.
+- `date` uses `DATE_FOLDER_FORMAT` (default `%d-%m-%Y`); dates INSIDE the
+  manifest are ISO (`YYYY-MM-DD`).
+- There is NO exchange folder level - exchange is per-file metadata in the
+  manifest.
+- Only files LISTED in a manifest are ever touched, and only when that
+  manifest is submitted (`POST /batches`) or rescanned. Files already moved
+  into `uploaded/`/`uploadFailed/` are gone from the manifest's directory -
+  that structural fact plus CBOS's own per-slot STATUS readback is the dedup
+  mechanism.
+- On success the file moves to `uploaded/`; on failure to `uploadFailed/`
+  with `retry_count` incremented. When the completeness gate parks a batch,
+  files that DID reach CBOS still move to `uploaded/` (they are registered
+  there) and the batches row records `incomplete` + the missing slots.
 
 ---
 
@@ -169,10 +174,10 @@ CREATE DATABASE edp_cbos;
 
 | Variable | Meaning | Example |
 |---|---|---|
-| `FILE_ROOT_PATH` | Root folder the scheduler scans | `C:/Users/you/mofsl/edpb` |
+| `FILE_ROOT_PATH` | Root folder batches live under | `C:/Users/you/mofsl/edpb` |
 | `DATE_FOLDER_FORMAT` | strftime format for date folders | `%d-%m-%Y` |
-| `POLL_INTERVAL_SECONDS` | How often the scheduler scans | `30` |
-| `SCAN_DAYS_BACK` | How many days back to also scan besides today | `1` |
+| `MANIFEST_SCHEMA_PATH` | JSON Schema manifests are validated against | `docs/manifest.schema.json` |
+| `OPTIONAL_SLOTS_PATH` | The completeness gate's allowlist | `app/config/optional_slots.yaml` |
 | `LOG_LEVEL` | Log verbosity (`INFO` for milestones, `DEBUG` for full per-step trace) | `INFO` |
 | `CBOS_BASE_URL` | Shared host for all 5 CBOS trade-upload endpoints | `https://cbos-host/api` |
 | `CBOS_LOGIN_ID` | LOGINID sent on every CBOS call | `CV0001` |
@@ -207,31 +212,28 @@ python -m uvicorn app.main:app --reload
 On startup you should see, in this order:
 
 ```
-main INFO Startup: step 1/3 - initializing database
-main INFO Startup: step 2/3 - starting queue worker thread
+main INFO Startup: step 1/2 - initializing database
+main INFO Startup: step 2/2 - starting queue worker thread
 upload_worker INFO Queue worker started
-main INFO Startup: step 3/3 - starting scheduler
-scheduler INFO Scheduler started, running every N minute(s)
-main INFO Startup complete - ready to process files
+main INFO Startup complete - awaiting batches (POST /batches)
 Application startup complete.
 ```
 
-Nothing else is required - the scheduler fires automatically on its interval
-and the worker processes whatever gets queued.
+Work arrives via POST /batches - the download bot calls it after finalizing
+a manifest; POST /batches/rescan catches up on any manifest the callback
+missed.
 
 ### API endpoints
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | Liveness check |
-| POST | `/run-now` | Trigger an immediate discovery scan (don't wait for the interval) |
+| POST | `/batches` | Submit a manifest (`{"manifest_path": ...}`) - 202 queued, 200 already-known, 400 schema-invalid, 422 checksum mismatch |
+| GET | `/batches/{batch_id}` | Batch status (`queued/uploading/confirmed/unconfirmed/incomplete/failed/rejected`) + per-file outcomes |
+| POST | `/batches/rescan` | Queue every on-disk manifest not yet known (manual ops path / callback catch-up) |
+| POST | `/batches/{batch_id}/proceed` | Audited force-proceed for an `incomplete` batch (`{"slots": [...], "reason": "..."}`) |
 | GET | `/queue-status` | `{"queue_size": N, "unfinished_tasks": N}` - queue depth / true in-flight count |
-| POST | `/upload` | Manual upload edge case (multipart `file` + `segment` + `exchange` form fields) |
 | GET | `/docs` | Swagger UI |
-
-`POST /upload` saves the file into the standard `{date}/{segment}/{exchange}/`
-folder and marks it `pending` - it never talks to CBOS directly. The next
-scheduler scan discovers and processes it exactly like any other file.
 
 ---
 

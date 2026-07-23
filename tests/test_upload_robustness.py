@@ -60,29 +60,6 @@ def test_create_audit_record_is_idempotent():
         session.close()
 
 
-def test_manual_upload_then_process_does_not_collide(monkeypatch):
-    """POST /upload writes no DB row, so the batch's create_audit_record owns it
-    and the file uploads cleanly (the B1 scenario, end to end)."""
-    _fast(monkeypatch)
-    from app.core import database
-    from app.models.uploaded_file import UploadedFile
-    from app.services import upload_service
-
-    database.init_db()
-    content = (",".join(str(i) for i in range(68)) + "\n").encode()  # UploadID 127 expects 68 cols
-    dest = upload_service.save_manual_upload(content, "MCX_ProductMaster.csv", "MCX", "NA")
-    assert dest.exists()
-
-    upload_service.process_batch(_batch(date=dest.parent.parent.parent.name, files=[str(dest)]))
-
-    session = database.get_sessionmaker()()
-    try:
-        rows = session.query(UploadedFile).all()
-        assert len(rows) == 1 and rows[0].status == "uploaded"
-    finally:
-        session.close()
-
-
 # --- H4: transient setup failure must not hot-loop -----------------------------
 
 class _ReserveFails(MockCBOSClient):
@@ -130,19 +107,27 @@ def test_unconfirmed_upload_goes_to_uploaded_not_failed(monkeypatch):
     database.init_db()
     cbos_client.set_cbos_client(_GtgFalse())
 
+    # The FULL mandatory MCX set (127/534/535; 320 is allowlisted-optional), so
+    # the completeness gate passes and Step 9's FALSE is what decides.
     folder = _root() / "17-07-2026" / "MCX" / "NA"
-    f = _write(folder, "Position_MCXCCL_CO_0_CM_55930_20260717_F_0000.csv")
+    files = [
+        _write(folder, "MCX_ProductMaster.csv", cols=68),
+        _write(folder, "Position_MCXCCL_CO_0_CM_55930_20260717_F_0000.csv"),
+        _write(folder, "Trade_MCX_CO_0_CM_55930_20260717_F_0000.csv"),
+    ]
 
-    upload_service.process_batch(_batch(files=[str(f)]))
+    upload_service.process_batch(_batch(files=[str(f) for f in files]))
 
-    # File is in CBOS (Steps 5+7 done) - it must land in uploaded/, not uploadFailed/.
-    assert (folder / "uploaded" / f.name).exists()
-    assert not (folder / "uploadFailed" / f.name).exists()
     session = database.get_sessionmaker()()
     try:
-        row = session.query(UploadedFile).one()
-        assert row.status == "uploaded"
-        assert "not confirmed" in (row.cbos_response or "").lower()
+        rows = session.query(UploadedFile).all()
+        assert len(rows) == 3
+        for row in rows:
+            # Files are in CBOS (Steps 5+7 done) - uploaded/, not uploadFailed/.
+            assert (folder / "uploaded" / row.file_name).exists()
+            assert not (folder / "uploadFailed" / row.file_name).exists()
+            assert row.status == "uploaded"
+            assert "not confirmed" in (row.cbos_response or "").lower()
     finally:
         session.close()
 
@@ -186,47 +171,31 @@ def test_guid_persisted_even_when_chunk_upload_fails(monkeypatch):
 
 # --- the downloader omits the exchange level for segments that lack one -------
 
-def test_discovers_files_with_no_exchange_folder(monkeypatch):
-    """The RPA bot writes {date}/MCX/file.csv (no exchange level) but
-    {date}/EQ/BSE/file.csv (with one). Requiring the exchange folder made every
-    MCX file invisible to discovery - silently unbilled, no error anywhere."""
-    _fast(monkeypatch)
-    from app.services import file_service
-
-    root = _root()
-    loose = _write(root / "17-07-2026" / "MCX", "Position_MCXCCL_CO_0_CM_55930_20260717_F_0000.csv")
-    nested = _write(root / "17-07-2026" / "EQ" / "BSE", "Trade_BSE_CM_0_TM_446_20260717_F_0000.csv")
-
-    found = {p.name: (seg, exc) for p, seg, exc in
-             file_service.discover_files_for_date(root, "17-07-2026")}
-
-    assert found[loose.name] == ("MCX", "NA"), "segment-level file must be found"
-    assert found[nested.name] == ("EQ", "BSE"), "exchange-level file keeps its exchange"
-
-
 def test_no_exchange_file_uploads_and_moves_beside_itself(monkeypatch):
     """A segment-level file goes through the full lane and lands in
     MCX/uploaded/ - which list_subdirs must not then mistake for an exchange."""
     _fast(monkeypatch)
     from app.core import database
     from app.models.uploaded_file import UploadedFile
-    from app.services import file_service, upload_service
+    from app.services import upload_service
 
     database.init_db()
     segment_folder = _root() / "17-07-2026" / "MCX"
-    f = _write(segment_folder, "Position_MCXCCL_CO_0_CM_55930_20260717_F_0000.csv")
+    files = [
+        _write(segment_folder, "MCX_ProductMaster.csv", cols=68),
+        _write(segment_folder, "Position_MCXCCL_CO_0_CM_55930_20260717_F_0000.csv"),
+        _write(segment_folder, "Trade_MCX_CO_0_CM_55930_20260717_F_0000.csv"),
+    ]
 
-    upload_service.process_batch(_batch(exchange="NA", files=[str(f)]))
+    upload_service.process_batch(_batch(exchange="NA", files=[str(f) for f in files]))
 
-    assert (segment_folder / "uploaded" / f.name).exists()
     session = database.get_sessionmaker()()
     try:
-        assert session.query(UploadedFile).one().status == "uploaded"
+        for row in session.query(UploadedFile).all():
+            assert (segment_folder / "uploaded" / row.file_name).exists()
+            assert row.status == "uploaded"
     finally:
         session.close()
-
-    # The uploaded/ folder must not now look like an exchange holding a source file.
-    assert list(file_service.discover_files_for_date(_root(), "17-07-2026")) == []
 
 
 # --- idempotency: a re-dropped, already-uploaded file is not sent twice --------

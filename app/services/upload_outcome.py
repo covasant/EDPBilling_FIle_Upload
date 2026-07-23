@@ -5,8 +5,8 @@ This module only *decides*. It touches no filesystem, no database and no
 network, so the whole decision table can be asserted directly. Carrying a
 decision out is upload_service.apply_outcome's job.
 
-The five outcomes are the complete set - every discovered file ends in exactly
-one of them. See CONTEXT.md's Outcomes table.
+The six outcomes are the complete set - every manifest-listed file ends in
+exactly one of them. See CONTEXT.md's Outcomes table.
 """
 
 from dataclasses import dataclass
@@ -25,6 +25,7 @@ class Outcome(StrEnum):
     IDEMPOTENT_SKIP = "idempotent_skip"  # already in CBOS for this batch + UploadID
     REJECTED = "rejected"                # matched no upload rule, or failed a local check
     FAILED = "failed"                    # a CBOS call errored
+    GATE_PARKED = "gate_parked"          # in CBOS, but the batch parked INCOMPLETE (gate)
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,27 @@ def idempotent_skip() -> FileOutcome:
         destination=Destination.UPLOADED,
         status="uploaded",
         cbos_response="Skipped - already uploaded (idempotent)",
+    )
+
+
+def gate_parked(missing_slots: list[str]) -> FileOutcome:
+    """This file IS in CBOS (Steps 5+7 succeeded), but the batch parked
+    INCOMPLETE at the completeness gate - other mandatory slots are unfilled,
+    so Step 8/9 never ran and FILEUPLOAD stays FALSE.
+
+    Lands in uploaded/ (the file itself is safely registered; re-dropping it
+    would duplicate it - CBOS's per-slot STATUS readback idempotent-skips it
+    on any re-run). The BATCH-level story lives on the batches row
+    (status=incomplete, missing slots in status_detail)."""
+    return FileOutcome(
+        outcome=Outcome.GATE_PARKED,
+        destination=Destination.UPLOADED,
+        status="uploaded",
+        cbos_response=(
+            "Registered in CBOS; batch parked INCOMPLETE at completeness gate "
+            f"(unfilled mandatory slots: {', '.join(missing_slots)})"
+        ),
+        stamp_uploaded_at=True,
     )
 
 

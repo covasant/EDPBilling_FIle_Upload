@@ -1,0 +1,24 @@
+# Optional-slot allowlist — the ONLY UploadIDs Step 8 may auto-mark optional
+# when no file arrived for them (see docs/BATCH_HANDOFF_CONTRACT.md,
+# "Completeness gate"). Any other unfilled file-expecting Table2 slot parks
+# the batch INCOMPLETE.
+#
+# This file is a CORRECTNESS CONTROL: adding a slot here means "billing may
+# proceed without this file". Changes go through PR review, never hotfixes.
+# The escape hatch for a one-off day is POST /batches/{id}/proceed, which is
+# audited per-batch — not an edit here.
+#
+# ⚠ INITIAL SEED — CONFIRM WITH MOFSL OPS. Seeded from EDP_RequiredFiles.xlsx
+# sheets and observed UAT runs; the business call on "legitimately absent some
+# days" belongs to ops. Slots commented out are suspected-optional but
+# unconfirmed.
+#
+# Keys are segment codes; values are CBOS UploadIDs (Table2), as strings.
+
+MCX:
+  - "320"    # MCX Physical Trade File — absent on days with no physical delivery
+
+EQ:
+  - "451"    # BSE Auction Trade File — absent on days with no auctions
+  # - "94"   # STT NOT TO CHARGE — suspected conditional; awaiting ops confirmation
+  # - "84"   # STT INDICATOR — suspected conditional; awaiting ops confirmation
