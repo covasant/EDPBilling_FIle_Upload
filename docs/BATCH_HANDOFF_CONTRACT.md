@@ -97,6 +97,34 @@ POST /batches/rescan     {}
   off the manifest's file list instead of a directory listing.
 - `correlation_id` flows manifest → batch processing → audit rows (ticket 11).
 
+## Completeness gate (decided 2026-07-23, wayfinder ticket 04)
+
+The gate closes the "Step 8 marks every unfilled slot optional → FILEUPLOAD
+flips TRUE on incomplete data" hole. Implementation: ticket 07.
+
+- **Source of truth: CBOS Table2.** The required set for a batch is the
+  reserved PID's file-expecting slots (non-zero UploadID) — never a second
+  spec. `EDP_RequiredFiles.xlsx` / `EDPFILEUPLOADSETTING.xlsx` are
+  documentation, not runtime inputs.
+- **Optional-slot allowlist.** A small, code-reviewed YAML in this repo
+  (`app/config/optional_slots.yaml`, changed via PR) lists the UploadIDs per
+  segment that are *legitimately* absent some days (e.g. MCX Physical 320,
+  BSE Auction 451). Step 8 may only auto-mark **allowlisted** unfilled slots
+  optional.
+- **Any other unfilled slot ⇒ the batch parks `INCOMPLETE`**: no Step 8 on
+  that slot, no FILEUPLOAD confirmation, files stay in place. A superseding
+  manifest (re-download) is the normal fix.
+- **Audited force-proceed**: `POST /batches/{batch_id}/proceed
+  {"slots": [<uploadid>...], "reason": "..."}` — ops explicitly names the
+  slots to mark optional; recorded in the audit trail; then the batch
+  resumes Steps 8–9.
+- **Alerting**: the uploader only *exposes* `INCOMPLETE` (via
+  `GET /batches/{batch_id}`); EDP_Billing — which owns Graph email alerting
+  and sees FILEUPLOAD staying FALSE — notifies ops. One alerting system.
+- The initial allowlist contents must be **confirmed with MOFSL ops**
+  (seeded from the xlsx sheets + real run logs, but the business call on
+  "legitimately absent" is theirs).
+
 ## Who calls what, when
 
 | Phase | Trigger chain |
