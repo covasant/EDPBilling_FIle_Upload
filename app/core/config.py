@@ -11,9 +11,14 @@ class Settings(BaseSettings):
 
     file_root_path: str
     date_folder_format: str = "%d-%m-%Y"
-    poll_interval_seconds: int = 30
-    scan_days_back: int = 1
     log_level: str = "INFO"
+
+    # Batch intake (docs/BATCH_HANDOFF_CONTRACT.md). Work enters ONLY via
+    # POST /batches with a manifest - there is no filesystem scanner.
+    manifest_schema_path: str = "docs/manifest.schema.json"
+    # The Step-8 optional-slot allowlist (completeness gate). Code-reviewed
+    # YAML; see app/services/optional_slots.py.
+    optional_slots_path: str = "app/config/optional_slots.yaml"
 
     # CBOS trade-upload API (Steps 2/3/4/6/7 in cbos_client.py).
     # MOCK -> MockCBOSClient (no network calls, no CBOS_BASE_URL/CBOS_LOGIN_ID needed).
