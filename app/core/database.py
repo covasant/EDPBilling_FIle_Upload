@@ -48,6 +48,7 @@ def init_db() -> None:
             "matched_pattern": "VARCHAR",
             "validation_error": "TEXT",
             "cbos_upload_settings": "TEXT",
+            "correlation_id": "VARCHAR",
         }
         for column_name, column_type in missing_columns.items():
             if column_name in columns:

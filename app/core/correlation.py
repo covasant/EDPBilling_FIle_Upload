@@ -15,6 +15,13 @@ A ContextVar rather than a parameter because the id has to reach log calls in
 modules that have no business knowing about batches - cbos_client's HTTP layer,
 the repository - and threading it through eight signatures to satisfy a log
 format would put logging concerns into the interface.
+
+Since the manifest handoff (BATCH_HANDOFF_CONTRACT.md), a batch usually
+arrives CARRYING an id: the manifest's correlation_id, minted by the
+EDP_Billing engine (or the bot) and threaded through every service so one
+grep traces a segment-day across engine -> bot -> uploader logs. batch_context
+adopts that id when given one and only mints its own for id-less batches
+(hand-written manifests, old producers).
 """
 
 from __future__ import annotations
@@ -36,11 +43,12 @@ def label() -> str:
 
 
 @contextmanager
-def batch_context(batch_key: str):
-    """Stamp every log line emitted inside this block with a fresh run id."""
-    # 8 hex chars: collisions within a day's logs aren't a practical concern,
-    # and it stays short enough to read in a line prefix.
-    token = _context.set((uuid.uuid4().hex[:8], batch_key))
+def batch_context(batch_key: str, correlation_id: str | None = None):
+    """Stamp every log line emitted inside this block with the batch's
+    correlation id (adopted from its manifest when present, else a fresh
+    8-hex run id — short enough to read in a line prefix, collision-safe
+    within a day's logs)."""
+    token = _context.set((correlation_id or uuid.uuid4().hex[:8], batch_key))
     try:
         yield
     finally:

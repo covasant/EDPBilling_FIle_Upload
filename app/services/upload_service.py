@@ -150,6 +150,8 @@ def _fail_all_files(repo: UploadedFileRepository, files: list, task: SegmentBatc
     and retried forever."""
     for file_path, exchange in files:
         record = repo.create_audit_record(file_path, task.folder_date, task.segment, exchange)
+        if task.correlation_id:
+            repo.update(record, correlation_id=task.correlation_id)
         apply_outcome(repo, record, file_path, upload_outcome.failed(error),
                       [{"step": "batch_setup_error", "error": str(error)}])
 
@@ -169,7 +171,7 @@ def process_batch(task: SegmentBatchTask) -> None:
     # knows nothing about batches - carries this run's id, so one run's whole
     # CBOS conversation can be grepped out of a day's log. The batch key alone
     # won't do: it recurs on every retry.
-    with correlation.batch_context(task.key):
+    with correlation.batch_context(task.key, task.correlation_id):
         if task.mode == "proceed":
             _proceed_batch(task)
         else:
@@ -300,6 +302,8 @@ def _process_batch(task: SegmentBatchTask) -> None:
 
         for file_path, exchange in files:
             record = repo.create_audit_record(file_path, task.folder_date, task.segment, exchange)
+            if task.correlation_id:
+                repo.update(record, correlation_id=task.correlation_id)
             request_log: list = []
 
             # NO_EXCHANGE is a placeholder for segments that don't split by
