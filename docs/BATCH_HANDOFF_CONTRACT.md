@@ -1,0 +1,108 @@
+# Batch handoff contract — Downloader → Uploader (manifest + POST /batches)
+
+Decided 2026-07-23 (wayfinder ticket 05). Replaces the implicit folder-scan
+coupling ("set `EDPB_BASE_DIR` to the uploader's `FILE_ROOT_PATH` and hope")
+with an explicit, atomic, checksummed handoff. Companion to
+`CBOS_HANDOFF_CONTRACT.md` (which governs the Uploader ↔ EDP_Billing side).
+
+| Decision | Choice |
+|---|---|
+| Batch unit | **One aggregated batch per (segment, trade date)** — one `manifest.json`, written when the bot's full-segment download run completes |
+| Transport | Shared filesystem; `POST /batches` carries the **manifest path** |
+| Folder layout | **Flat `{DD-MM-YYYY}/{SEGMENT}/`** — exchange is per-file metadata; the `{exchange}/` folder level and the `NA` shim are dead |
+| Completeness authority | **Uploader only** (required-files gate, ticket 04). The bot reports `download_outcome` facts, never decides |
+| Uploader trigger | **API-only**: `POST /batches`. Interim caller = bot callback after finalization; final caller = EDP_Billing engine (ticket 10). No folder-scan scheduler |
+
+## The manifest
+
+One per (segment, trade date): `{FILE_ROOT}/{DD-MM-YYYY}/{SEGMENT}/manifest.json`.
+Schema: [`manifest.schema.json`](manifest.schema.json). Example:
+
+```json
+{
+  "manifest_version": 1,
+  "batch_id": "MCX-2026-07-20-a3f8c2d1",
+  "segment": "MCX",
+  "trade_date": "2026-07-20",
+  "correlation_id": "req-7f3a1b9c",
+  "producer": { "name": "mofsl_file_download_rpa_bot", "version": "1.4.0", "action": "all" },
+  "created_at": "2026-07-20T03:12:45+05:30",
+  "files": [
+    { "name": "Trade_MCX_CO_0_CM_55930_20260720_F_0000.csv",
+      "sha256": "9b4e…", "size_bytes": 184320, "exchange": "MCX", "kind": "trade" },
+    { "name": "Position_MCXCCL_CO_0_CM_55930_20260720_F_0000.csv",
+      "sha256": "77aa…", "size_bytes": 92160, "exchange": "MCX", "kind": "position" },
+    { "name": "MCX_ProductMaster.csv",
+      "sha256": "c1d2…", "size_bytes": 51200, "exchange": "MCX", "kind": "product_master" }
+  ],
+  "download_outcome": { "status": "success", "no_data": [], "failed": [] }
+}
+```
+
+Rules:
+- Dates are **ISO (`YYYY-MM-DD`) inside the manifest**; only folder names keep
+  `DD-MM-YYYY`. `created_at` is ISO-8601 with offset (IST).
+- `batch_id` = `{SEGMENT}-{trade_date}-{8 hex chars}`, fresh per finalization
+  attempt. A re-run supersedes: new `manifest.json`, new `batch_id`; the audit
+  trail keeps history per batch_id.
+- `files[].name` is relative to the manifest's own directory (flat — no
+  subpaths). `exchange` and `kind` are metadata for matching/diagnostics.
+- `download_outcome` is the bot's factual report: `status` `success|partial`,
+  `no_data`/`failed` list the actions or file kinds that produced nothing.
+  A `partial` manifest is still finalized and POSTed — the uploader's
+  required-files gate is the single authority on whether to proceed or park
+  the batch INCOMPLETE.
+- Single-action debug runs (e.g. BSE `vn` only) do **not** finalize a
+  manifest; only the full-segment run does.
+
+## Atomic finalization (bot side)
+
+1. Download each file to `{date}/{SEGMENT}/.part-{name}`; fsync; rename into
+   place (`{name}`).
+2. Compute sha256/size per file; write `manifest.json.tmp`; fsync; rename to
+   `manifest.json` — the manifest is written **last** and its rename is the
+   commit point.
+3. Call `POST /batches` with the manifest's absolute path (small retry, e.g.
+   3 × 5 s). If the uploader is unreachable, stop — `POST /batches/rescan`
+   picks the manifest up later.
+
+The uploader only ever acts on files listed in a manifest received after its
+commit point and verifies each sha256 — a torn or in-progress batch is
+structurally invisible. `.part-*` files are ignored by everyone and may be
+cleaned by the bot on its next run.
+
+## POST /batches (uploader side)
+
+```
+POST /batches            {"manifest_path": "/abs/path/.../manifest.json"}
+  202 {"batch_id": "...", "status": "queued"}
+  200 {"batch_id": "...", "status": "<current>"}     ← already-known batch_id (idempotent)
+  400 manifest unreadable / schema-invalid           422 checksum mismatch (batch rejected, files left in place)
+
+GET  /batches/{batch_id}
+  200 {"batch_id", "status": "queued|uploading|confirmed|incomplete|failed",
+       "files": [{"name", "outcome", "cbos_upload_id", ...}]}   ← from the audit table
+
+POST /batches/rescan     {}
+  202 {"queued": ["<batch_id>", ...]}
+  Walks FILE_ROOT for manifest.json files not yet known to the audit trail and
+  queues them. THE manual ops path (replaces drop-a-file-in-folder + /run-now)
+  and the catch-up path when the bot's callback couldn't reach the uploader.
+```
+
+- The APScheduler folder-scan trigger is **removed** (ticket 09). Nothing is
+  uploaded without a manifest.
+- Upload processing itself is unchanged: Steps 1–9, existing-PID reuse,
+  slot-status idempotent skip, `uploaded/`/`uploadFailed/` moves — all keyed
+  off the manifest's file list instead of a directory listing.
+- `correlation_id` flows manifest → batch processing → audit rows (ticket 11).
+
+## Who calls what, when
+
+| Phase | Trigger chain |
+|---|---|
+| Now (tickets 08+09) | bot finalizes → bot `POST /batches` → uploader Steps 1–9 |
+| Target (ticket 10) | EDP_Billing engine → bot `/edpb/{code}/download` → bot finalizes → engine `POST /batches` → engine polls FILEUPLOAD |
+
+When ticket 10 lands, the bot's interim callback is removed; the bot's
+download response tells the engine where the manifest is.
