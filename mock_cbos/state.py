@@ -1,13 +1,18 @@
-"""In-memory state for the mock CBOS v4 server.
+"""In-memory state for the mock CBOS v5 server.
 
 Deliberately models the real CBOS invariants that bite in practice:
   - an uploaded chunk lands in a GUID folder that is *orphaned* until a Step-7
     register call associates it with a PROCESSID + UPLOADID;
   - the FILEUPLOAD GTG check only turns TRUE once every *mandatory* upload step
     (non-zero UPLOADID) either has a registered file or has been marked optional
-    via Step 8.
+    via Step 8;
+  - (V5) a segment/date's PROCESSID is discoverable via
+    getdropdown(EXISTINGPROCESSID) and re-fetchable through getNewTradeProcess
+    with that PROCESSID - Table2 then reports each slot's *real* STATUS instead
+    of resetting to PENDING, which is what makes the uploader's re-scan
+    idempotency (skip slots CBOS already accepted) testable here.
 
-Reproducing those two rules is the whole point: code that passes here won't be
+Reproducing those rules is the whole point: code that passes here won't be
 surprised by the real server.
 """
 
@@ -38,6 +43,19 @@ class Step:
         """A mandatory upload step is satisfied when it has a file or is optional;
         non-upload steps (uploadid 0) are always satisfied."""
         return (not self.expects_file) or self.has_file or self.is_optional
+
+    @property
+    def status_desc(self) -> str | None:
+        """Table2's V5 STATUSDESC, derived from the step's real progress: a
+        file-expecting slot still waiting reads "UPLOAD FILE PENDING" (the
+        exact phrase UploadCandidate.needs_upload matches on), an accepted one
+        "FILE UPLOADED"; computation/posting steps (UPLOADID 0) carry None,
+        matching the doc's example rows."""
+        if not self.expects_file:
+            return None
+        if self.has_file:
+            return "FILE UPLOADED"
+        return "UPLOAD FILE PENDING"
 
 
 @dataclass
@@ -131,6 +149,10 @@ class MockState:
             self.processes: dict[str, Process] = {}
             self.guids: dict[str, GuidFolder] = {}
             self.latest_pid_by_segment: dict[str, str] = {}
+            # V5: getdropdown(EXISTINGPROCESSID) filters by segment AND trade
+            # date (FILTER1/FILTER2), so the mock must resolve per (segment,
+            # date), not just "latest for the segment".
+            self.pid_by_seg_date: dict[tuple[str, str], str] = {}
 
     # --- process lifecycle ----------------------------------------------------
     def reserve_process(self, segment: str, login_id: str, trade_date: str) -> Process:
@@ -145,6 +167,7 @@ class MockState:
                            trade_date=trade_date, steps=steps)
             self.processes[pid] = proc
             self.latest_pid_by_segment[segment.upper()] = pid
+            self.pid_by_seg_date[(segment.upper(), trade_date)] = pid
             return proc
 
     def get_process(self, process_id: str) -> Process | None:
@@ -153,6 +176,16 @@ class MockState:
     def latest_process(self, segment: str) -> Process | None:
         pid = self.latest_pid_by_segment.get(segment.upper())
         return self.processes.get(pid) if pid else None
+
+    def process_for(self, segment: str, trade_date: str) -> Process | None:
+        """The segment/date's reserved process, if any - the V5 lookup behind
+        getdropdown(EXISTINGPROCESSID). Falls back to the segment's latest
+        process when the caller sent no usable date (pre-V5 payload shape),
+        so old Postman collections keep working."""
+        if trade_date:
+            pid = self.pid_by_seg_date.get((segment.upper(), trade_date))
+            return self.processes.get(pid) if pid else None
+        return self.latest_process(segment)
 
     # --- uploads --------------------------------------------------------------
     def add_chunk(self, guid: str, filename: str, chunk: bytes,
@@ -190,7 +223,10 @@ class MockState:
             folder.upload_id = str(upload_id)
             folder.process_id = str(process_id)
             step.has_file = True
-            step.status = "UPLOADED"
+            # "SUCCESS" (not "UPLOADED") to match what the in-process
+            # MockCBOSClient reads back for a filled slot - the V5 client's
+            # needs_upload treats any non-PENDING STATUS as "already accepted".
+            step.status = "SUCCESS"
             return True, "File entry saved successfully"
 
     def mark_optional(self, process_id: str, stepno: int, is_optional: bool) -> tuple[bool, str]:
