@@ -16,7 +16,8 @@ with an explicit, atomic, checksummed handoff. Companion to
 ## The manifest
 
 One per (segment, trade date): `{FILE_ROOT}/{DD-MM-YYYY}/{SEGMENT}/manifest.json`.
-Schema: [`manifest.schema.json`](manifest.schema.json). Example:
+Schema: `edpb_core/manifest.schema.json` (packaged in the shared `edpb-core`
+package under `EDP_Billing/packages/edpb-core` — THE canonical copy). Example:
 
 ```json
 {

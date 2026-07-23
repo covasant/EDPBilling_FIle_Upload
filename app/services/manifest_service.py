@@ -12,10 +12,9 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from functools import lru_cache
 from pathlib import Path
 
-import jsonschema
+from edpb_core.manifest import ManifestValidationError, validate_manifest
 
 from app.core.config import settings
 from app.core.queue import SegmentBatchTask
@@ -46,13 +45,6 @@ class LoadedManifest:
     files: list[tuple[str, str]]  # (absolute file path, exchange) - SegmentBatchTask shape
 
 
-@lru_cache
-def _schema() -> dict:
-    path = Path(settings.manifest_schema_path)
-    with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
-
-
 def load_manifest(manifest_path: Path) -> LoadedManifest:
     """Read + schema-validate a manifest. Raises ManifestError on anything
     that makes the manifest itself untrustworthy; does NOT touch the listed
@@ -65,9 +57,9 @@ def load_manifest(manifest_path: Path) -> LoadedManifest:
         raise ManifestError(f"manifest unreadable: {exc}") from exc
 
     try:
-        jsonschema.validate(data, _schema())
-    except jsonschema.ValidationError as exc:
-        raise ManifestError(f"manifest schema-invalid: {exc.message}") from exc
+        validate_manifest(data)  # THE schema, packaged in edpb-core
+    except ManifestValidationError as exc:
+        raise ManifestError(f"manifest schema-invalid: {exc}") from exc
 
     trade_date = data["trade_date"]
     folder_date = datetime.strptime(trade_date, "%Y-%m-%d").strftime(settings.date_folder_format)
