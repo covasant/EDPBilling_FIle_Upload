@@ -26,7 +26,9 @@ def get_sessionmaker() -> sessionmaker:
 
 
 def init_db() -> None:
-    from app.models import batch, uploaded_file  # noqa: F401 - registers models before create_all
+    # Imported for their side effect: registering the tables on Base.metadata
+    # so create_all below sees them.
+    from app.models import batch, uploaded_file  # noqa: F401
 
     engine = get_engine()
     logger.debug("init_db: creating tables (create_all) against %s", engine.url)
@@ -37,6 +39,7 @@ def init_db() -> None:
     # before these fields existed). create_all() never ALTERs existing tables,
     # so newly added model columns need to be patched in by hand here.
     from sqlalchemy import inspect, text
+
     inspector = inspect(engine)
     if "uploaded_files" in inspector.get_table_names():
         columns = {c["name"] for c in inspector.get_columns("uploaded_files")}
@@ -57,7 +60,9 @@ def init_db() -> None:
                 continue
             logger.info("init_db: '%s' column missing on uploaded_files, adding it", column_name)
             with engine.begin() as conn:
-                conn.execute(text(f"ALTER TABLE uploaded_files ADD COLUMN {column_name} {column_type};"))
+                conn.execute(
+                    text(f"ALTER TABLE uploaded_files ADD COLUMN {column_name} {column_type};")
+                )
             logger.info("init_db: '%s' column added", column_name)
 
 

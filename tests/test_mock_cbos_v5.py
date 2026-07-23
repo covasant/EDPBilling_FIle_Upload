@@ -32,20 +32,32 @@ def client():
 
 
 def _reserve(client: TestClient, segment: str = "MCX", trade_date: str = "2026-07-20") -> dict:
-    resp = client.post("/v1/api/process/getNewTradeProcess", json={
-        "GROUPNAME": segment, "LOGINID": "CV0001", "PASSWORD": "x",
-        "TRADEDATE": trade_date, "PROCESSID": "0",
-    })
+    resp = client.post(
+        "/v1/api/process/getNewTradeProcess",
+        json={
+            "GROUPNAME": segment,
+            "LOGINID": "CV0001",
+            "PASSWORD": "x",
+            "TRADEDATE": trade_date,
+            "PROCESSID": "0",
+        },
+    )
     assert resp.status_code == 200
     return resp.json()["Result"]
 
 
 def _dropdown(client: TestClient, segment: str, trade_date: str) -> list:
-    resp = client.post("/v1/api/brokerage/getdropdown", json={
-        "TAG": "EXISTINGPROCESSID", "LOGINID": "CV0001",
-        "FILTER1": segment, "FILTER2": trade_date,
-        "extraoption2": "", "extraoption3": "",
-    })
+    resp = client.post(
+        "/v1/api/brokerage/getdropdown",
+        json={
+            "TAG": "EXISTINGPROCESSID",
+            "LOGINID": "CV0001",
+            "FILTER1": segment,
+            "FILTER2": trade_date,
+            "extraoption2": "",
+            "extraoption3": "",
+        },
+    )
     assert resp.status_code == 200
     return resp.json()["Result"]
 
@@ -78,20 +90,38 @@ def test_refetch_reports_real_status_and_does_not_trigger(client):
     result = _reserve(client)
     pid = str(result["Table1"][0]["PROCESSID"])
     # Upload + register a file into UPLOADID 127 (MCX contract master).
-    client.post("/v1/api/process/SaveTradePromodalUploadChunkFile", data={
-        "CurrentChunk": "0", "TotalChunks": "1", "Guid": "guid-1",
-        "FileName": "MCX_ProductMaster.csv", "UPLOADID": "127",
-    }, files={"file": ("MCX_ProductMaster.csv", b"data")})
-    reg = client.post("/v1/api/process/SaveNewTradeProcessPromodalUploadFile", json={
-        "uploadfoldername": "guid-1", "uploadid": "127", "paraM9": pid,
-        "uploadfilename": "MCX_ProductMaster.csv",
-    })
+    client.post(
+        "/v1/api/process/SaveTradePromodalUploadChunkFile",
+        data={
+            "CurrentChunk": "0",
+            "TotalChunks": "1",
+            "Guid": "guid-1",
+            "FileName": "MCX_ProductMaster.csv",
+            "UPLOADID": "127",
+        },
+        files={"file": ("MCX_ProductMaster.csv", b"data")},
+    )
+    reg = client.post(
+        "/v1/api/process/SaveNewTradeProcessPromodalUploadFile",
+        json={
+            "uploadfoldername": "guid-1",
+            "uploadid": "127",
+            "paraM9": pid,
+            "uploadfilename": "MCX_ProductMaster.csv",
+        },
+    )
     assert reg.json()["Status"] == "Success"
 
-    refetch = client.post("/v1/api/process/getNewTradeProcess", json={
-        "GROUPNAME": "MCX", "LOGINID": "CV0001", "PASSWORD": "x",
-        "TRADEDATE": "2026-07-20", "PROCESSID": pid,
-    }).json()["Result"]
+    refetch = client.post(
+        "/v1/api/process/getNewTradeProcess",
+        json={
+            "GROUPNAME": "MCX",
+            "LOGINID": "CV0001",
+            "PASSWORD": "x",
+            "TRADEDATE": "2026-07-20",
+            "PROCESSID": pid,
+        },
+    ).json()["Result"]
 
     # Re-fetch: same PID, ISAUTOUPLOAD flipped False (the real-CBOS quirk),
     # still runnable.
@@ -118,28 +148,46 @@ def test_refetch_triggers_once_gtg_ready(client):
     # Satisfy every mandatory upload slot by marking each optional (Step 8).
     for row in result["Table2"]:
         if row["UPLOADID"] != 0:
-            resp = client.post("/v1/api/process/UpdateNewTradeProcessProcessDetailsIsMandatory",
-                               json={"PROCESSID": pid, "STEPNO": row["STEPNO"], "ISOPTIONAL": "0"})
+            resp = client.post(
+                "/v1/api/process/UpdateNewTradeProcessProcessDetailsIsMandatory",
+                json={"PROCESSID": pid, "STEPNO": row["STEPNO"], "ISOPTIONAL": "0"},
+            )
             assert resp.status_code == 200
-    client.post("/v1/api/process/getNewTradeProcess", json={
-        "GROUPNAME": "MCX", "LOGINID": "CV0001", "PASSWORD": "x",
-        "TRADEDATE": "2026-07-20", "PROCESSID": pid,
-    })
+    client.post(
+        "/v1/api/process/getNewTradeProcess",
+        json={
+            "GROUPNAME": "MCX",
+            "LOGINID": "CV0001",
+            "PASSWORD": "x",
+            "TRADEDATE": "2026-07-20",
+            "PROCESSID": pid,
+        },
+    )
     assert STATE.get_process(pid).triggered is True
 
 
 def test_holiday_check_uses_payload_trade_date(client, monkeypatch):
     monkeypatch.setenv("MOCK_CBOS_HOLIDAYS", "2026-07-19")
     # No process reserved yet - the real Step 1 ordering.
-    holiday = client.post("/api/edp/file_process_status", json={
-        "Segment": "MCX", "TradeDate": "2026-07-19",
-        "ProcessName": "BeginFileUpload", "UserID": "CV0001",
-    }).json()
+    holiday = client.post(
+        "/api/edp/file_process_status",
+        json={
+            "Segment": "MCX",
+            "TradeDate": "2026-07-19",
+            "ProcessName": "BeginFileUpload",
+            "UserID": "CV0001",
+        },
+    ).json()
     assert holiday["Data"][0]["MSG"] == "HOLIDAY"
-    working = client.post("/api/edp/file_process_status", json={
-        "Segment": "MCX", "TradeDate": "2026-07-20",
-        "ProcessName": "BeginFileUpload", "UserID": "CV0001",
-    }).json()
+    working = client.post(
+        "/api/edp/file_process_status",
+        json={
+            "Segment": "MCX",
+            "TradeDate": "2026-07-20",
+            "ProcessName": "BeginFileUpload",
+            "UserID": "CV0001",
+        },
+    ).json()
     assert working["Data"][0]["MSG"] == "SKIP"
 
 
@@ -149,15 +197,23 @@ def test_request_models_stay_lenient(client):
     interchangeably) and extra keys like PASSWORD - never a 422."""
     result = _reserve(client)
     pid = result["Table1"][0]["PROCESSID"]  # keep as int on purpose
-    refetch = client.post("/v1/api/process/getNewTradeProcess", json={
-        "GROUPNAME": "MCX", "LOGINID": "CV0001", "PASSWORD": "extra-key",
-        "TRADEDATE": "2026-07-20", "PROCESSID": pid,
-    })
+    refetch = client.post(
+        "/v1/api/process/getNewTradeProcess",
+        json={
+            "GROUPNAME": "MCX",
+            "LOGINID": "CV0001",
+            "PASSWORD": "extra-key",
+            "TRADEDATE": "2026-07-20",
+            "PROCESSID": pid,
+        },
+    )
     assert refetch.status_code == 200
     assert refetch.json()["Result"]["Table1"][0]["PROCESSID"] == pid
 
-    optional = client.post("/v1/api/process/UpdateNewTradeProcessProcessDetailsIsMandatory",
-                           json={"PROCESSID": pid, "STEPNO": "4", "ISOPTIONAL": 0})
+    optional = client.post(
+        "/v1/api/process/UpdateNewTradeProcessProcessDetailsIsMandatory",
+        json={"PROCESSID": pid, "STEPNO": "4", "ISOPTIONAL": 0},
+    )
     assert optional.status_code == 200
 
 
@@ -169,16 +225,23 @@ def test_fileupload_status_resolves_per_trade_date(client):
 
     for row in r1["Table2"]:
         if row["UPLOADID"] != 0:
-            client.post("/v1/api/process/UpdateNewTradeProcessProcessDetailsIsMandatory",
-                        json={"PROCESSID": pid1, "STEPNO": row["STEPNO"], "ISOPTIONAL": "0"})
+            client.post(
+                "/v1/api/process/UpdateNewTradeProcessProcessDetailsIsMandatory",
+                json={"PROCESSID": pid1, "STEPNO": row["STEPNO"], "ISOPTIONAL": "0"},
+            )
 
     def poll(trade_date: str) -> str:
         # Two polls: the first eats the default MOCK_CBOS_PENDING_POLLS=1 delay.
         for _ in range(2):
-            msg = client.post("/api/edp/file_process_status", json={
-                "Segment": "MCX", "TradeDate": trade_date,
-                "ProcessName": "FILEUPLOAD", "UserID": "CV0001",
-            }).json()["Data"][0]["MSG"]
+            msg = client.post(
+                "/api/edp/file_process_status",
+                json={
+                    "Segment": "MCX",
+                    "TradeDate": trade_date,
+                    "ProcessName": "FILEUPLOAD",
+                    "UserID": "CV0001",
+                },
+            ).json()["Data"][0]["MSG"]
         return msg
 
     assert poll("2026-07-20") == "TRUE"
@@ -191,14 +254,20 @@ def test_insti_trade_gtg_false_then_true_per_segment_date(client):
     MOCK_CBOS_INSTI_TRADE_POLLS polls (default 1) per (segment, date), then
     TRUE. Counters are independent across dates, so a second day's gate is
     not pre-opened by the first day's polls."""
+
     def poll(segment: str, trade_date: str) -> str:
-        return client.post("/api/edp/file_process_status", json={
-            "Segment": segment, "TradeDate": trade_date,
-            "ProcessName": "CHECKINSTITRADE", "UserID": "CV0001",
-        }).json()["Data"][0]["MSG"]
+        return client.post(
+            "/api/edp/file_process_status",
+            json={
+                "Segment": segment,
+                "TradeDate": trade_date,
+                "ProcessName": "CHECKINSTITRADE",
+                "UserID": "CV0001",
+            },
+        ).json()["Data"][0]["MSG"]
 
     assert poll("MCX", "2026-07-20") == "FALSE"  # first poll: transfer in progress
-    assert poll("MCX", "2026-07-20") == "TRUE"   # second poll: complete
+    assert poll("MCX", "2026-07-20") == "TRUE"  # second poll: complete
     # A different trade date starts its own counter.
     assert poll("MCX", "2026-07-21") == "FALSE"
     # As does a different segment on the same date.
@@ -209,8 +278,13 @@ def test_insti_trade_polls_knob(client, monkeypatch):
     """MOCK_CBOS_INSTI_TRADE_POLLS=0 opens the gate immediately — the knob
     that lets uploader-only flows ignore the V6 gate entirely."""
     monkeypatch.setenv("MOCK_CBOS_INSTI_TRADE_POLLS", "0")
-    msg = client.post("/api/edp/file_process_status", json={
-        "Segment": "MCX", "TradeDate": "2026-07-20",
-        "ProcessName": "CHECKINSTITRADE", "UserID": "CV0001",
-    }).json()["Data"][0]["MSG"]
+    msg = client.post(
+        "/api/edp/file_process_status",
+        json={
+            "Segment": "MCX",
+            "TradeDate": "2026-07-20",
+            "ProcessName": "CHECKINSTITRADE",
+            "UserID": "CV0001",
+        },
+    ).json()["Data"][0]["MSG"]
     assert msg == "TRUE"

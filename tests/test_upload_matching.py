@@ -15,8 +15,15 @@ from app.services.upload_matching import (
 
 
 def _rule(uid, pattern, op="LIKE", ext="CSV", cols=None, name=None):
-    return UploadRule(upload_id=str(uid), name=name or f"U{uid}", file_name_pattern=pattern,
-                      compare_operator=op, extension=ext, column_count=cols, raw_settings={})
+    return UploadRule(
+        upload_id=str(uid),
+        name=name or f"U{uid}",
+        file_name_pattern=pattern,
+        compare_operator=op,
+        extension=ext,
+        column_count=cols,
+        raw_settings={},
+    )
 
 
 def _write(tmp_path, name, content="a,b,c\n1,2,3\n"):
@@ -74,8 +81,10 @@ def test_equal_length_tie_broken_by_extension(tmp_path):
 def test_equal_length_tie_broken_by_exchange(tmp_path):
     """Same pattern AND extension - the exchange folder disambiguates via the
     CBOS label (BSE SCRIP vs NSE SCRIP)."""
-    rules = [_rule(81, "SCRIP", ext="TXT", name="BSE SCRIP"),
-             _rule(82, "SCRIP", ext="TXT", name="NSE SCRIP")]
+    rules = [
+        _rule(81, "SCRIP", ext="TXT", name="BSE SCRIP"),
+        _rule(82, "SCRIP", ext="TXT", name="NSE SCRIP"),
+    ]
     f = _write(tmp_path, "SCRIP_190626.txt")
     assert match_file(f, rules, exchange="NSE").upload_id == "82"
     assert match_file(f, rules, exchange="BSE").upload_id == "81"
@@ -84,8 +93,10 @@ def test_equal_length_tie_broken_by_exchange(tmp_path):
 def test_genuine_ambiguity_is_rejected_not_guessed(tmp_path):
     """Same pattern, same extension, no exchange signal -> reject loudly rather
     than pick the wrong UploadID."""
-    rules = [_rule(81, "SCRIP", ext="TXT", name="SCRIP A"),
-             _rule(202, "SCRIP", ext="TXT", name="SCRIP B")]
+    rules = [
+        _rule(81, "SCRIP", ext="TXT", name="SCRIP A"),
+        _rule(202, "SCRIP", ext="TXT", name="SCRIP B"),
+    ]
     with pytest.raises(AmbiguousUploadRule):
         match_file(_write(tmp_path, "SCRIP_190626.txt"), rules)
 
@@ -96,8 +107,10 @@ def test_fetch_upload_rules_pulls_each_uploadid_via_mock_client():
     from app.clients import cbos_client
     from app.clients.cbos_client import UploadCandidate
 
-    candidates = [UploadCandidate(upload_id="81", step_no=1, name="BSE SCRIP"),
-                  UploadCandidate(upload_id="85", step_no=2, name="BSE TRADE FILE")]
+    candidates = [
+        UploadCandidate(upload_id="81", step_no=1, name="BSE SCRIP"),
+        UploadCandidate(upload_id="85", step_no=2, name="BSE TRADE FILE"),
+    ]
     rules = fetch_upload_rules(candidates, cbos_client.get_cbos_client())
     assert {r.upload_id for r in rules} == {"81", "85"}
 
@@ -108,13 +121,16 @@ def test_fetch_upload_rules_deduplicates_repeated_uploadids():
     from app.clients import cbos_client
     from app.clients.cbos_client import UploadCandidate
 
-    candidates = [UploadCandidate(upload_id="81", step_no=1, name="BSE SCRIP"),
-                  UploadCandidate(upload_id="81", step_no=7, name="BSE SCRIP")]
+    candidates = [
+        UploadCandidate(upload_id="81", step_no=1, name="BSE SCRIP"),
+        UploadCandidate(upload_id="81", step_no=7, name="BSE SCRIP"),
+    ]
     rules = fetch_upload_rules(candidates, cbos_client.get_cbos_client())
     assert len(rules) == 1
 
 
 # --- parse_upload_rule: the raw Step-4 row, interpreted (pure, no client) ------
+
 
 def test_parse_accepts_either_filename_key():
     """CBOS spells the pattern field two ways depending on the endpoint."""
@@ -142,7 +158,9 @@ def test_parse_skips_a_row_with_no_pattern_or_no_extension():
 
 
 def test_parse_reads_a_numeric_column_count():
-    rule = parse_upload_rule("81", {"FILE NAME": "SCRIP", "FILEEXTENSION": "TXT", "NO. OF COLUMNS": "30"})
+    rule = parse_upload_rule(
+        "81", {"FILE NAME": "SCRIP", "FILEEXTENSION": "TXT", "NO. OF COLUMNS": "30"}
+    )
     assert rule.column_count == 30
 
 
@@ -150,18 +168,24 @@ def test_parse_treats_an_unusable_column_count_as_no_check():
     """Absent, blank, '-' or non-numeric all mean 'don't check columns' - none
     of them may cost us the whole rule."""
     for raw in (None, "", "-", "N/A", "thirty"):
-        rule = parse_upload_rule("81", {"FILE NAME": "SCRIP", "FILEEXTENSION": "TXT", "NO. OF COLUMNS": raw})
+        rule = parse_upload_rule(
+            "81", {"FILE NAME": "SCRIP", "FILEEXTENSION": "TXT", "NO. OF COLUMNS": raw}
+        )
         assert rule is not None, f"{raw!r} should not discard the rule"
         assert rule.column_count is None
 
 
 def test_parse_falls_back_to_the_candidate_name():
     """The Table2 slot's label is used when the settings row carries no NAME."""
-    rule = parse_upload_rule("81", {"FILE NAME": "SCRIP", "FILEEXTENSION": "TXT"},
-                             fallback_name="BSE SCRIP")
+    rule = parse_upload_rule(
+        "81", {"FILE NAME": "SCRIP", "FILEEXTENSION": "TXT"}, fallback_name="BSE SCRIP"
+    )
     assert rule.name == "BSE SCRIP"
-    named = parse_upload_rule("81", {"NAME": "From settings", "FILE NAME": "SCRIP", "FILEEXTENSION": "TXT"},
-                              fallback_name="BSE SCRIP")
+    named = parse_upload_rule(
+        "81",
+        {"NAME": "From settings", "FILE NAME": "SCRIP", "FILEEXTENSION": "TXT"},
+        fallback_name="BSE SCRIP",
+    )
     assert named.name == "From settings", "the settings row wins when it has a NAME"
 
 
@@ -171,7 +195,7 @@ def test_parse_keeps_the_raw_row_for_audit():
 
 
 def test_placeholder_exchange_does_not_break_ties(tmp_path):
-    """"NA" is a placeholder for segments with no exchange split, not a real
+    """ "NA" is a placeholder for segments with no exchange split, not a real
     exchange. The tie-breaker substring-matches the exchange against the CBOS
     rule name, and "NA" hides inside ordinary words (FINAL, MANUAL, NATIONAL) -
     so feeding it in could silently pick the wrong UploadID. Passing None

@@ -38,6 +38,7 @@ def _messages(caplog) -> list[str]:
 
 # --- step narration -------------------------------------------------------
 
+
 def test_mock_mode_logs_request_and_response_for_each_step(caplog, mock_client):
     """The gap this closes: MOCK mode used to show 'Step 2 - ...' and nothing
     about what was sent or what came back."""
@@ -103,8 +104,9 @@ def test_chunk_calls_stay_off_the_info_log(caplog, mock_client, tmp_path):
     mock_client.upload_file(src, upload_id="535", guid="guid-1")
 
     msgs = _messages(caplog)
-    assert not [m for m in msgs if "Step 5 SaveTradePromodalUploadChunkFile REQUEST" in m], \
+    assert not [m for m in msgs if "Step 5 SaveTradePromodalUploadChunkFile REQUEST" in m], (
         "per-chunk lines must not appear at INFO"
+    )
     assert [m for m in msgs if "Step 5 complete" in m], "the Step 5 summary must survive at INFO"
 
 
@@ -113,9 +115,7 @@ def test_long_response_is_truncated_but_says_so(caplog, mock_client):
     body: it reads as a complete response that genuinely ended there."""
     caplog.set_level(logging.INFO, logger="cbos_client")
 
-    mock_client._check_process_id_exist = lambda *_a, **_k: {
-        "Data": [{"MSG": "x" * 5000}]
-    }
+    mock_client._check_process_id_exist = lambda *_a, **_k: {"Data": [{"MSG": "x" * 5000}]}
     mock_client.check_process_exists("MCX", "14-07-2026")
 
     line = next(m for m in _messages(caplog) if "Step 3 CheckProcessIDExist RESPONSE" in m)
@@ -129,9 +129,13 @@ def test_secrets_never_reach_a_step_log_line(caplog, mock_client):
     caplog.set_level(logging.INFO, logger="cbos_client")
 
     mock_client._check_process_id_exist = lambda *_a, **_k: {"Data": [{"MSG": "ok"}]}
-    mock_client._call(3, "CheckProcessIDExist",
-                      lambda: {"Data": [{"MSG": "ok"}]},
-                      segment="MCX", password="hunter2")
+    mock_client._call(
+        3,
+        "CheckProcessIDExist",
+        lambda: {"Data": [{"MSG": "ok"}]},
+        segment="MCX",
+        password="hunter2",
+    )
 
     line = next(m for m in _messages(caplog) if "REQUEST" in m)
     assert "hunter2" not in line
@@ -139,6 +143,7 @@ def test_secrets_never_reach_a_step_log_line(caplog, mock_client):
 
 
 # --- correlation id -------------------------------------------------------
+
 
 def test_two_runs_of_the_same_batch_get_different_ids():
     """The whole point. "17-07-2026|MCX" recurs every rescan, so the key alone
@@ -170,8 +175,9 @@ def test_the_formatter_stamps_the_id_onto_every_record(caplog):
     missing %(corr)s field."""
     from app.core.logging import _CorrelationFilter
 
-    record = logging.LogRecord("sqlalchemy.engine", logging.INFO, __file__, 1,
-                               "SELECT 1", None, None)
+    record = logging.LogRecord(
+        "sqlalchemy.engine", logging.INFO, __file__, 1, "SELECT 1", None, None
+    )
     filt = _CorrelationFilter()
 
     with correlation.batch_context("17-07-2026|MCX"):

@@ -53,9 +53,11 @@ def _move_file(file_path: Path, subfolder_name: str) -> Path:
             dest_path = dest_dir / f"{stem}_{counter}{suffix}"
             counter += 1
         logger.warning(
-            "_move_file: %s already exists at destination, renaming this attempt to %s to avoid overwriting it "
+            "_move_file: %s already exists at destination, renaming this attempt to %s "
+            "to avoid overwriting it "
             "and to keep file_path unique",
-            file_path.name, dest_path.name,
+            file_path.name,
+            dest_path.name,
         )
 
     logger.debug("_move_file: %s -> %s", file_path, dest_path)

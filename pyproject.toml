@@ -48,6 +48,11 @@ src = ["app", "mock_cbos", "tests"]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "RUF"]
 ignore = ["B008"]
 
+[tool.ruff.lint.per-file-ignores]
+# mock_cbos/ is a thin import shim re-exporting edpb_core.mock_cbos for
+# backwards-compatible paths - star re-exports are its whole job.
+"mock_cbos/*" = ["F401", "F403"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["app", "mock_cbos"]
 

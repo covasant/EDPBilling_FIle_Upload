@@ -10,8 +10,9 @@ from app.core.queue import BatchQueue, SegmentBatchTask
 
 
 def _task(date="17-07-2026", segment="MCX", files=None):
-    return SegmentBatchTask(folder_date=date, segment=segment,
-                            files=[(p, "NA") for p in (files or ["/x/f.csv"])])
+    return SegmentBatchTask(
+        folder_date=date, segment=segment, files=[(p, "NA") for p in (files or ["/x/f.csv"])]
+    )
 
 
 def test_a_fresh_queue_is_empty():

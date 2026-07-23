@@ -24,6 +24,6 @@ def test_env(monkeypatch, tmp_path):
         database.get_sessionmaker.cache_clear()
         cbos_client.reset_cbos_client()
 
-    _clear()   # this test's env wins
+    _clear()  # this test's env wins
     yield
-    _clear()   # don't leak into the next test
+    _clear()  # don't leak into the next test

@@ -15,24 +15,25 @@ from enum import StrEnum
 
 class Destination(StrEnum):
     """Which sibling folder the file is moved into."""
+
     UPLOADED = "uploaded"
     FAILED = "failed"
 
 
 class Outcome(StrEnum):
-    CONFIRMED = "confirmed"              # uploaded, registered, FILEUPLOAD TRUE
-    UNCONFIRMED = "unconfirmed"          # uploaded, registered, FILEUPLOAD not yet TRUE
+    CONFIRMED = "confirmed"  # uploaded, registered, FILEUPLOAD TRUE
+    UNCONFIRMED = "unconfirmed"  # uploaded, registered, FILEUPLOAD not yet TRUE
     IDEMPOTENT_SKIP = "idempotent_skip"  # already in CBOS for this batch + UploadID
-    REJECTED = "rejected"                # matched no upload rule, or failed a local check
-    FAILED = "failed"                    # a CBOS call errored
-    GATE_PARKED = "gate_parked"          # in CBOS, but the batch parked INCOMPLETE (gate)
+    REJECTED = "rejected"  # matched no upload rule, or failed a local check
+    FAILED = "failed"  # a CBOS call errored
+    GATE_PARKED = "gate_parked"  # in CBOS, but the batch parked INCOMPLETE (gate)
 
 
 @dataclass(frozen=True)
 class FileOutcome:
     outcome: Outcome
     destination: Destination
-    status: str                          # the audit row's status column
+    status: str  # the audit row's status column
     cbos_response: str
     validation_error: str | None = None
     counts_as_retry: bool = False

@@ -26,12 +26,23 @@ class UploadedFileRepository:
         record = UploadedFile(**fields)
         self.session.add(record)
         self.session.flush()
-        logger.debug("insert: new record id=%s file_path=%s status=%s", record.id, record.file_path, record.status)
+        logger.debug(
+            "insert: new record id=%s file_path=%s status=%s",
+            record.id,
+            record.file_path,
+            record.status,
+        )
         return record
 
-    def create_audit_record(self, file_path, folder_date: str, segment: str, exchange: str,
-                            correlation_id: str | None = None,
-                            batch_id: str | None = None) -> UploadedFile:
+    def create_audit_record(
+        self,
+        file_path,
+        folder_date: str,
+        segment: str,
+        exchange: str,
+        correlation_id: str | None = None,
+        batch_id: str | None = None,
+    ) -> UploadedFile:
         """Get-or-create the audit row for this file_path, then reset it to
         'pending' for a fresh attempt. Idempotent: if a prior attempt left a row
         at this exact source path (a crash before the file was moved, or a manual
@@ -41,9 +52,13 @@ class UploadedFileRepository:
 
         correlation_id (the batch manifest's end-to-end run id) is stamped
         here so every caller gets it for free."""
-        existing = self.session.query(UploadedFile).filter_by(file_path=str(file_path)).one_or_none()
+        existing = (
+            self.session.query(UploadedFile).filter_by(file_path=str(file_path)).one_or_none()
+        )
         if existing is not None:
-            logger.debug("create_audit_record: reusing existing row id=%s for %s", existing.id, file_path)
+            logger.debug(
+                "create_audit_record: reusing existing row id=%s for %s", existing.id, file_path
+            )
             existing.status = "pending"
             existing.folder_date = folder_date
             existing.segment = segment
@@ -97,9 +112,12 @@ class UploadedFileRepository:
         if stale is not None:
             retired = f"{new_path}{_SUPERSEDED_MARKER}{record.id}>"
             logger.warning(
-                "claim_file_path: row id=%s still claimed %s (its file was moved away between runs); "
+                "claim_file_path: row id=%s still claimed %s (file moved away between runs); "
                 "retiring that claim as %s so row id=%s can take the path",
-                stale.id, new_path, retired, record.id,
+                stale.id,
+                new_path,
+                retired,
+                record.id,
             )
             stale.file_path = retired
             self.session.flush()
@@ -112,22 +130,22 @@ class UploadedFileRepository:
         per batch_id"). Falls back to the batch's (date, segment) for rows
         written before the batch_id column existed - restricted to rows with
         NO batch_id so a legacy row is never attributed to a newer batch."""
-        rows = (
-            self.session.query(UploadedFile)
-            .filter(UploadedFile.batch_id == batch_id)
-            .all()
-        )
+        rows = self.session.query(UploadedFile).filter(UploadedFile.batch_id == batch_id).all()
         if rows:
             return rows
         return (
             self.session.query(UploadedFile)
-            .filter(UploadedFile.folder_date == folder_date,
-                    UploadedFile.segment == segment,
-                    UploadedFile.batch_id.is_(None))
+            .filter(
+                UploadedFile.folder_date == folder_date,
+                UploadedFile.segment == segment,
+                UploadedFile.batch_id.is_(None),
+            )
             .all()
         )
 
-    def find_completed(self, segment: str, folder_date: str, upload_id, file_name: str) -> UploadedFile | None:
+    def find_completed(
+        self, segment: str, folder_date: str, upload_id, file_name: str
+    ) -> UploadedFile | None:
         """Idempotency lookup: a prior row for this (segment, date, UploadID,
         file name) that already reached 'uploaded'. If present, the file is
         already in CBOS and must not be re-uploaded."""

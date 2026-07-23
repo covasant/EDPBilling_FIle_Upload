@@ -69,10 +69,14 @@ def submit_manifest(session: Session, queue: BatchQueue, manifest_path: Path) ->
         # rejected"); files stay in place — a superseding manifest is the fix.
         try:
             repo.create(
-                batch_id=manifest.batch_id, segment=manifest.segment,
-                trade_date=manifest.trade_date, folder_date=manifest.folder_date,
-                manifest_path=str(manifest_path), correlation_id=manifest.correlation_id,
-                status=BatchStatus.REJECTED, status_detail=json.dumps({"checksum_error": str(exc)}),
+                batch_id=manifest.batch_id,
+                segment=manifest.segment,
+                trade_date=manifest.trade_date,
+                folder_date=manifest.folder_date,
+                manifest_path=str(manifest_path),
+                correlation_id=manifest.correlation_id,
+                status=BatchStatus.REJECTED,
+                status_detail=json.dumps({"checksum_error": str(exc)}),
             )
         except IntegrityError:
             session.rollback()  # concurrent POST recorded it first — same outcome
@@ -80,9 +84,12 @@ def submit_manifest(session: Session, queue: BatchQueue, manifest_path: Path) ->
 
     try:
         repo.create(
-            batch_id=manifest.batch_id, segment=manifest.segment,
-            trade_date=manifest.trade_date, folder_date=manifest.folder_date,
-            manifest_path=str(manifest_path), correlation_id=manifest.correlation_id,
+            batch_id=manifest.batch_id,
+            segment=manifest.segment,
+            trade_date=manifest.trade_date,
+            folder_date=manifest.folder_date,
+            manifest_path=str(manifest_path),
+            correlation_id=manifest.correlation_id,
         )
     except IntegrityError:
         # Lost a create race with a concurrent POST of the same batch_id —
@@ -91,15 +98,20 @@ def submit_manifest(session: Session, queue: BatchQueue, manifest_path: Path) ->
         existing = repo.find_by_batch_id(manifest.batch_id)
         if existing is None:  # pragma: no cover - only a rolled-back create
             raise
-        logger.info("submit_manifest: %s lost create race - acknowledging existing "
-                    "(status=%s)", manifest.batch_id, existing.status)
+        logger.info(
+            "submit_manifest: %s lost create race - acknowledging existing (status=%s)",
+            manifest.batch_id,
+            existing.status,
+        )
         return _acknowledge_known(queue, manifest, existing)
 
     _enqueue_checked(queue, manifest)
     return IntakeResult(batch_id=manifest.batch_id, status=BatchStatus.QUEUED, already_known=False)
 
 
-def _acknowledge_known(queue: BatchQueue, manifest: LoadedManifest, existing: Batch) -> IntakeResult:
+def _acknowledge_known(
+    queue: BatchQueue, manifest: LoadedManifest, existing: Batch
+) -> IntakeResult:
     """A batch_id we already recorded. Non-terminal (QUEUED/UPLOADING) rows
     are re-enqueued — idempotently: the in-memory guard drops the duplicate
     if the task is genuinely still queued or in flight."""
@@ -110,8 +122,9 @@ def _acknowledge_known(queue: BatchQueue, manifest: LoadedManifest, existing: Ba
         # flight batch is safe: its guard key is still held, so this enqueue
         # is dropped.
         _enqueue_checked(queue, manifest)
-    logger.info("submit_manifest: batch %s already known (status=%s)",
-                existing.batch_id, existing.status)
+    logger.info(
+        "submit_manifest: batch %s already known (status=%s)", existing.batch_id, existing.status
+    )
     return IntakeResult(batch_id=existing.batch_id, status=existing.status, already_known=True)
 
 
@@ -129,7 +142,9 @@ def get_batch_details(session: Session, batch_id: str) -> dict:
     if batch is None:
         raise UnknownBatchError(batch_id)
     files = UploadedFileRepository(session).find_for_batch(
-        batch.batch_id, batch.folder_date, batch.segment,
+        batch.batch_id,
+        batch.folder_date,
+        batch.segment,
     )
     return {
         "batch_id": batch.batch_id,
@@ -139,13 +154,22 @@ def get_batch_details(session: Session, batch_id: str) -> dict:
         "status_detail": json.loads(batch.status_detail) if batch.status_detail else None,
         "correlation_id": batch.correlation_id,
         "proceed": (
-            {"slots": json.loads(batch.proceed_slots), "reason": batch.proceed_reason,
-             "at": batch.proceeded_at.isoformat() if batch.proceeded_at else None}
-            if batch.proceed_slots else None
+            {
+                "slots": json.loads(batch.proceed_slots),
+                "reason": batch.proceed_reason,
+                "at": batch.proceeded_at.isoformat() if batch.proceeded_at else None,
+            }
+            if batch.proceed_slots
+            else None
         ),
         "files": [
-            {"name": f.file_name, "status": f.status, "outcome": f.cbos_response,
-             "cbos_upload_id": f.cbos_upload_id, "process_id": f.process_id}
+            {
+                "name": f.file_name,
+                "status": f.status,
+                "outcome": f.cbos_response,
+                "cbos_upload_id": f.cbos_upload_id,
+                "process_id": f.process_id,
+            }
             for f in files
         ],
     }
@@ -169,8 +193,9 @@ def rescan(session: Session, queue: BatchQueue) -> dict:
     return {"queued": queued, "skipped": skipped}
 
 
-def request_proceed(session: Session, queue: BatchQueue, batch_id: str,
-                    slots: list[str], reason: str) -> dict:
+def request_proceed(
+    session: Session, queue: BatchQueue, batch_id: str, slots: list[str], reason: str
+) -> dict:
     """Audited force-proceed for an INCOMPLETE batch (see the contract's
     completeness-gate section). Records the ops decision, then queues the
     proceed lane (upload_service._proceed_batch)."""
@@ -180,12 +205,19 @@ def request_proceed(session: Session, queue: BatchQueue, batch_id: str,
         raise UnknownBatchError(batch_id)
     if batch.status != BatchStatus.INCOMPLETE:
         raise ProceedNotAllowedError(
-            f"batch {batch_id} is {batch.status!r} - proceed applies only to 'incomplete'")
+            f"batch {batch_id} is {batch.status!r} - proceed applies only to 'incomplete'"
+        )
 
     repo.record_proceed(batch, slots, reason)
-    queue.enqueue(SegmentBatchTask(
-        folder_date=batch.folder_date, segment=batch.segment,
-        batch_id=batch.batch_id, correlation_id=batch.correlation_id,
-        mode="proceed", proceed_slots=list(slots), proceed_reason=reason,
-    ))
+    queue.enqueue(
+        SegmentBatchTask(
+            folder_date=batch.folder_date,
+            segment=batch.segment,
+            batch_id=batch.batch_id,
+            correlation_id=batch.correlation_id,
+            mode="proceed",
+            proceed_slots=list(slots),
+            proceed_reason=reason,
+        )
+    )
     return {"batch_id": batch_id, "status": "proceed_queued", "slots": slots}

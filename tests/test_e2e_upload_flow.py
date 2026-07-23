@@ -31,9 +31,9 @@ def test_full_mcx_batch_uploads_all_three(monkeypatch):
 
     # name -> (pattern-bearing filename, expected column count from the mock settings)
     specs = {
-        "MCX_ProductMaster.csv": 68,                                       # -> UploadID 127
-        "Position_MCXCCL_CO_0_CM_55930_20260717_F_0000.csv": 46,          # -> UploadID 534
-        "Trade_MCX_CO_0_CM_55930_20260717_F_0000.csv": 46,               # -> UploadID 535
+        "MCX_ProductMaster.csv": 68,  # -> UploadID 127
+        "Position_MCXCCL_CO_0_CM_55930_20260717_F_0000.csv": 46,  # -> UploadID 534
+        "Trade_MCX_CO_0_CM_55930_20260717_F_0000.csv": 46,  # -> UploadID 535
     }
     paths = []
     for name, cols in specs.items():

@@ -29,10 +29,10 @@ class Batch(Base):
     __table_args__ = (UniqueConstraint("batch_id", name="uq_batches_batch_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    batch_id: Mapped[str] = mapped_column(String)          # e.g. MCX-2026-07-20-a3f8c2d1
+    batch_id: Mapped[str] = mapped_column(String)  # e.g. MCX-2026-07-20-a3f8c2d1
     segment: Mapped[str] = mapped_column(String)
-    trade_date: Mapped[str] = mapped_column(String)        # ISO YYYY-MM-DD (manifest form)
-    folder_date: Mapped[str] = mapped_column(String)       # DD-MM-YYYY (folder form)
+    trade_date: Mapped[str] = mapped_column(String)  # ISO YYYY-MM-DD (manifest form)
+    folder_date: Mapped[str] = mapped_column(String)  # DD-MM-YYYY (folder form)
     manifest_path: Mapped[str] = mapped_column(String)
     correlation_id: Mapped[str | None] = mapped_column(String, nullable=True)
 

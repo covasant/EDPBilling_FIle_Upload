@@ -36,22 +36,32 @@ from pathlib import Path
 # Overridable per machine; the default assumes the repos are sibling checkouts.
 DEFAULT_DOWNLOAD_ROOT = os.environ.get(
     "E2E_DOWNLOAD_ROOT",
-    str(Path(__file__).resolve().parent.parent.parent / "mofsl_file_download_rpa_bot"
-        / "downloads" / "edpb"),
+    str(
+        Path(__file__).resolve().parent.parent.parent
+        / "mofsl_file_download_rpa_bot"
+        / "downloads"
+        / "edpb"
+    ),
 )
 
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="End-to-end manifest upload of downloaded files against the mock CBOS.")
+        description="End-to-end manifest upload of downloaded files against the mock CBOS."
+    )
     p.add_argument("--date", default="17-07-2026", help="trade date folder (DD-MM-YYYY)")
     p.add_argument("--segment", default="MCX")
-    p.add_argument("--source", default=None,
-                   help="dir holding the downloaded files "
-                        "(default: the mofsl download repo for this date/segment)")
-    p.add_argument("--work-dir",
-                   default=str(Path(__file__).resolve().parent.parent / ".e2e_work"),
-                   help="scratch FILE_ROOT the run stages files into (wiped each run)")
+    p.add_argument(
+        "--source",
+        default=None,
+        help="dir holding the downloaded files "
+        "(default: the mofsl download repo for this date/segment)",
+    )
+    p.add_argument(
+        "--work-dir",
+        default=str(Path(__file__).resolve().parent.parent / ".e2e_work"),
+        help="scratch FILE_ROOT the run stages files into (wiped each run)",
+    )
     return p.parse_args()
 
 
@@ -75,12 +85,14 @@ def _write_manifest(stage_dir: Path, files: list[Path], segment: str, folder_dat
     entries = []
     for f in files:
         body = (stage_dir / f.name).read_bytes()
-        entries.append({
-            "name": f.name,
-            "sha256": hashlib.sha256(body).hexdigest(),
-            "size_bytes": len(body),
-            "exchange": segment,
-        })
+        entries.append(
+            {
+                "name": f.name,
+                "sha256": hashlib.sha256(body).hexdigest(),
+                "size_bytes": len(body),
+                "exchange": segment,
+            }
+        )
     manifest = {
         "manifest_version": 1,
         "batch_id": f"{segment}-{trade_date}-{uuid.uuid4().hex[:8]}",
@@ -99,8 +111,9 @@ def _write_manifest(stage_dir: Path, files: list[Path], segment: str, folder_dat
 
 def main() -> int:
     args = _parse_args()
-    source = (Path(args.source) if args.source
-              else Path(DEFAULT_DOWNLOAD_ROOT) / args.date / args.segment)
+    source = (
+        Path(args.source) if args.source else Path(DEFAULT_DOWNLOAD_ROOT) / args.date / args.segment
+    )
     work_dir = Path(args.work_dir)
 
     if not source.is_dir():
@@ -155,9 +168,12 @@ def main() -> int:
     session = database.get_sessionmaker()()
     try:
         BatchRepository(session).create(
-            batch_id=manifest.batch_id, segment=manifest.segment,
-            trade_date=manifest.trade_date, folder_date=manifest.folder_date,
-            manifest_path=str(manifest_path), correlation_id=manifest.correlation_id,
+            batch_id=manifest.batch_id,
+            segment=manifest.segment,
+            trade_date=manifest.trade_date,
+            folder_date=manifest.folder_date,
+            manifest_path=str(manifest_path),
+            correlation_id=manifest.correlation_id,
         )
     finally:
         session.close()
@@ -186,8 +202,10 @@ def main() -> int:
         rows = session.query(UploadedFile).order_by(UploadedFile.id).all()
         for r in rows:
             print(f"  [{r.status:8}] {Path(r.file_path).name}")
-            print(f"             UploadID={r.cbos_upload_id}  pattern={r.matched_pattern!r}  "
-                  f"guid={r.guid}  process_id={r.process_id}")
+            print(
+                f"             UploadID={r.cbos_upload_id}  pattern={r.matched_pattern!r}  "
+                f"guid={r.guid}  process_id={r.process_id}"
+            )
             if r.validation_error:
                 print(f"             validation_error: {r.validation_error}")
     finally:

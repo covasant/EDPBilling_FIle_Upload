@@ -26,13 +26,14 @@ class SegmentBatchTask:
     force-proceed path for an INCOMPLETE batch: no files to upload - just
     mark the named slots optional and re-confirm (see
     upload_service.proceed_batch)."""
+
     folder_date: str
     segment: str
     files: list[tuple[str, str]] = field(default_factory=list)  # (file_path, exchange)
     batch_id: str | None = None
     correlation_id: str | None = None
     mode: Literal["upload", "proceed"] = "upload"
-    proceed_slots: list[str] = field(default_factory=list)      # UploadIDs ops chose (mode="proceed")
+    proceed_slots: list[str] = field(default_factory=list)  # UploadIDs ops chose (mode="proceed")
     proceed_reason: str | None = None
 
     @property

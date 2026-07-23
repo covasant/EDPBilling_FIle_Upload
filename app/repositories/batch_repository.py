@@ -23,14 +23,27 @@ class BatchRepository:
     def find_by_batch_id(self, batch_id: str) -> Batch | None:
         return self.session.query(Batch).filter(Batch.batch_id == batch_id).one_or_none()
 
-    def create(self, *, batch_id: str, segment: str, trade_date: str, folder_date: str,
-               manifest_path: str, correlation_id: str | None,
-               status: BatchStatus = BatchStatus.QUEUED,
-               status_detail: str | None = None) -> Batch:
+    def create(
+        self,
+        *,
+        batch_id: str,
+        segment: str,
+        trade_date: str,
+        folder_date: str,
+        manifest_path: str,
+        correlation_id: str | None,
+        status: BatchStatus = BatchStatus.QUEUED,
+        status_detail: str | None = None,
+    ) -> Batch:
         batch = Batch(
-            batch_id=batch_id, segment=segment, trade_date=trade_date,
-            folder_date=folder_date, manifest_path=manifest_path,
-            correlation_id=correlation_id, status=status, status_detail=status_detail,
+            batch_id=batch_id,
+            segment=segment,
+            trade_date=trade_date,
+            folder_date=folder_date,
+            manifest_path=manifest_path,
+            correlation_id=correlation_id,
+            status=status,
+            status_detail=status_detail,
         )
         self.session.add(batch)
         self.session.commit()
@@ -49,5 +62,6 @@ class BatchRepository:
         batch.proceed_reason = reason
         batch.proceeded_at = datetime.now(UTC)
         self.session.commit()
-        logger.info("Batch %s: force-proceed recorded (slots=%s, reason=%r)",
-                    batch.batch_id, slots, reason)
+        logger.info(
+            "Batch %s: force-proceed recorded (slots=%s, reason=%r)", batch.batch_id, slots, reason
+        )
