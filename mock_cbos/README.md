@@ -1,7 +1,7 @@
-# Mock CBOS v4 server
+# Mock CBOS v5 server
 
 A standalone FastAPI app that mimics the real CBOS trade-process API
-(`docs/EDP_Trade_Process_API_Documentation_v4.docx`) faithfully enough that the
+(`docs/EDP_Trade_Process_API_Documentation_V5.docx`) faithfully enough that the
 uploader can run end-to-end against it — and, crucially, **fail the same way the
 real server fails**, so the switch to real CBOS holds no surprises.
 
@@ -26,7 +26,7 @@ Postman collections in [`docs/postman/`](../docs/postman/):
 - **`EDP_CBOS_MCX_FullBatch`** — hit **Run** and the whole MCX handshake plays in
   one pass (reserve → 3 files × Steps 4/5/7 → Step 8 → poll to TRUE → trigger).
   No files to attach; `process_id`/`guid` are captured automatically.
-- **`EDP_Trade_Process_API_v4`** — per-endpoint reference for every step.
+- **`EDP_Trade_Process_API_v5`** — per-endpoint reference for every step.
 
 ## What it models (and why)
 
@@ -58,7 +58,7 @@ It reproduces the two invariants that actually bite:
    client were written from the same doc by the same author, so they can agree
    with each other and both be wrong about real CBOS.
 
-## Endpoint map (V4 step → route)
+## Endpoint map (V5 step → route)
 
 | Step | Route | Host |
 |---|---|---|
