@@ -33,11 +33,13 @@ def _root():
 def _batch(date="17-07-2026", segment="MCX", exchange="NA", files=None):
     from app.core.queue import SegmentBatchTask
 
-    return SegmentBatchTask(folder_date=date, segment=segment,
-                            files=[(p, exchange) for p in (files or [])])
+    return SegmentBatchTask(
+        folder_date=date, segment=segment, files=[(p, exchange) for p in (files or [])]
+    )
 
 
 # --- B1 -----------------------------------------------------------------------
+
 
 def test_create_audit_record_is_idempotent():
     """Calling create_audit_record twice for the same source path reuses the row
@@ -51,7 +53,9 @@ def test_create_audit_record_is_idempotent():
         repo = UploadedFileRepository(session)
         r1 = repo.create_audit_record("/x/y/f.csv", "17-07-2026", "MCX", "NA")
         repo.commit()
-        r2 = repo.create_audit_record("/x/y/f.csv", "17-07-2026", "MCX", "NA")  # would IntegrityError before
+        r2 = repo.create_audit_record(
+            "/x/y/f.csv", "17-07-2026", "MCX", "NA"
+        )  # would IntegrityError before
         repo.commit()
         assert r1.id == r2.id
     finally:
@@ -59,6 +63,7 @@ def test_create_audit_record_is_idempotent():
 
 
 # --- H4: transient setup failure must not hot-loop -----------------------------
+
 
 class _ReserveFails(MockCBOSClient):
     def _get_new_trade_process(self, segment, trade_date, process_id="0"):
@@ -90,6 +95,7 @@ def test_setup_failure_routes_to_failed_not_loop(monkeypatch):
 
 
 # --- H5: FILEUPLOAD FALSE after upload must not route to uploadFailed ----------
+
 
 class _GtgFalse(MockCBOSClient):
     def _file_upload_status(self, segment, trade_date):
@@ -132,6 +138,7 @@ def test_unconfirmed_upload_goes_to_uploaded_not_failed(monkeypatch):
 
 # --- GUID is persisted BEFORE the chunks go out --------------------------------
 
+
 class _ChunkDiesMidFile(MockCBOSClient):
     """Fails partway through Step 5, exactly like a link drop mid-file."""
 
@@ -169,6 +176,7 @@ def test_guid_persisted_even_when_chunk_upload_fails(monkeypatch):
 
 # --- the downloader omits the exchange level for segments that lack one -------
 
+
 def test_no_exchange_file_uploads_and_moves_beside_itself(monkeypatch):
     """A segment-level file goes through the full lane and lands in
     MCX/uploaded/ - which list_subdirs must not then mistake for an exchange."""
@@ -198,6 +206,7 @@ def test_no_exchange_file_uploads_and_moves_beside_itself(monkeypatch):
 
 # --- idempotency: a re-dropped, already-uploaded file is not sent twice --------
 
+
 def test_multi_exchange_segment_reserves_one_pid(monkeypatch):
     """H1: EQ files from BSE + NSE folders are ONE batch -> exactly one PROCESSID,
     both exchanges' files under it. Slicing by exchange would reserve two."""
@@ -214,8 +223,9 @@ def test_multi_exchange_segment_reserves_one_pid(monkeypatch):
     bse = _write(root / "17-07-2026" / "EQ" / "BSE", "Trade_BSE_CM_0_TM_446_20260717_F_0000.csv")
     nse = _write(root / "17-07-2026" / "EQ" / "NSE", "Trade_NSE_CM_0_TM_10412_20260717_F_0000.csv")
 
-    task = SegmentBatchTask(folder_date="17-07-2026", segment="EQ",
-                            files=[(str(bse), "BSE"), (str(nse), "NSE")])
+    task = SegmentBatchTask(
+        folder_date="17-07-2026", segment="EQ", files=[(str(bse), "BSE"), (str(nse), "NSE")]
+    )
     assert task.key == "17-07-2026|EQ|upload|scan"  # exchange is NOT in the batch key
     upload_service.process_batch(task)
 
@@ -225,8 +235,8 @@ def test_multi_exchange_segment_reserves_one_pid(monkeypatch):
         rows = session.query(UploadedFile).all()
         assert len(rows) == 2
         assert {r.status for r in rows} == {"uploaded"}
-        assert len({r.process_id for r in rows}) == 1          # both under the SAME pid
-        assert {r.exchange for r in rows} == {"BSE", "NSE"}     # per-file exchange preserved
+        assert len({r.process_id for r in rows}) == 1  # both under the SAME pid
+        assert {r.exchange for r in rows} == {"BSE", "NSE"}  # per-file exchange preserved
         assert {r.cbos_upload_id for r in rows} == {"545", "546"}
     finally:
         session.close()
@@ -357,7 +367,9 @@ def test_holiday_skips_the_batch_without_reserving_a_processid(monkeypatch):
     upload_service.process_batch(_batch(date="19-07-2026", files=[str(src)]))
 
     assert client.upload_calls == [], "no file may be uploaded on a holiday"
-    assert src.exists(), "the file must be left where it is, not moved to uploaded/ or uploadFailed/"
+    assert src.exists(), (
+        "the file must be left where it is, not moved to uploaded/ or uploadFailed/"
+    )
     assert not (folder / "uploaded").exists()
     assert not (folder / "uploadFailed").exists()
 
@@ -386,7 +398,7 @@ def test_holiday_check_is_observe_only_by_default(monkeypatch):
     So the default reports and carries on.
     """
     _fast(monkeypatch)
-    monkeypatch.setenv("CBOS_MOCK_HOLIDAY", "true")          # CBOS says "holiday"
+    monkeypatch.setenv("CBOS_MOCK_HOLIDAY", "true")  # CBOS says "holiday"
     monkeypatch.setenv("CBOS_HOLIDAY_CHECK_ENFORCED", "false")  # but we only observe
     from app.core.config import get_settings
 

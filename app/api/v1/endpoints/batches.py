@@ -34,11 +34,13 @@ class ProceedRequest(BaseModel):
 
 
 @router.post("", status_code=202)
-def submit_batch(submission: BatchSubmission, request: Request,
-                 session: Session = Depends(get_db_session)):
+def submit_batch(
+    submission: BatchSubmission, request: Request, session: Session = Depends(get_db_session)
+):
     try:
         result = batch_service.submit_manifest(
-            session, request.app.state.batch_queue, Path(submission.manifest_path))
+            session, request.app.state.batch_queue, Path(submission.manifest_path)
+        )
     except ManifestError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ChecksumMismatchError as exc:
@@ -63,11 +65,13 @@ def rescan(request: Request, session: Session = Depends(get_db_session)):
 
 
 @router.post("/{batch_id}/proceed", status_code=202)
-def proceed(batch_id: str, req: ProceedRequest, request: Request,
-            session: Session = Depends(get_db_session)):
+def proceed(
+    batch_id: str, req: ProceedRequest, request: Request, session: Session = Depends(get_db_session)
+):
     try:
         return batch_service.request_proceed(
-            session, request.app.state.batch_queue, batch_id, req.slots, req.reason)
+            session, request.app.state.batch_queue, batch_id, req.slots, req.reason
+        )
     except UnknownBatchError as exc:
         raise HTTPException(status_code=404, detail=f"unknown batch_id {batch_id}") from exc
     except ProceedNotAllowedError as exc:

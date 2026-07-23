@@ -39,8 +39,8 @@ class LoadedManifest:
     raw: dict  # the parsed manifest - lets verify_checksums skip a re-read
     batch_id: str
     segment: str
-    trade_date: str          # ISO YYYY-MM-DD, as in the manifest
-    folder_date: str         # DD-MM-YYYY, derived - the folder/batch key form
+    trade_date: str  # ISO YYYY-MM-DD, as in the manifest
+    folder_date: str  # DD-MM-YYYY, derived - the folder/batch key form
     correlation_id: str | None
     manifest_path: Path
     files: list[tuple[str, str]]  # (absolute file path, exchange) - SegmentBatchTask shape
@@ -96,11 +96,13 @@ def verify_checksums(manifest_path: Path, data: dict | None = None) -> None:
         size = path.stat().st_size
         if size != entry["size_bytes"]:
             raise ChecksumMismatchError(
-                f"{entry['name']}: size {size} != declared {entry['size_bytes']}")
+                f"{entry['name']}: size {size} != declared {entry['size_bytes']}"
+            )
         digest = _sha256(path)
         if digest != entry["sha256"]:
             raise ChecksumMismatchError(
-                f"{entry['name']}: sha256 {digest[:12]}... != declared {entry['sha256'][:12]}...")
+                f"{entry['name']}: sha256 {digest[:12]}... != declared {entry['sha256'][:12]}..."
+            )
     logger.info("Manifest %s: %d file(s) checksum-verified", manifest_path, len(data["files"]))
 
 

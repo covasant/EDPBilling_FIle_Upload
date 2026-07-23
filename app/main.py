@@ -33,8 +33,9 @@ async def lifespan(app: FastAPI):
     app.state.batch_queue = batch_queue
 
     logger.info("Startup: step 2/2 - starting queue worker thread")
-    worker_thread = threading.Thread(target=run_worker, args=(batch_queue,),
-                                     name="cbos-upload-worker", daemon=True)
+    worker_thread = threading.Thread(
+        target=run_worker, args=(batch_queue,), name="cbos-upload-worker", daemon=True
+    )
     worker_thread.start()
     logger.info("Startup: queue worker thread started (name=%s)", worker_thread.name)
 

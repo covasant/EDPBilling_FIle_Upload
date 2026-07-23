@@ -33,11 +33,16 @@ def test_real_mode_without_credentials_fails_fast(monkeypatch):
 
 
 def test_redact_masks_password_keys():
-    payload = {"GROUPNAME": "MCX", "LOGINID": "CV0001", "PASSWORD": "Master#123", "TRADEDATE": "2026-07-17"}
+    payload = {
+        "GROUPNAME": "MCX",
+        "LOGINID": "CV0001",
+        "PASSWORD": "Master#123",
+        "TRADEDATE": "2026-07-17",
+    }
     red = _redact(payload)
     assert red["PASSWORD"] == "***"
-    assert red["GROUPNAME"] == "MCX"          # non-secret untouched
-    assert "Master#123" not in str(red)       # the secret is nowhere in the logged form
+    assert red["GROUPNAME"] == "MCX"  # non-secret untouched
+    assert "Master#123" not in str(red)  # the secret is nowhere in the logged form
 
 
 def test_redact_is_noop_for_non_dict():

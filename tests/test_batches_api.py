@@ -19,6 +19,7 @@ def _fast(monkeypatch):
     monkeypatch.setenv("CBOS_POLL_INTERVAL_SECONDS", "0")
     monkeypatch.setenv("CBOS_RETRY_DELAY_SECONDS", "0")
     from app.core.config import get_settings
+
     get_settings.cache_clear()
 
 
@@ -30,9 +31,16 @@ FULL_MCX_FILES = [
 ]
 
 
-def _make_batch_dir(root: Path, *, segment="MCX", trade_date="2026-07-20",
-                    folder_date="20-07-2026", files=None, batch_id=None,
-                    outcome=None) -> Path:
+def _make_batch_dir(
+    root: Path,
+    *,
+    segment="MCX",
+    trade_date="2026-07-20",
+    folder_date="20-07-2026",
+    files=None,
+    batch_id=None,
+    outcome=None,
+) -> Path:
     """Write real files + a valid manifest.json, exactly as the bot's
     finalization protocol produces them."""
     files = FULL_MCX_FILES if files is None else files
@@ -42,12 +50,14 @@ def _make_batch_dir(root: Path, *, segment="MCX", trade_date="2026-07-20",
     for name, cols in files:
         body = (",".join(str(i) for i in range(cols)) + "\n").encode()
         (seg_dir / name).write_bytes(body)
-        entries.append({
-            "name": name,
-            "sha256": hashlib.sha256(body).hexdigest(),
-            "size_bytes": len(body),
-            "exchange": "MCX",
-        })
+        entries.append(
+            {
+                "name": name,
+                "sha256": hashlib.sha256(body).hexdigest(),
+                "size_bytes": len(body),
+                "exchange": "MCX",
+            }
+        )
     manifest = {
         "manifest_version": 1,
         "batch_id": batch_id or f"{segment}-{trade_date}-{uuid.uuid4().hex[:8]}",
@@ -81,6 +91,7 @@ def client(monkeypatch):
 def _pump(client) -> None:
     """Process everything queued, synchronously."""
     from app.services import upload_service
+
     queue = client.app.state.batch_queue
     while not queue.empty():
         task = queue.get()
@@ -93,10 +104,12 @@ def _pump(client) -> None:
 
 def _root() -> Path:
     from app.core.config import settings
+
     return Path(settings.file_root_path)
 
 
 # --- intake ------------------------------------------------------------------
+
 
 def test_submit_full_batch_confirms(client):
     manifest_path = _make_batch_dir(_root())
@@ -116,6 +129,7 @@ def test_submit_full_batch_confirms(client):
     # so one grep/query traces the run across engine, bot, and uploader.
     from app.core.database import get_sessionmaker
     from app.models.uploaded_file import UploadedFile
+
     session = get_sessionmaker()()
     try:
         rows = session.query(UploadedFile).all()
@@ -130,7 +144,7 @@ def test_submit_is_idempotent_on_batch_id(client):
     first = client.post("/batches", json={"manifest_path": str(manifest_path)})
     assert first.status_code == 202
     again = client.post("/batches", json={"manifest_path": str(manifest_path)})
-    assert again.status_code == 200          # known, not re-queued
+    assert again.status_code == 200  # known, not re-queued
     assert again.json()["batch_id"] == "MCX-2026-07-20-aaaaaaaa"
     assert client.app.state.batch_queue.size == 1, "second POST must not enqueue"
 
@@ -139,7 +153,7 @@ def test_schema_invalid_manifest_is_400(client):
     bad = _root() / "20-07-2026" / "MCX"
     bad.mkdir(parents=True)
     (bad / "manifest.json").write_text(json.dumps({"manifest_version": 1, "batch_id": "nope"}))
-    resp = client.post("/batches", json={"manifest_path": str(bad / 'manifest.json')})
+    resp = client.post("/batches", json={"manifest_path": str(bad / "manifest.json")})
     assert resp.status_code == 400
 
 
@@ -162,8 +176,12 @@ def test_rescan_queues_unknown_manifests_only(client):
     _pump(client)
 
     # A second day's manifest the callback never delivered.
-    _make_batch_dir(_root(), trade_date="2026-07-21", folder_date="21-07-2026",
-                    batch_id="MCX-2026-07-21-dddddddd")
+    _make_batch_dir(
+        _root(),
+        trade_date="2026-07-21",
+        folder_date="21-07-2026",
+        batch_id="MCX-2026-07-21-dddddddd",
+    )
 
     resp = client.post("/batches/rescan")
     assert resp.status_code == 202
@@ -175,12 +193,16 @@ def test_rescan_queues_unknown_manifests_only(client):
 
 # --- completeness gate -------------------------------------------------------
 
+
 def test_incomplete_batch_parks_and_fileupload_stays_false(client):
     """Only 2 of MCX's 3 mandatory slots get files -> the gate must park the
     batch INCOMPLETE, never mark slot 127 optional, and FILEUPLOAD must NOT
     be confirmed."""
-    manifest_path = _make_batch_dir(_root(), files=FULL_MCX_FILES[1:],  # no ProductMaster (127)
-                                    batch_id="MCX-2026-07-20-eeeeeeee")
+    manifest_path = _make_batch_dir(
+        _root(),
+        files=FULL_MCX_FILES[1:],  # no ProductMaster (127)
+        batch_id="MCX-2026-07-20-eeeeeeee",
+    )
     client.post("/batches", json={"manifest_path": str(manifest_path)})
     _pump(client)
 
@@ -194,6 +216,7 @@ def test_incomplete_batch_parks_and_fileupload_stays_false(client):
         assert "INCOMPLETE" in f["outcome"]
 
     from app.clients import cbos_client
+
     mock = cbos_client.get_cbos_client()
     # Slot 127's step must never have been marked optional by the gate.
     marked_steps = {step for (_pid, step) in mock.marked_optional}
@@ -219,16 +242,21 @@ def test_superseding_manifest_completes_incomplete_batch(client):
 
 # --- audited force-proceed ---------------------------------------------------
 
+
 def test_force_proceed_marks_named_slots_and_confirms(client):
-    manifest_path = _make_batch_dir(_root(), files=FULL_MCX_FILES[1:],  # 127 missing
-                                    batch_id="MCX-2026-07-20-abababab")
+    manifest_path = _make_batch_dir(
+        _root(),
+        files=FULL_MCX_FILES[1:],  # 127 missing
+        batch_id="MCX-2026-07-20-abababab",
+    )
     client.post("/batches", json={"manifest_path": str(manifest_path)})
     _pump(client)
     assert client.get("/batches/MCX-2026-07-20-abababab").json()["status"] == "incomplete"
 
-    resp = client.post("/batches/MCX-2026-07-20-abababab/proceed",
-                       json={"slots": ["127"],
-                             "reason": "exchange declared no product master today"})
+    resp = client.post(
+        "/batches/MCX-2026-07-20-abababab/proceed",
+        json={"slots": ["127"], "reason": "exchange declared no product master today"},
+    )
     assert resp.status_code == 202
     _pump(client)
 
@@ -243,20 +271,23 @@ def test_force_proceed_rejected_unless_incomplete(client):
     client.post("/batches", json={"manifest_path": str(manifest_path)})
     _pump(client)
 
-    resp = client.post("/batches/MCX-2026-07-20-cdcdcdcd/proceed",
-                       json={"slots": ["127"], "reason": "nope"})
+    resp = client.post(
+        "/batches/MCX-2026-07-20-cdcdcdcd/proceed", json={"slots": ["127"], "reason": "nope"}
+    )
     assert resp.status_code == 409
 
 
 def test_force_proceed_with_wrong_slots_stays_incomplete(client):
-    manifest_path = _make_batch_dir(_root(), files=FULL_MCX_FILES[1:],
-                                    batch_id="MCX-2026-07-20-efefefef")
+    manifest_path = _make_batch_dir(
+        _root(), files=FULL_MCX_FILES[1:], batch_id="MCX-2026-07-20-efefefef"
+    )
     client.post("/batches", json={"manifest_path": str(manifest_path)})
     _pump(client)
 
     # 534 is FILLED - naming it means ops looked at stale info.
-    resp = client.post("/batches/MCX-2026-07-20-efefefef/proceed",
-                       json={"slots": ["534"], "reason": "mistake"})
+    resp = client.post(
+        "/batches/MCX-2026-07-20-efefefef/proceed", json={"slots": ["534"], "reason": "mistake"}
+    )
     assert resp.status_code == 202
     _pump(client)
 
@@ -267,8 +298,10 @@ def test_force_proceed_with_wrong_slots_stays_incomplete(client):
 
 # --- manifest exchange metadata ----------------------------------------------
 
+
 def test_manifest_entry_without_exchange_gets_placeholder(client, monkeypatch):
     from app.services import manifest_service
+
     manifest_path = _make_batch_dir(_root(), batch_id="MCX-2026-07-20-99999999")
     data = json.loads(manifest_path.read_text())
     for f in data["files"]:
@@ -281,13 +314,17 @@ def test_manifest_entry_without_exchange_gets_placeholder(client, monkeypatch):
 
 # --- review regressions: supersede + intake recovery -------------------------
 
+
 def test_superseding_manifest_not_dropped_while_prior_in_flight(client):
     """Review finding: the old in-flight guard keyed on (date|segment) and
     silently swallowed a superseding manifest while the prior batch was
     queued — stranding it as 'queued' forever. The key now includes batch_id:
     both tasks queue; the superseding one completes."""
-    first = _make_batch_dir(_root(), files=FULL_MCX_FILES[1:],  # incomplete set
-                            batch_id="MCX-2026-07-20-11111111")
+    first = _make_batch_dir(
+        _root(),
+        files=FULL_MCX_FILES[1:],  # incomplete set
+        batch_id="MCX-2026-07-20-11111111",
+    )
     r1 = client.post("/batches", json={"manifest_path": str(first)})
     assert r1.status_code == 202
     # Before anything processes, the bot re-runs: superseding full manifest.
@@ -329,7 +366,9 @@ def test_rescan_requeues_stranded_queued_batch(client):
     manifest_path = _make_batch_dir(_root(), batch_id="MCX-2026-07-20-44444444")
     client.post("/batches", json={"manifest_path": str(manifest_path)})
     queue = client.app.state.batch_queue
-    task = queue.get(); queue.task_done(); queue.release(task.key)
+    task = queue.get()
+    queue.task_done()
+    queue.release(task.key)
 
     # Recovery path 2: rescan re-enqueues known-but-still-queued batches.
     client.post("/batches/rescan")
@@ -343,7 +382,9 @@ def test_declared_empty_manifest_parks_incomplete_at_gate(client):
     sub-action was no_data — the gate (single authority) must see the batch
     and park it INCOMPLETE, not have it misdiagnosed as superseded."""
     manifest_path = _make_batch_dir(
-        _root(), files=[], batch_id="MCX-2026-07-20-55555555",
+        _root(),
+        files=[],
+        batch_id="MCX-2026-07-20-55555555",
         outcome={"status": "partial", "no_data": ["trade", "position"], "failed": []},
     )
     client.post("/batches", json={"manifest_path": str(manifest_path)})
@@ -365,10 +406,14 @@ def test_repost_requeues_stranded_uploading_batch(client):
     # Simulate the mid-processing crash: the worker claimed the task and set
     # UPLOADING, then died before finishing; queue is empty on restart.
     queue = client.app.state.batch_queue
-    task = queue.get(); queue.task_done(); queue.release(task.key)
+    task = queue.get()
+    queue.task_done()
+    queue.release(task.key)
+    from edpb_core.batch_api import BatchStatus
+
     from app.core.database import get_sessionmaker
     from app.repositories.batch_repository import BatchRepository
-    from edpb_core.batch_api import BatchStatus
+
     with get_sessionmaker()() as s:
         repo = BatchRepository(s)
         repo.set_status(repo.find_by_batch_id("MCX-2026-07-20-55555555"), BatchStatus.UPLOADING)

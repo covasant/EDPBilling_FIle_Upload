@@ -68,7 +68,8 @@ def test_only_failures_route_to_uploadfailed():
     """The whole table in one assertion: exactly two of the five outcomes send
     a file to uploadFailed/."""
     to_failed = {
-        o.outcome for o in (
+        o.outcome
+        for o in (
             upload_outcome.confirmed(),
             upload_outcome.unconfirmed(),
             upload_outcome.idempotent_skip(),

@@ -8,46 +8,94 @@ suite, because the mock encoded the same wrong key. Anything captured from the
 real server belongs here.
 """
 
-from app.clients.cbos_client import MockCBOSClient
+import json
+
+import pytest
+
+from app.clients.cbos_client import CBOSUploadError, MockCBOSClient, _decode_body
 from app.clients.cbos_client import _parse_upload_rule as parse_upload_rule
 from app.services.upload_matching import match_file
 
-# Verbatim Result[0] from POST /v1/api/process/GetNewTradeProcessPromodalUploadSettings {"UPLOADID":"127"}
+# Verbatim Result[0] from POST GetNewTradeProcessPromodalUploadSettings {"UPLOADID":"127"}
 REAL_UPLOAD_SETTINGS_127 = {
     "ID": 127,
     "NAME": "CONTRACT MASTER - MCXCOM",
-    "SAMPLE FILE": '<a href="https://bizops.motilaloswal.com/pdf/Commodity.jpg"   target="_blank">Download</a>',
+    "SAMPLE FILE": '<a href="https://bizops.motilaloswal.com/pdf/Commodity.jpg"   '
+    'target="_blank">Download</a>',
     "FILE NAME (CONTAINS)": "MCX_PRODUCTMASTER",
     "FILEEXTENSION": "CSV",
     "NO. OF COLUMNS": 68,
 }
 
-# Verbatim Result from POST /v1/api/process/getNewTradeProcess {"PROCESSID":"17739", ...}, trimmed to
+# Verbatim Result from POST getNewTradeProcess {"PROCESSID":"17739", ...}, trimmed to
 # the first four Table2 rows - the three that expect a file, plus the first that does not.
 REAL_RESERVE_RESULT = {
     "Table1": [{"PROCESSID": 17739, "ISRUNNABLE": True, "ISAUTOUPLOAD": False}],
     "Table2": [
-        {"ID": 144324, "STEPNO": 1, "NAME": "Contract Master Upload - MCXCOM", "STATUS": "PENDING",
-         "CREATEDBY": "CV0001", "ISOPTIONAL": False, "UPLOADID": 127, "ISOPTIONALVISIBLE": False},
-        {"ID": 144326, "STEPNO": 2, "NAME": "MCX COM Trade File Upload - UDIFF", "STATUS": "PENDING",
-         "CREATEDBY": "CV0001", "ISOPTIONAL": False, "UPLOADID": 535, "ISOPTIONALVISIBLE": False},
-        {"ID": 144325, "STEPNO": 3, "NAME": "Position File Upload - UDIFF", "STATUS": "PENDING",
-         "CREATEDBY": "CV0001", "ISOPTIONAL": False, "UPLOADID": 534, "ISOPTIONALVISIBLE": False},
-        {"ID": 144340, "STEPNO": 4, "NAME": "Trade data Merger", "STATUS": "PENDING",
-         "CREATEDBY": "CV0001", "ISOPTIONAL": False, "UPLOADID": 0, "ISOPTIONALVISIBLE": False},
+        {
+            "ID": 144324,
+            "STEPNO": 1,
+            "NAME": "Contract Master Upload - MCXCOM",
+            "STATUS": "PENDING",
+            "CREATEDBY": "CV0001",
+            "ISOPTIONAL": False,
+            "UPLOADID": 127,
+            "ISOPTIONALVISIBLE": False,
+        },
+        {
+            "ID": 144326,
+            "STEPNO": 2,
+            "NAME": "MCX COM Trade File Upload - UDIFF",
+            "STATUS": "PENDING",
+            "CREATEDBY": "CV0001",
+            "ISOPTIONAL": False,
+            "UPLOADID": 535,
+            "ISOPTIONALVISIBLE": False,
+        },
+        {
+            "ID": 144325,
+            "STEPNO": 3,
+            "NAME": "Position File Upload - UDIFF",
+            "STATUS": "PENDING",
+            "CREATEDBY": "CV0001",
+            "ISOPTIONAL": False,
+            "UPLOADID": 534,
+            "ISOPTIONALVISIBLE": False,
+        },
+        {
+            "ID": 144340,
+            "STEPNO": 4,
+            "NAME": "Trade data Merger",
+            "STATUS": "PENDING",
+            "CREATEDBY": "CV0001",
+            "ISOPTIONAL": False,
+            "UPLOADID": 0,
+            "ISOPTIONALVISIBLE": False,
+        },
     ],
 }
 
 
 class _RealPayloadClient(MockCBOSClient):
     def _get_new_trade_process(self, segment, trade_date, process_id="0"):
-        return {"Status": "Success", "Result": REAL_RESERVE_RESULT, "filename": None, "PDFData": None}
+        return {
+            "Status": "Success",
+            "Result": REAL_RESERVE_RESULT,
+            "filename": None,
+            "PDFData": None,
+        }
 
     def _get_upload_settings(self, upload_id):
-        return {"Status": "Success", "Result": [REAL_UPLOAD_SETTINGS_127], "filename": None, "PDFData": None}
+        return {
+            "Status": "Success",
+            "Result": [REAL_UPLOAD_SETTINGS_127],
+            "filename": None,
+            "PDFData": None,
+        }
 
 
 # --- Step 4 --------------------------------------------------------------------
+
 
 def test_real_step4_row_produces_a_usable_rule():
     """The regression. Real CBOS sends "FILE NAME (CONTAINS)", not "FILE NAME";
@@ -77,10 +125,13 @@ def test_a_real_mcx_file_matches_the_real_rule(tmp_path):
 def test_html_in_sample_file_does_not_confuse_the_parser():
     """The SAMPLE FILE field carries an HTML anchor; it must not be mistaken
     for a pattern field."""
-    assert parse_upload_rule("127", REAL_UPLOAD_SETTINGS_127).file_name_pattern == "MCX_PRODUCTMASTER"
+    assert (
+        parse_upload_rule("127", REAL_UPLOAD_SETTINGS_127).file_name_pattern == "MCX_PRODUCTMASTER"
+    )
 
 
 # --- Step 2 --------------------------------------------------------------------
+
 
 def test_real_reserve_response_parses():
     reservation = _RealPayloadClient().reserve_process("MCX", "14-07-2026")
@@ -103,12 +154,6 @@ def test_real_zero_uploadid_rows_expect_no_file():
 # downstream dies with AttributeError - which is NOT CBOSUploadError, so it
 # escapes process_batch's setup retry loop, the files are never routed to
 # uploadFailed/, and the next scan rediscovers them forever.
-
-import json
-
-import pytest
-
-from app.clients.cbos_client import CBOSUploadError, _decode_body
 
 
 class _DoubleEncodedClient(MockCBOSClient):
@@ -173,8 +218,8 @@ def test_a_string_that_is_not_json_raises_cbos_error():
 # Verbatim HTTP body from POST /v1/api/process/SaveTradePromodalUploadChunkFile
 REAL_CHUNK_WIRE_BODY = (
     r'"\"{\\\"Status\\\": \\\"ChunkUploaded\\\", '
-    r'\\\"Guid\\\":\\\"62514a44-b632-427e-bec8-70ad91b57185\\\",'
-    r'\\\"FileName\\\":\\\"Trade_MCX_CO_0_CM_55930_20260714_F_0000_chunk_001.CSV\\\",'
+    r"\\\"Guid\\\":\\\"62514a44-b632-427e-bec8-70ad91b57185\\\","
+    r"\\\"FileName\\\":\\\"Trade_MCX_CO_0_CM_55930_20260714_F_0000_chunk_001.CSV\\\","
     r'\\\"currentChunk\\\":\\\"0\\\",\\\"totalChunks\\\":\\\"15\\\",\\\"fCount\\\":\\\"1\\\"}\""'
 )
 
@@ -191,7 +236,7 @@ def test_real_chunk_response_is_triple_encoded_on_the_wire():
 
 def test_real_chunk_response_decodes_after_requests_json():
     """requests strips one layer; _decode_body must handle what's left."""
-    after_requests = json.loads(REAL_CHUNK_WIRE_BODY)   # what .json() returns
+    after_requests = json.loads(REAL_CHUNK_WIRE_BODY)  # what .json() returns
     assert isinstance(after_requests, str), "still a string - this is the trap"
 
     body = _decode_body(after_requests, "SaveTradePromodalUploadChunkFile")
@@ -222,7 +267,7 @@ def test_chunkuploaded_is_not_treated_as_a_failure():
 #   2. CBOS reports this failure as a bare string, not {"Status": "FAILED"}.
 
 REAL_CHUNK_ERROR_WIRE_BODY = (
-    r'''"Could not find file 'E:\\UploadFiles\\EDP\\8f750fb4-a3f1-43c1-bfff-dc62b7d7c597'''
+    r""""Could not find file 'E:\\UploadFiles\\EDP\\8f750fb4-a3f1-43c1-bfff-dc62b7d7c597"""
     r'''\\Trade_MCX_CO_0_CM_55930_20260714_F_0000_chunk_015.CSV.part0'."'''
 )
 
@@ -251,7 +296,9 @@ def test_every_chunk_of_a_file_sends_the_same_filename(tmp_path, monkeypatch):
     seen = []
 
     class _Recording(MockCBOSClient):
-        def _upload_chunk(self, upload_id, guid, file_name, chunk_bytes, current_chunk, total_chunks):
+        def _upload_chunk(
+            self, upload_id, guid, file_name, chunk_bytes, current_chunk, total_chunks
+        ):
             seen.append((file_name, guid, current_chunk, total_chunks))
             return {"Status": "ChunkUploaded", "Guid": guid}
 

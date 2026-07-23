@@ -102,15 +102,16 @@ def _make_file(tmp_path: Path, name: str, size: int) -> Path:
 @pytest.mark.parametrize(
     "size_kb, chunk_kb, expected_chunks",
     [
-        (5, 512, 1),      # single chunk, smaller than the chunk size
-        (512, 512, 1),    # exactly one chunk - the off-by-one boundary
-        (513, 512, 2),    # one byte over: a tail chunk must be sent
-        (2048, 512, 4),   # several whole chunks
-        (2049, 512, 5),   # several chunks plus a 1-byte tail
+        (5, 512, 1),  # single chunk, smaller than the chunk size
+        (512, 512, 1),  # exactly one chunk - the off-by-one boundary
+        (513, 512, 2),  # one byte over: a tail chunk must be sent
+        (2048, 512, 4),  # several whole chunks
+        (2049, 512, 5),  # several chunks plus a 1-byte tail
     ],
 )
-def test_chunks_reassemble_to_the_same_bytes(monkeypatch, mock_server, real_client,
-                                             tmp_path, size_kb, chunk_kb, expected_chunks):
+def test_chunks_reassemble_to_the_same_bytes(
+    monkeypatch, mock_server, real_client, tmp_path, size_kb, chunk_kb, expected_chunks
+):
     """The file CBOS ends up with must be byte-identical to the one we sent."""
     monkeypatch.setenv("CHUNK_SIZE_KB", str(chunk_kb))
     from app.core.config import get_settings
@@ -163,8 +164,12 @@ def test_missing_chunk_is_detected(mock_server):
     for idx in (0, 2):
         requests.post(
             url,
-            data={"CurrentChunk": str(idx), "TotalChunks": "3",
-                  "Guid": "guid-gap", "FileName": "gappy.csv"},
+            data={
+                "CurrentChunk": str(idx),
+                "TotalChunks": "3",
+                "Guid": "guid-gap",
+                "FileName": "gappy.csv",
+            },
             files={"file": ("gappy.csv", b"x" * 10)},
             timeout=5,
         ).raise_for_status()

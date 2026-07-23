@@ -208,13 +208,23 @@ def test_optional_slot_readback_is_satisfied():
     ignoring it re-parked batches whose gaps ops had already approved."""
     from app.clients.cbos_client import UploadCandidate
 
-    excused = UploadCandidate(upload_id="551", step_no=1, name="Settlement Master NSE Upload",
-                              status="PENDING", status_desc="UPLOAD FILE PENDING",
-                              is_optional=True)
+    excused = UploadCandidate(
+        upload_id="551",
+        step_no=1,
+        name="Settlement Master NSE Upload",
+        status="PENDING",
+        status_desc="UPLOAD FILE PENDING",
+        is_optional=True,
+    )
     assert excused.needs_upload is False
 
-    still_required = UploadCandidate(upload_id="551", step_no=1, name="Settlement Master NSE Upload",
-                                     status="PENDING", status_desc="UPLOAD FILE PENDING")
+    still_required = UploadCandidate(
+        upload_id="551",
+        step_no=1,
+        name="Settlement Master NSE Upload",
+        status="PENDING",
+        status_desc="UPLOAD FILE PENDING",
+    )
     assert still_required.needs_upload is True
 
 

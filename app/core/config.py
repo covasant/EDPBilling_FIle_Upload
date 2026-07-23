@@ -38,8 +38,8 @@ class Settings(BaseSettings):
     cbos_core_base_url: str = ""
     cbos_login_id: str = ""
     cbos_password: str = ""
-    cbos_timeout_seconds: int = 30            # JSON calls
-    cbos_upload_timeout_seconds: int = 300    # Step 5 multipart chunk upload - much longer than JSON
+    cbos_timeout_seconds: int = 30  # JSON calls
+    cbos_upload_timeout_seconds: int = 300  # Step 5 multipart chunk upload - much longer than JSON
     cbos_poll_interval_seconds: int = 2
     cbos_poll_max_attempts: int = 10
 
@@ -82,11 +82,15 @@ class Settings(BaseSettings):
     cbos_chunk_retry_attempts: int = 3
 
     # MockCBOSClient behavior tuning - irrelevant when cbos_mode=REAL.
-    cbos_mock_random_success_rate: float = 0.7  # Scenario 3: odds of success for filenames with no success/fail marker
+    cbos_mock_random_success_rate: float = (
+        0.7  # Scenario 3: odds of success for filenames with no success/fail marker
+    )
     # Makes Step 1 answer "holiday" in MOCK mode, so the skip-the-batch branch
     # is reachable without waiting for a real market holiday.
     cbos_mock_holiday: bool = False
-    cbos_mock_pending_polls: int = 2            # how many file_upload_status polls stay PENDING before resolving
+    cbos_mock_pending_polls: int = (
+        2  # how many file_upload_status polls stay PENDING before resolving
+    )
 
     # File-to-UploadID matching (see app/services/upload_matching.py). Column
     # count validation only applies to delimited text files (csv/txt); it's

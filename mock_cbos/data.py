@@ -1,7 +1,7 @@
 """Import shim — canonical implementation: edpb_core.mock_cbos.data."""
 
-from edpb_core.mock_cbos.data import *  # noqa: F401,F403
-from edpb_core.mock_cbos.data import (  # noqa: F401
+from edpb_core.mock_cbos.data import *
+from edpb_core.mock_cbos.data import (
     GENERIC_TABLE2,
     MCX_TABLE2,
     SEGMENT_TABLE2,

@@ -22,8 +22,9 @@ def _load() -> dict[str, set[str]]:
     if not path.is_file():
         # Missing allowlist = empty allowlist: the gate fails CLOSED (every
         # unfilled file slot parks the batch), never silently open.
-        logger.warning("optional_slots: %s not found - treating every unfilled slot "
-                       "as required", path)
+        logger.warning(
+            "optional_slots: %s not found - treating every unfilled slot as required", path
+        )
         return {}
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     parsed = {str(seg).upper(): {str(slot) for slot in (slots or [])} for seg, slots in raw.items()}
