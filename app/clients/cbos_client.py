@@ -114,7 +114,7 @@ def _upload_ip_address() -> str:
         return configured
     try:
         return socket.gethostbyname(socket.gethostname())
-    except socket.error:
+    except OSError:
         return ""
 
 

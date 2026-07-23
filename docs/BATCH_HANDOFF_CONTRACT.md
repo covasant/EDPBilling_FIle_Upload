@@ -58,19 +58,23 @@ Rules:
 
 ## Atomic finalization (bot side)
 
-1. Download each file to `{date}/{SEGMENT}/.part-{name}`; fsync; rename into
-   place (`{name}`).
-2. Compute sha256/size per file; write `manifest.json.tmp`; fsync; rename to
-   `manifest.json` — the manifest is written **last** and its rename is the
-   commit point.
-3. Call `POST /batches` with the manifest's absolute path (small retry, e.g.
-   3 × 5 s). If the uploader is unreachable, stop — `POST /batches/rescan`
-   picks the manifest up later.
+1. Download the files into `{date}/{SEGMENT}/` (the portals write final
+   names directly — no `.part` staging; see the note below on why that is
+   sufficient).
+2. Compute sha256/size per file; write `manifest.json.tmp`; **fsync the
+   bytes**; rename to `manifest.json`; **fsync the directory** — the
+   manifest is written **last** and its durable rename is the commit point.
+3. The engine submits the manifest (`POST /batches` from its UPLOADING
+   state). The bot's own callback exists for standalone runs
+   (`EDPB_UPLOADER_URL`, default off); `POST /batches/rescan` recovers
+   anything missed.
 
-The uploader only ever acts on files listed in a manifest received after its
-commit point and verifies each sha256 — a torn or in-progress batch is
-structurally invisible. `.part-*` files are ignored by everyone and may be
-cleaned by the bot on its next run.
+Why no `.part` staging: the uploader only ever acts on files LISTED in a
+manifest received after its commit point and verifies each sha256 before
+queueing — a torn or in-progress file fails checksum verification (422,
+batch rejected, files left in place) rather than being uploaded. A re-run
+supersedes with a fresh manifest. The checksums, not staging names, are the
+torn-batch defence.
 
 ## POST /batches (uploader side)
 
@@ -81,7 +85,7 @@ POST /batches            {"manifest_path": "/abs/path/.../manifest.json"}
   400 manifest unreadable / schema-invalid           422 checksum mismatch (batch rejected, files left in place)
 
 GET  /batches/{batch_id}
-  200 {"batch_id", "status": "queued|uploading|confirmed|incomplete|failed",
+  200 {"batch_id", "status": "queued|uploading|confirmed|unconfirmed|incomplete|failed|rejected",
        "files": [{"name", "outcome", "cbos_upload_id", ...}]}   ← from the audit table
 
 POST /batches/rescan     {}
@@ -112,9 +116,12 @@ flips TRUE on incomplete data" hole. Implementation: ticket 07.
   segment that are *legitimately* absent some days (e.g. MCX Physical 320,
   BSE Auction 451). Step 8 may only auto-mark **allowlisted** unfilled slots
   optional.
-- **Any other unfilled slot ⇒ the batch parks `INCOMPLETE`**: no Step 8 on
-  that slot, no FILEUPLOAD confirmation, files stay in place. A superseding
-  manifest (re-download) is the normal fix.
+- **Any other unfilled slot ⇒ the batch parks `INCOMPLETE`**: no Step 8, no
+  FILEUPLOAD confirmation. Files that DID reach CBOS move to `uploaded/`
+  with a `gate_parked` outcome (they are registered in CBOS; re-dropping
+  would duplicate them — CBOS's per-slot STATUS readback idempotent-skips
+  them on any re-run); the batch-level INCOMPLETE verdict lives on the
+  batches row. A superseding manifest (re-download) is the normal fix.
 - **Audited force-proceed**: `POST /batches/{batch_id}/proceed
   {"slots": [<uploadid>...], "reason": "..."}` — ops explicitly names the
   slots to mark optional; recorded in the audit trail; then the batch

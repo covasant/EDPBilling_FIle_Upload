@@ -6,8 +6,9 @@ session and decides transaction boundaries; helpers here stay thin.
 
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
+from edpb_core.batch_api import BatchStatus
 from sqlalchemy.orm import Session
 
 from app.models.batch import Batch
@@ -28,7 +29,8 @@ class BatchRepository:
         return {row[0] for row in self.session.query(Batch.batch_id).all()}
 
     def create(self, *, batch_id: str, segment: str, trade_date: str, folder_date: str,
-               manifest_path: str, correlation_id: str | None, status: str = "queued",
+               manifest_path: str, correlation_id: str | None,
+               status: BatchStatus = BatchStatus.QUEUED,
                status_detail: str | None = None) -> Batch:
         batch = Batch(
             batch_id=batch_id, segment=segment, trade_date=trade_date,
@@ -40,7 +42,7 @@ class BatchRepository:
         logger.info("Batch %s recorded (status=%s)", batch_id, status)
         return batch
 
-    def set_status(self, batch: Batch, status: str, detail: dict | None = None) -> None:
+    def set_status(self, batch: Batch, status: BatchStatus, detail: dict | None = None) -> None:
         batch.status = status
         if detail is not None:
             batch.status_detail = json.dumps(detail, default=str)
@@ -50,7 +52,7 @@ class BatchRepository:
     def record_proceed(self, batch: Batch, slots: list[str], reason: str) -> None:
         batch.proceed_slots = json.dumps(slots)
         batch.proceed_reason = reason
-        batch.proceeded_at = datetime.utcnow()
+        batch.proceeded_at = datetime.now(UTC)
         self.session.commit()
         logger.info("Batch %s: force-proceed recorded (slots=%s, reason=%r)",
                     batch.batch_id, slots, reason)

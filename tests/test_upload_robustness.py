@@ -3,8 +3,6 @@ idempotency) - all against the MOCK client, no network."""
 
 from pathlib import Path
 
-import pytest
-
 from app.clients import cbos_client
 from app.clients.cbos_client import CBOSUploadError, MockCBOSClient
 
@@ -218,7 +216,7 @@ def test_multi_exchange_segment_reserves_one_pid(monkeypatch):
 
     task = SegmentBatchTask(folder_date="17-07-2026", segment="EQ",
                             files=[(str(bse), "BSE"), (str(nse), "NSE")])
-    assert task.key == "17-07-2026|EQ"  # exchange is NOT in the batch key
+    assert task.key == "17-07-2026|EQ|upload|scan"  # exchange is NOT in the batch key
     upload_service.process_batch(task)
 
     assert client.reserve_calls == 1, "one PROCESSID per segment/date, not per exchange"

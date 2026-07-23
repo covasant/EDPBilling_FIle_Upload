@@ -33,8 +33,12 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-DEFAULT_DOWNLOAD_ROOT = ("/home/dawood/projects/covasant/mofsl/"
-                         "mofsl_file_download_rpa_bot/downloads/edpb")
+# Overridable per machine; the default assumes the repos are sibling checkouts.
+DEFAULT_DOWNLOAD_ROOT = os.environ.get(
+    "E2E_DOWNLOAD_ROOT",
+    str(Path(__file__).resolve().parent.parent.parent / "mofsl_file_download_rpa_bot"
+        / "downloads" / "edpb"),
+)
 
 
 def _parse_args() -> argparse.Namespace:

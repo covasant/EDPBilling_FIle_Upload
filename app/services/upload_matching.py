@@ -113,7 +113,7 @@ def _count_columns(file_path: Path) -> int | None:
     as delimited text (binary formats like .xlsx aren't sniffed here - see
     the module docstring's known limitation)."""
     try:
-        with open(file_path, "r", encoding="utf-8", errors="strict", newline="") as fh:
+        with open(file_path, encoding="utf-8", errors="strict", newline="") as fh:
             for line in fh:
                 if line.strip():
                     return len(next(csv.reader([line], delimiter=settings.upload_match_delimiter)))
