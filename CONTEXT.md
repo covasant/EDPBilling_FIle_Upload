@@ -94,10 +94,11 @@ re-dropping it would duplicate.
 **Upload lane** — the part of the CBOS pipeline this repo owns: reserve, match,
 upload, register, mark empty slots optional. Steps 2 through 9.
 
-**Handoff** — the point where this repo stops. The CBOS **trigger** (Step 10)
-and everything downstream (bill posting, recon, margin, MTF, collateral) belong
-to the **EDP_Billing scheduler**, which polls FILEUPLOAD and triggers once it
-reads TRUE. This service must never trigger. See
+**Handoff** — the point where this repo stops. The V6 **Insti Trade GTG**
+(Step 10, CHECKINSTITRADE), the CBOS **trigger** (Step 11) and everything
+downstream (bill posting, recon, margin, MTF, collateral) belong to the
+**EDP_Billing scheduler**, which polls FILEUPLOAD, then CHECKINSTITRADE, and
+triggers once both read TRUE. This service must never trigger. See
 `docs/CBOS_HANDOFF_CONTRACT.md`.
 
 **Audit log** — the `uploaded_files` table. Written to record what was

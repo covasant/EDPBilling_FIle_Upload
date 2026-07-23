@@ -184,3 +184,33 @@ def test_fileupload_status_resolves_per_trade_date(client):
     assert poll("2026-07-20") == "TRUE"
     # Day 2 has its own (unsatisfied) process - it must not inherit day 1's TRUE.
     assert poll("2026-07-21") == "FALSE"
+
+
+def test_insti_trade_gtg_false_then_true_per_segment_date(client):
+    """V6 Step 10 — CHECKINSTITRADE answers FALSE for the first
+    MOCK_CBOS_INSTI_TRADE_POLLS polls (default 1) per (segment, date), then
+    TRUE. Counters are independent across dates, so a second day's gate is
+    not pre-opened by the first day's polls."""
+    def poll(segment: str, trade_date: str) -> str:
+        return client.post("/api/edp/file_process_status", json={
+            "Segment": segment, "TradeDate": trade_date,
+            "ProcessName": "CHECKINSTITRADE", "UserID": "CV0001",
+        }).json()["Data"][0]["MSG"]
+
+    assert poll("MCX", "2026-07-20") == "FALSE"  # first poll: transfer in progress
+    assert poll("MCX", "2026-07-20") == "TRUE"   # second poll: complete
+    # A different trade date starts its own counter.
+    assert poll("MCX", "2026-07-21") == "FALSE"
+    # As does a different segment on the same date.
+    assert poll("EQ", "2026-07-20") == "FALSE"
+
+
+def test_insti_trade_polls_knob(client, monkeypatch):
+    """MOCK_CBOS_INSTI_TRADE_POLLS=0 opens the gate immediately — the knob
+    that lets uploader-only flows ignore the V6 gate entirely."""
+    monkeypatch.setenv("MOCK_CBOS_INSTI_TRADE_POLLS", "0")
+    msg = client.post("/api/edp/file_process_status", json={
+        "Segment": "MCX", "TradeDate": "2026-07-20",
+        "ProcessName": "CHECKINSTITRADE", "UserID": "CV0001",
+    }).json()["Data"][0]["MSG"]
+    assert msg == "TRUE"
