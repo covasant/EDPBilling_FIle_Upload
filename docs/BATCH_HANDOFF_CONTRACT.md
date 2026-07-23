@@ -129,8 +129,5 @@ flips TRUE on incomplete data" hole. Implementation: ticket 07.
 
 | Phase | Trigger chain |
 |---|---|
-| Now (tickets 08+09) | bot finalizes → bot `POST /batches` → uploader Steps 1–9 |
-| Target (ticket 10) | EDP_Billing engine → bot `/edpb/{code}/download` → bot finalizes → engine `POST /batches` → engine polls FILEUPLOAD |
-
-When ticket 10 lands, the bot's interim callback is removed; the bot's
-download response tells the engine where the manifest is.
+| ✅ Current (ticket 10 landed 2026-07-23) | EDP_Billing engine (`DOWNLOADING` state) → bot `/edpb/{code}/download` → bot finalizes → engine (`UPLOADING` state) `POST /batches` → engine polls FILEUPLOAD + batch status (INCOMPLETE ⇒ segment FAILED + email) |
+| Standalone/interim fallback | bot callback (`EDPB_UPLOADER_URL`, default off) or `POST /batches/rescan` |
