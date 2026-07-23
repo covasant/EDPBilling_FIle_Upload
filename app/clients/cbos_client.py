@@ -245,6 +245,11 @@ class UploadCandidate:
     name: str
     status: str | None = None
     status_desc: str | None = None
+    # Table2's ISOPTIONAL readback: True once Step 8 marked the slot optional
+    # (this batch, an earlier one, or an ops force-proceed). Caught by live
+    # E2E: ignoring it made the completeness gate re-park a batch whose
+    # missing slots ops had ALREADY approved via POST /batches/{id}/proceed.
+    is_optional: bool = False
 
     @property
     def expects_a_file(self) -> bool:
@@ -263,6 +268,10 @@ class UploadCandidate:
         ("UPLOAD FILE PENDING") - a missing STATUSDESC is treated as "needs
         upload" rather than silently skipping a file CBOS is still waiting on.
         """
+        if self.is_optional:
+            # CBOS already excuses this slot - uploading into it is neither
+            # required nor expected.
+            return False
         if self.status is None:
             return True
         if self.status.strip().upper() != "PENDING":
@@ -500,6 +509,7 @@ class BaseCBOSClient(ABC):
                 name=str(row.get("NAME") or ""),
                 status=row.get("STATUS"),
                 status_desc=row.get("STATUSDESC"),
+                is_optional=bool(row.get("ISOPTIONAL", False)),
             )
             for row in table2
         ]

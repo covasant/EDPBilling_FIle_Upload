@@ -56,6 +56,16 @@ boundary so the two sides don't collide.
 
 ## Known unknowns (verify against real CBOS)
 
+- **Does `getNewTradeProcess(PROCESSID=<real>)` TRIGGER once all slots are
+  satisfied, regardless of caller?** The engine's Step-10 trigger IS that
+  call, so presumably yes — but the uploader also re-fetches with the real
+  PID at every batch start (`find_existing_process_id` → `reserve_process`).
+  If real CBOS triggers on any ready-state real-PID call, an uploader
+  re-run after FILEUPLOAD=TRUE could fire billing before the engine does
+  (surfaced by live E2E against the v5 mock, whose trigger-when-ready
+  behaviour makes exactly this happen). Verify in UAT; if it triggers, the
+  uploader must skip its refetch once FILEUPLOAD is TRUE.
+
 - The real MCX `Table2` (which UPLOADIDs, legacy vs UDIFF) — reconstructed in the
   mock, not captured. Ground it from a real reservation response.
 - `UpdateNewTradeProcessProcessDetailsIsMandatory` flag: doc uses `ISOPTIONAL="0"`
