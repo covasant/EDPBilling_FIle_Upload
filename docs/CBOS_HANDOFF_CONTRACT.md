@@ -10,7 +10,7 @@ boundary so the two sides don't collide.
 | **`EDPBilling_FIle_Upload`** (this repo) | Get those files **into** CBOS |
 | `EDP_Billing` | Scheduler: **trigger** + downstream (bill posting, recon, margin, MTF, collateral) |
 
-## Step ownership (per segment + date)
+## Step ownership (per segment + date) — V6 numbering
 
 | Step | Call | Owner |
 |------|------|-------|
@@ -21,8 +21,9 @@ boundary so the two sides don't collide.
 | 7 | `SaveNewTradeProcessPromodalUploadFile` — register GUID→UPLOADID→PID | **Uploader** |
 | 8 | `UpdateNewTradeProcessProcessDetailsIsMandatory` — mark empty slots optional | **Uploader** |
 | 9 | `file_process_status(FILEUPLOAD)` — good-to-go | **EDP_Billing** (authoritative); uploader may read once as its own confirmation |
-| 10 | `getNewTradeProcess(PROCESSID=real)` — trigger | **EDP_Billing** |
-| 11–39 | bill posting / recon / contract notes / collateral / fund transfer / MTF / margin | **EDP_Billing** |
+| 10 | `file_process_status(CHECKINSTITRADE)` — Insti Trade GTG (**new in V6**) | **EDP_Billing** — must be TRUE *after* FILEUPLOAD and *before* the trigger; CBOS does **not** enforce this server-side |
+| 11 | `getNewTradeProcess(PROCESSID=real)` — trigger (was Step 10 pre-V6) | **EDP_Billing** |
+| 12–40 | bill posting / recon / contract notes / collateral / fund transfer / MTF / margin | **EDP_Billing** |
 
 **The uploader's definition of done: make `FILEUPLOAD` go `TRUE`.** Nothing more.
 
@@ -57,19 +58,29 @@ boundary so the two sides don't collide.
 ## Known unknowns (verify against real CBOS)
 
 - **Does `getNewTradeProcess(PROCESSID=<real>)` TRIGGER once all slots are
-  satisfied, regardless of caller?** The engine's Step-10 trigger IS that
+  satisfied, regardless of caller?** The engine's Step-11 trigger IS that
   call, so presumably yes — but the uploader also re-fetches with the real
   PID at every batch start (`find_existing_process_id` → `reserve_process`).
   If real CBOS triggers on any ready-state real-PID call, an uploader
   re-run after FILEUPLOAD=TRUE could fire billing before the engine does
   (surfaced by live E2E against the v5 mock, whose trigger-when-ready
-  behaviour makes exactly this happen). Verify in UAT; if it triggers, the
-  uploader must skip its refetch once FILEUPLOAD is TRUE.
+  behaviour makes exactly this happen). **V6 raises the stakes**: such an
+  accidental trigger would also bypass the new Step-10 Insti Trade gate
+  entirely — CBOS doesn't enforce it, and the uploader never polls
+  CHECKINSTITRADE. Verify in UAT; if it triggers, the uploader must skip
+  its refetch once FILEUPLOAD is TRUE.
+- **Does `CHECKINSTITRADE` (V6 Step 10) apply to all 10 segments, or only
+  insti-relevant ones?** The V6 doc claims the same 40-step workflow for
+  every segment (its example is MCX) and documents only FALSE/TRUE
+  answers. The engine treats any non-TRUE as "wait" with the segment
+  window as timeout backstop — if some segment's insti check never goes
+  TRUE in UAT, that segment needs an exemption ruling from MOFSL ops.
 
 - The real MCX `Table2` (which UPLOADIDs, legacy vs UDIFF) — reconstructed in the
   mock, not captured. Ground it from a real reservation response.
 - `UpdateNewTradeProcessProcessDetailsIsMandatory` flag: doc uses `ISOPTIONAL="0"`
   to mean *optional* — unverified.
-- The uploader is on API doc **v4**; `EDP_Billing`'s client is pinned to **v3**.
-  Shared endpoints (`getNewTradeProcess`, `getdropdown`) have duplicated DTOs
-  across the repos — candidate for a shared client lib to prevent drift.
+- ~~The uploader is on API doc v4; `EDP_Billing`'s client is pinned to v3.~~
+  ✅ *Resolved on `feat/edpb-alignment`:* both repos now target **V6**
+  (V5's TradeDate everywhere + V6's Step-10 Insti Trade gate), with wire
+  shapes shared via `edpb_core.cbos` payload builders — no duplicated DTOs.
