@@ -111,6 +111,18 @@ def test_submit_full_batch_confirms(client):
     assert len(status["files"]) == 3
     assert all(f["status"] == "uploaded" for f in status["files"])
 
+    # Ticket 11: the manifest's correlation id is stamped on every audit row,
+    # so one grep/query traces the run across engine, bot, and uploader.
+    from app.core.database import get_sessionmaker
+    from app.models.uploaded_file import UploadedFile
+    session = get_sessionmaker()()
+    try:
+        rows = session.query(UploadedFile).all()
+        assert len(rows) == 3
+        assert all(r.correlation_id == "test-corr-1" for r in rows)
+    finally:
+        session.close()
+
 
 def test_submit_is_idempotent_on_batch_id(client):
     manifest_path = _make_batch_dir(_root(), batch_id="MCX-2026-07-20-aaaaaaaa")

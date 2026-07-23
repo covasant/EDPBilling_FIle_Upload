@@ -30,6 +30,7 @@ class UploadedFile(Base):
     matched_pattern = Column(String, nullable=True)  # the UploadID's NAME/pattern this file matched against, for audit
     cbos_upload_settings = Column(Text, nullable=True)  # full raw Step 4 (GetNewTradeProcessPromodalUploadSettings) response for the matched UploadID
     guid = Column(String, nullable=True)            # upload folder GUID used for chunking (Step 5) + registration (Step 7)
+    correlation_id = Column(String, nullable=True)  # manifest's end-to-end run id (ticket 11)
     validation_error = Column(Text, nullable=True)  # why upload_matching rejected this file (no match / column mismatch), if applicable
     request_log = Column(Text, nullable=True)       # JSON list of {step, request/response} for every CBOS call made
 
