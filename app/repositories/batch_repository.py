@@ -23,11 +23,6 @@ class BatchRepository:
     def find_by_batch_id(self, batch_id: str) -> Batch | None:
         return self.session.query(Batch).filter(Batch.batch_id == batch_id).one_or_none()
 
-    def known_batch_ids(self) -> set[str]:
-        """Every batch_id ever accepted - what /batches/rescan checks new
-        manifests against."""
-        return {row[0] for row in self.session.query(Batch.batch_id).all()}
-
     def create(self, *, batch_id: str, segment: str, trade_date: str, folder_date: str,
                manifest_path: str, correlation_id: str | None,
                status: BatchStatus = BatchStatus.QUEUED,

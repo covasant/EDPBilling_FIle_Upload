@@ -30,7 +30,8 @@ class UploadedFileRepository:
         return record
 
     def create_audit_record(self, file_path, folder_date: str, segment: str, exchange: str,
-                            correlation_id: str | None = None) -> UploadedFile:
+                            correlation_id: str | None = None,
+                            batch_id: str | None = None) -> UploadedFile:
         """Get-or-create the audit row for this file_path, then reset it to
         'pending' for a fresh attempt. Idempotent: if a prior attempt left a row
         at this exact source path (a crash before the file was moved, or a manual
@@ -49,6 +50,8 @@ class UploadedFileRepository:
             existing.exchange = exchange
             if correlation_id:
                 existing.correlation_id = correlation_id
+            if batch_id:
+                existing.batch_id = batch_id
             self.session.flush()
             return existing
         return self.insert(
@@ -59,6 +62,7 @@ class UploadedFileRepository:
             exchange=exchange,
             status="pending",
             correlation_id=correlation_id,
+            batch_id=batch_id,
         )
 
     def claim_file_path(self, record: UploadedFile, new_path) -> None:
