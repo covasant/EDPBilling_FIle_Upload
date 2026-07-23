@@ -33,6 +33,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from edpb_core.batch_api import BatchStatus
+
 from app.clients import cbos_client
 from app.clients.cbos_client import CBOSUploadError
 from app.core import correlation
@@ -64,7 +66,7 @@ _OUTCOME_LOG_LEVEL = {
 }
 
 
-def _set_batch_status(task: SegmentBatchTask, status: str, detail: dict | None = None) -> None:
+def _set_batch_status(task: SegmentBatchTask, status: BatchStatus, detail: dict | None = None) -> None:
     """Record the batch-level verdict on the batches row (its own short
     session/transaction - per-file audit commits stay independent). No-op for
     tasks without a batch_id (unit tests driving process_batch directly)."""
@@ -149,9 +151,10 @@ def _fail_all_files(repo: UploadedFileRepository, files: list, task: SegmentBatc
     file to uploadFailed/ so the batch fails cleanly instead of being rediscovered
     and retried forever."""
     for file_path, exchange in files:
-        record = repo.create_audit_record(file_path, task.folder_date, task.segment, exchange)
-        if task.correlation_id:
-            repo.update(record, correlation_id=task.correlation_id)
+        record = repo.create_audit_record(
+            file_path, task.folder_date, task.segment, exchange,
+            correlation_id=task.correlation_id,
+        )
         apply_outcome(repo, record, file_path, upload_outcome.failed(error),
                       [{"step": "batch_setup_error", "error": str(error)}])
 
@@ -187,6 +190,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
     trade_date = task.folder_date
     client = cbos_client.get_cbos_client()
     logger.info("Processing batch %s: %d file(s)", task.key, len(files))
+    _set_batch_status(task, BatchStatus.UPLOADING)
 
     # Step 1: is CBOS accepting uploads for this segment today? Runs before
     # anything is reserved, because Step 2 mints a new PROCESSID on every
@@ -206,6 +210,8 @@ def _process_batch(task: SegmentBatchTask) -> None:
             if settings.cbos_holiday_check_enforced:
                 logger.warning("Batch %s: CBOS reports today is not a processing day for segment %s - "
                                "leaving files in place for the next scan", task.key, task.segment)
+                _set_batch_status(task, BatchStatus.QUEUED,
+                                  {"deferred": "holiday check - not a processing day"})
                 return
             logger.warning("Batch %s: Step 1 did not answer %s for segment %s. Not a processing day, IF the "
                            "doc's rule holds - but the holiday check is observe-only "
@@ -249,6 +255,8 @@ def _process_batch(task: SegmentBatchTask) -> None:
                     logger.error("Batch %s: setup exhausted %d attempt(s) - routing files to uploadFailed",
                                  task.key, settings.cbos_max_retries)
                     _fail_all_files(repo, files, task, exc)
+                    _set_batch_status(task, BatchStatus.FAILED,
+                                      {"reason": f"CBOS setup exhausted retries: {exc}"})
                     return
         process_id = reservation.process_id
 
@@ -263,6 +271,8 @@ def _process_batch(task: SegmentBatchTask) -> None:
         if not reservation.is_runnable:
             logger.warning("Batch %s: PROCESSID=%s is not runnable (Table1.ISRUNNABLE=False) - "
                            "leaving files in place for the next scan", task.key, process_id)
+            _set_batch_status(task, BatchStatus.QUEUED,
+                              {"deferred": f"PROCESSID={process_id} not runnable (ISRUNNABLE=False)"})
             return
 
         # Step 3: confirm the PROCESSID we just reserved is the one CBOS's
@@ -301,9 +311,10 @@ def _process_batch(task: SegmentBatchTask) -> None:
         pending_registration: list[tuple] = []
 
         for file_path, exchange in files:
-            record = repo.create_audit_record(file_path, task.folder_date, task.segment, exchange)
-            if task.correlation_id:
-                repo.update(record, correlation_id=task.correlation_id)
+            record = repo.create_audit_record(
+                file_path, task.folder_date, task.segment, exchange,
+                correlation_id=task.correlation_id,
+            )
             request_log: list = []
 
             # NO_EXCHANGE is a placeholder for segments that don't split by
@@ -392,7 +403,8 @@ def _process_batch(task: SegmentBatchTask) -> None:
 
         if not uploaded_candidates and not filled_upload_ids:
             logger.info("Batch %s: no file reached or was found in CBOS - nothing to confirm", task.key)
-            _set_batch_status(task, "failed", {"reason": "no files uploaded (all rejected/failed)"})
+            _set_batch_status(task, BatchStatus.FAILED,
+                              {"reason": "no files uploaded (all rejected/failed)"})
             return
 
         # Step 6: existing-process confirmation lookup, once per batch. Non-fatal -
@@ -431,7 +443,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
                 request_log.append({"step": "completeness_gate", "result": "incomplete",
                                     "missing_slots": [c.upload_id for c in missing_required]})
                 apply_outcome(repo, record, file_path, parked, request_log)
-            _set_batch_status(task, "incomplete", {
+            _set_batch_status(task, BatchStatus.INCOMPLETE, {
                 "missing_slots": [
                     {"upload_id": c.upload_id, "step_no": c.step_no, "name": c.name}
                     for c in missing_required
@@ -477,8 +489,11 @@ def _process_batch(task: SegmentBatchTask) -> None:
             request_log.append({"step": "file_process_status", "result": poll_message})
             apply_outcome(repo, record, file_path, outcome, request_log)
 
-        _set_batch_status(task, "confirmed" if poll_message == "TRUE" else "unconfirmed",
-                          {"fileupload": poll_message})
+        _set_batch_status(
+            task,
+            BatchStatus.CONFIRMED if poll_message == "TRUE" else BatchStatus.UNCONFIRMED,
+            {"fileupload": poll_message},
+        )
         logger.info(
             "Batch %s complete: %d file(s) in CBOS (%s)",
             task.key, len(uploaded_candidates),
@@ -508,14 +523,15 @@ def _proceed_batch(task: SegmentBatchTask) -> None:
     existing = client.find_existing_process_id(task.segment, trade_date)
     if not existing:
         logger.error("Proceed %s: no PROCESSID exists for this segment/date - nothing to proceed", task.key)
-        _set_batch_status(task, "incomplete", {"proceed_error": "no PROCESSID found for segment/date"})
+        _set_batch_status(task, BatchStatus.INCOMPLETE,
+                          {"proceed_error": "no PROCESSID found for segment/date"})
         return
 
     try:
         reservation = client.reserve_process(task.segment, trade_date, existing)
     except CBOSUploadError as exc:
         logger.error("Proceed %s: could not re-fetch PROCESSID=%s: %s", task.key, existing, exc)
-        _set_batch_status(task, "incomplete", {"proceed_error": f"re-fetch failed: {exc}"})
+        _set_batch_status(task, BatchStatus.INCOMPLETE, {"proceed_error": f"re-fetch failed: {exc}"})
         return
 
     empty_slots = [c for c in reservation.candidates if c.needs_upload]
@@ -527,7 +543,7 @@ def _proceed_batch(task: SegmentBatchTask) -> None:
         # acted on stale information - stop and let them re-check GET /batches.
         logger.error("Proceed %s: requested slot(s) %s are not unfilled file slots of PROCESSID=%s "
                      "(unfilled: %s)", task.key, sorted(unknown), existing, sorted(empty_file_slots))
-        _set_batch_status(task, "incomplete", {
+        _set_batch_status(task, BatchStatus.INCOMPLETE, {
             "proceed_error": f"slots not unfilled on this process: {sorted(unknown)}",
             "unfilled_slots": sorted(empty_file_slots),
         })
@@ -538,7 +554,7 @@ def _proceed_batch(task: SegmentBatchTask) -> None:
     if still_missing:
         logger.error("Proceed %s: slots %s remain mandatory and unfilled - staying INCOMPLETE",
                      task.key, [c.upload_id for c in still_missing])
-        _set_batch_status(task, "incomplete", {
+        _set_batch_status(task, BatchStatus.INCOMPLETE, {
             "missing_slots": [
                 {"upload_id": c.upload_id, "step_no": c.step_no, "name": c.name}
                 for c in still_missing
@@ -555,7 +571,9 @@ def _proceed_batch(task: SegmentBatchTask) -> None:
                            task.key, candidate.step_no, exc)
 
     poll_message = client.confirm_upload(task.segment, trade_date)
-    _set_batch_status(task, "confirmed" if poll_message == "TRUE" else "unconfirmed",
-                      {"fileupload": poll_message, "via": "force-proceed",
-                       "proceed_slots": sorted(requested)})
+    _set_batch_status(
+        task,
+        BatchStatus.CONFIRMED if poll_message == "TRUE" else BatchStatus.UNCONFIRMED,
+        {"fileupload": poll_message, "via": "force-proceed", "proceed_slots": sorted(requested)},
+    )
     logger.info("Proceed %s complete: FILEUPLOAD MSG=%s", task.key, poll_message)

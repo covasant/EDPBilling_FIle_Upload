@@ -80,10 +80,12 @@ def load_manifest(manifest_path: Path) -> LoadedManifest:
     )
 
 
-def verify_checksums(manifest_path: Path) -> None:
+def verify_checksums(manifest_path: Path, data: dict | None = None) -> None:
     """Confirm every listed file exists with the declared sha256 and size.
-    Raises ChecksumMismatchError naming the first offending file."""
-    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    Raises ChecksumMismatchError naming the first offending file. Pass the
+    already-parsed manifest as `data` to skip a redundant read+parse."""
+    if data is None:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
     base = manifest_path.parent
     for entry in data["files"]:
         path = base / entry["name"]

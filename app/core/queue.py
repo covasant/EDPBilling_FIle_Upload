@@ -2,6 +2,7 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from queue import Queue
+from typing import Literal
 
 logger = logging.getLogger("upload_queue")
 
@@ -30,13 +31,20 @@ class SegmentBatchTask:
     files: list[tuple[str, str]] = field(default_factory=list)  # (file_path, exchange)
     batch_id: str | None = None
     correlation_id: str | None = None
-    mode: str = "upload"                                        # "upload" | "proceed"
+    mode: Literal["upload", "proceed"] = "upload"
     proceed_slots: list[str] = field(default_factory=list)      # UploadIDs ops chose (mode="proceed")
     proceed_reason: str | None = None
 
     @property
     def key(self) -> str:
-        return f"{self.folder_date}|{self.segment}"
+        """In-flight guard key. Includes mode and batch_id so it only dedups
+        EXACT resubmissions of one batch: a SUPERSEDING manifest for the same
+        segment/date has a fresh batch_id and must never be swallowed while
+        the old batch is queued/in flight (it would be stranded forever -
+        rescan skips known batch_ids). Per-segment/date serialization does
+        not depend on this key: the single worker thread processes one batch
+        at a time globally."""
+        return f"{self.folder_date}|{self.segment}|{self.mode}|{self.batch_id or 'scan'}"
 
 
 class BatchQueue:
@@ -55,7 +63,7 @@ class BatchQueue:
     """
 
     def __init__(self) -> None:
-        self._queue: "Queue[SegmentBatchTask]" = Queue()
+        self._queue: Queue[SegmentBatchTask] = Queue()
         self._in_flight: set[str] = set()
         self._lock = threading.Lock()
 

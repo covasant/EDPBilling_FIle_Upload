@@ -1,8 +1,14 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
-from sqlalchemy import Column, DateTime, Integer, String, Text, UniqueConstraint
+from edpb_core.batch_api import BatchStatus
+from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 class Batch(Base):
@@ -10,32 +16,33 @@ class Batch(Base):
 
     Unlike uploaded_files (write-mostly audit), this table IS read for two
     decisions: POST /batches idempotency (a known batch_id is acknowledged,
-    not re-queued) and POST /batches/rescan (a manifest whose batch_id is
-    already here is not re-queued). Everything else about it is status
-    reporting for GET /batches/{batch_id}.
+    not re-queued blindly) and rescan (known batch_ids are only re-queued
+    while still QUEUED). Everything else about it is status reporting for
+    GET /batches/{batch_id}.
+
+    status holds edpb_core.batch_api.BatchStatus values (stored as strings;
+    the vocabulary is shared with the EDP_Billing engine so the two sides
+    cannot drift).
     """
 
     __tablename__ = "batches"
     __table_args__ = (UniqueConstraint("batch_id", name="uq_batches_batch_id"),)
 
-    id = Column(Integer, primary_key=True)
-    batch_id = Column(String, nullable=False)          # e.g. MCX-2026-07-20-a3f8c2d1
-    segment = Column(String, nullable=False)
-    trade_date = Column(String, nullable=False)        # ISO YYYY-MM-DD (manifest form)
-    folder_date = Column(String, nullable=False)       # DD-MM-YYYY (folder form)
-    manifest_path = Column(String, nullable=False)
-    correlation_id = Column(String, nullable=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[str] = mapped_column(String)          # e.g. MCX-2026-07-20-a3f8c2d1
+    segment: Mapped[str] = mapped_column(String)
+    trade_date: Mapped[str] = mapped_column(String)        # ISO YYYY-MM-DD (manifest form)
+    folder_date: Mapped[str] = mapped_column(String)       # DD-MM-YYYY (folder form)
+    manifest_path: Mapped[str] = mapped_column(String)
+    correlation_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    # queued -> uploading -> confirmed | unconfirmed | incomplete | failed.
-    # rejected = checksum/schema failure at intake (never queued).
-    status = Column(String, nullable=False, default="queued")
-    status_detail = Column(Text, nullable=True)        # JSON, e.g. missing_slots for incomplete
+    status: Mapped[str] = mapped_column(String, default=BatchStatus.QUEUED)
+    status_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Audited force-proceed (POST /batches/{batch_id}/proceed).
-    proceed_slots = Column(Text, nullable=True)        # JSON list of ops-chosen UploadIDs
-    proceed_reason = Column(Text, nullable=True)
-    proceeded_at = Column(DateTime, nullable=True)
+    proceed_slots: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proceed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proceeded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow,
-                        nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)

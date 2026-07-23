@@ -276,3 +276,62 @@ def test_manifest_entry_without_exchange_gets_placeholder(client, monkeypatch):
 
     loaded = manifest_service.load_manifest(manifest_path)
     assert all(exchange == "NA" for _path, exchange in loaded.files)
+
+
+# --- review regressions: supersede + intake recovery -------------------------
+
+def test_superseding_manifest_not_dropped_while_prior_in_flight(client):
+    """Review finding: the old in-flight guard keyed on (date|segment) and
+    silently swallowed a superseding manifest while the prior batch was
+    queued — stranding it as 'queued' forever. The key now includes batch_id:
+    both tasks queue; the superseding one completes."""
+    first = _make_batch_dir(_root(), files=FULL_MCX_FILES[1:],  # incomplete set
+                            batch_id="MCX-2026-07-20-11111111")
+    r1 = client.post("/batches", json={"manifest_path": str(first)})
+    assert r1.status_code == 202
+    # Before anything processes, the bot re-runs: superseding full manifest.
+    second = _make_batch_dir(_root(), batch_id="MCX-2026-07-20-22222222")
+    r2 = client.post("/batches", json={"manifest_path": str(second)})
+    assert r2.status_code == 202, "superseding batch must be accepted AND queued"
+    assert client.app.state.batch_queue.size == 2, "neither task may be swallowed"
+
+    _pump(client)
+    assert client.get("/batches/MCX-2026-07-20-22222222").json()["status"] == "confirmed"
+
+
+def test_repost_requeues_stranded_queued_batch(client):
+    """Review finding: a crash between the DB record and the enqueue left a
+    'queued' row nothing would ever pick up (rescan skips known batch_ids).
+    Re-POSTing the same manifest — or rescan — now re-enqueues still-QUEUED
+    batches."""
+    manifest_path = _make_batch_dir(_root(), batch_id="MCX-2026-07-20-33333333")
+    client.post("/batches", json={"manifest_path": str(manifest_path)})
+
+    # Simulate the crash: drop the queued task without processing it.
+    queue = client.app.state.batch_queue
+    task = queue.get()
+    queue.task_done()
+    queue.release(task.key)
+    assert queue.size == 0
+    assert client.get("/batches/MCX-2026-07-20-33333333").json()["status"] == "queued"
+
+    # Recovery path 1: re-POST -> 200 (known) but re-enqueued.
+    r = client.post("/batches", json={"manifest_path": str(manifest_path)})
+    assert r.status_code == 200
+    assert queue.size == 1
+
+    _pump(client)
+    assert client.get("/batches/MCX-2026-07-20-33333333").json()["status"] == "confirmed"
+
+
+def test_rescan_requeues_stranded_queued_batch(client):
+    manifest_path = _make_batch_dir(_root(), batch_id="MCX-2026-07-20-44444444")
+    client.post("/batches", json={"manifest_path": str(manifest_path)})
+    queue = client.app.state.batch_queue
+    task = queue.get(); queue.task_done(); queue.release(task.key)
+
+    # Recovery path 2: rescan re-enqueues known-but-still-queued batches.
+    client.post("/batches/rescan")
+    assert queue.size == 1
+    _pump(client)
+    assert client.get("/batches/MCX-2026-07-20-44444444").json()["status"] == "confirmed"

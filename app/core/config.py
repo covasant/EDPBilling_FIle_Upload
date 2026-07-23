@@ -1,5 +1,4 @@
 from functools import lru_cache
-from logging import DEBUG
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 

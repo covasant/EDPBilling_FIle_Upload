@@ -29,13 +29,17 @@ class UploadedFileRepository:
         logger.debug("insert: new record id=%s file_path=%s status=%s", record.id, record.file_path, record.status)
         return record
 
-    def create_audit_record(self, file_path, folder_date: str, segment: str, exchange: str) -> UploadedFile:
+    def create_audit_record(self, file_path, folder_date: str, segment: str, exchange: str,
+                            correlation_id: str | None = None) -> UploadedFile:
         """Get-or-create the audit row for this file_path, then reset it to
         'pending' for a fresh attempt. Idempotent: if a prior attempt left a row
         at this exact source path (a crash before the file was moved, or a manual
         POST /upload followed by discovery), reuse it instead of inserting a
         duplicate - the file_path UNIQUE constraint would otherwise raise
-        (the bug that made every such file reprocess forever)."""
+        (the bug that made every such file reprocess forever).
+
+        correlation_id (the batch manifest's end-to-end run id) is stamped
+        here so every caller gets it for free."""
         existing = self.session.query(UploadedFile).filter_by(file_path=str(file_path)).one_or_none()
         if existing is not None:
             logger.debug("create_audit_record: reusing existing row id=%s for %s", existing.id, file_path)
@@ -43,6 +47,8 @@ class UploadedFileRepository:
             existing.folder_date = folder_date
             existing.segment = segment
             existing.exchange = exchange
+            if correlation_id:
+                existing.correlation_id = correlation_id
             self.session.flush()
             return existing
         return self.insert(
@@ -52,6 +58,7 @@ class UploadedFileRepository:
             segment=segment,
             exchange=exchange,
             status="pending",
+            correlation_id=correlation_id,
         )
 
     def claim_file_path(self, record: UploadedFile, new_path) -> None:

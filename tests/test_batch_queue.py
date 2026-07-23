@@ -23,7 +23,7 @@ def test_enqueue_then_get_round_trips_the_batch():
     q = BatchQueue()
     assert q.enqueue(_task()) is True
     assert q.size == 1
-    assert q.get().key == "17-07-2026|MCX"
+    assert q.get().key == "17-07-2026|MCX|upload|scan"
 
 
 def test_the_same_batch_cannot_be_queued_twice():
