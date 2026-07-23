@@ -41,9 +41,13 @@ boundary so the two sides don't collide.
 1. **One reserver.** `getNewTradeProcess(PROCESSID=0)` mints a **new** PID every
    call. If both repos reserve, there are two PIDs for one segment/date — the
    uploader fills PID-A, `EDP_Billing` triggers PID-B (empty) → timeout. So the
-   **uploader is the sole reserver**, and **`EDP_Billing` must reuse-or-wait
-   only** (drop its "reserve if none exists" branch). ← *coordination item for the
-   EDP_Billing team.*
+   **uploader is the sole reserver**, and **`EDP_Billing` reads-or-waits only**.
+   ✅ *Resolved 2026-07-23:* `EDP_Billing`'s "reserve if none exists" branch was
+   removed (`RealSegmentStateMachine._resolve_process_id` on `feat/edpb-alignment`
+   is read-only — `getdropdown(EXISTINGPROCESSID)` misses are a normal wait, and
+   the agent never calls reserve-mode `getNewTradeProcess`); the uploader side
+   reuses an existing PID before minting (`find_existing_process_id`,
+   `feat/existing-pid` line).
 2. **One PID per (segment, date).** The uploader must reserve exactly once per
    segment/date — **not** per exchange folder — so `getdropdown` is unambiguous.
    (Batch unit = `(segment, date)`; exchange is file metadata.)
