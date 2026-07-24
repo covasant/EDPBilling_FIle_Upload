@@ -1,4 +1,5 @@
 from app.models.batch import Batch
+from app.models.settlement_upload import SettlementUpload
 from app.models.uploaded_file import UploadedFile
 
-__all__ = ["Batch", "UploadedFile"]
+__all__ = ["Batch", "UploadedFile", "SettlementUpload"]
