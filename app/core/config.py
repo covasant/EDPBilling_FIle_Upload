@@ -101,6 +101,57 @@ class Settings(BaseSettings):
 
     database_url: str
 
+    # ---- Settlement segment (DP File Upload API) --------------------------
+    # A second, unrelated upstream ("DP upload master" system, see
+    # DP_FileUpload_API_Integration_Guide docx) sharing this same FastAPI app
+    # and .env. Auth is a Session-Value header (seskey|user_id), not
+    # LOGINID/PASSWORD-in-body like CBOS trade-upload above. One call =
+    # one file; the whole 7-step flow (getdetailsuploadmaster -> validate ->
+    # chunk upload -> finalize -> poll -> conditional process) runs
+    # synchronously inside a single POST /settlements/uploads, since the
+    # settlement orchestrator (a separate service) owns scheduling/retry and
+    # expects a call-and-get-result contract, not a queued job.
+    cbos_setl_mode: str = "MOCK"
+
+    # Where the settlement file-download bot drops files before the
+    # orchestrator calls POST /settlements/uploads with just a file_name -
+    # this service looks the file up here rather than receiving bytes.
+    cbos_setl_shared_folder_path: str = ""
+
+    # Real DP upload API connection settings - only required when
+    # cbos_setl_mode=REAL. The two source docs disagree on host/prefix
+    # (gateway :44300 + /api/dp/upload/ vs. an observed :8002 host mixing
+    # /api/dp/upload/ and /v1/api/dp/upload/) - left blank pending
+    # confirmation, no default guessed.
+    cbos_setl_base_url: str = ""
+    cbos_setl_api_prefix: str = ""
+
+    # Session-Value header: "<seskey>|<user_id>". Static config for now
+    # (mirrors cbos_login_id/cbos_password above) - whether seskey needs its
+    # own login/refresh call is unconfirmed.
+    cbos_setl_seskey: str = ""
+    cbos_setl_user_id: str = ""
+    cbos_setl_created_by: str = ""
+
+    cbos_setl_timeout_seconds: int = 30  # JSON calls
+    cbos_setl_upload_timeout_seconds: int = 300  # chunk upload - longer than JSON
+
+    cbos_setl_poll_interval_seconds: int = 5
+    cbos_setl_poll_max_attempts: int = 60
+
+    cbos_setl_max_retries: int = 2
+    cbos_setl_retry_delay_seconds: int = 2
+
+    # Chunked upload (uploadchunks, Step 4). Doc specifies a hard 5MB/chunk
+    # limit and 512MB total request size - unlike billing's CHUNK_SIZE_KB,
+    # this isn't a free tuning knob, just made configurable rather than
+    # hardcoded.
+    chunk_setl_size_kb: int = 5120  # 5 MB per chunk
+
+    # MockDPUploadClient tuning - irrelevant when cbos_setl_mode=REAL.
+    cbos_setl_mock_random_success_rate: float = 0.9
+    cbos_setl_mock_pending_polls: int = 2
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
