@@ -153,6 +153,26 @@ def test_empty_file_still_produces_one_chunk(monkeypatch, mock_server, real_clie
     assert entry["sha256"] == hashlib.sha256(b"").hexdigest()
 
 
+def test_progress_cb_fires_once_per_chunk(monkeypatch, mock_server, real_client, tmp_path):
+    """upload_file must call progress_cb once per successfully-uploaded chunk with
+    (chunks_done, total_chunks) — the heartbeat the caller persists (ticket 16).
+    A 2049 KB file at 512 KB chunks = 5 chunks (4 whole + a 1-byte tail)."""
+    monkeypatch.setenv("CHUNK_SIZE_KB", "512")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    src = _make_file(tmp_path, "Trade_MCX_prog.csv", 2049 * 1024)
+    calls: list[tuple[int, int]] = []
+    real_client.upload_file(
+        src, upload_id="535", guid="guid-prog", progress_cb=lambda d, t: calls.append((d, t))
+    )
+
+    assert calls == [(1, 5), (2, 5), (3, 5), (4, 5), (5, 5)], (
+        f"progress_cb must fire once per chunk with (done, total), got {calls}"
+    )
+
+
 def test_missing_chunk_is_detected(mock_server):
     """Guard on the guard: if a chunk never arrives, the server must report the
     file incomplete and refuse to produce a digest. Without this, a green

@@ -152,6 +152,7 @@ def get_batch_details(session: Session, batch_id: str) -> dict:
         "trade_date": batch.trade_date,
         "status": batch.status,
         "status_detail": json.loads(batch.status_detail) if batch.status_detail else None,
+        "updated_at": batch.updated_at.isoformat() if batch.updated_at else None,
         "correlation_id": batch.correlation_id,
         "proceed": (
             {

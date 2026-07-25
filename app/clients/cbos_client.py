@@ -51,6 +51,7 @@ import random
 import socket
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -647,7 +648,13 @@ class BaseCBOSClient(ABC):
             return None
         return _parse_upload_rule(upload_id, result[0], fallback_name)
 
-    def upload_file(self, file_path: Path, upload_id: str, guid: str) -> None:
+    def upload_file(
+        self,
+        file_path: Path,
+        upload_id: str,
+        guid: str,
+        progress_cb: Callable[[int, int], None] | None = None,
+    ) -> None:
         """Step 5. Stream the file to CBOS in chunk_size_kb-sized chunks
         (0-indexed CurrentChunk, TotalChunks=N, one GUID for the whole file), so
         a large file is never loaded into memory whole and a slow link isn't
@@ -655,6 +662,12 @@ class BaseCBOSClient(ABC):
 
         Each chunk retries up to cbos_chunk_retry_attempts on a transient
         CBOSUploadError before failing the file.
+
+        progress_cb, if given, is invoked once per successfully-uploaded chunk
+        with (chunks_done, total_chunks) — the caller throttles/persists it (see
+        upload_service). A big file (hundreds of chunks) is where this matters:
+        it's the only heartbeat that moves while a single file streams, so a
+        stalled link is distinguishable from a slow one.
         """
         chunk_size = max(1, settings.chunk_size_kb) * 1024
         retries = max(1, settings.cbos_chunk_retry_attempts)
@@ -710,6 +723,8 @@ class BaseCBOSClient(ABC):
                         )
                         if attempt >= retries:
                             raise
+                if progress_cb is not None:
+                    progress_cb(current_chunk + 1, total_chunks)
 
         logger.info("Step 5 complete: %s uploaded in %d chunk(s)", file_path.name, total_chunks)
 

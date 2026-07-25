@@ -246,7 +246,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
     trade_date = task.folder_date
     client = cbos_client.get_cbos_client()
     logger.info("Processing batch %s: %d file(s)", task.key, len(files))
-    _set_batch_status(task, BatchStatus.UPLOADING)
+    _set_batch_status(task, BatchStatus.UPLOADING, {"files_done": 0, "files_total": len(files)})
 
     # Step 1: is CBOS accepting uploads for this segment today? Runs before
     # anything is reserved, because Step 2 mints a new PROCESSID on every
@@ -387,6 +387,27 @@ def _process_batch(task: SegmentBatchTask) -> None:
                 task.key,
             )
 
+        files_total = len(files)
+
+        def _emit_progress(
+            files_done: int, current_file: str, chunks_done: int, total_chunks: int
+        ) -> None:
+            """Persist upload progress into status_detail (its own short tx via
+            _set_batch_status), so a poller — the engine's TRIGGERED gate, or a
+            dashboard on GET /batches/{id} — sees files_done/files_total AND a
+            per-chunk heartbeat move while a single big file streams (ticket 16)."""
+            _set_batch_status(
+                task,
+                BatchStatus.UPLOADING,
+                {
+                    "files_done": files_done,
+                    "files_total": files_total,
+                    "current_file": current_file,
+                    "chunks_done": chunks_done,
+                    "total_chunks": total_chunks,
+                },
+            )
+
         uploaded_candidates: list[tuple] = []  # (record, dest_file_path, request_log)
         filled_upload_ids: set[str] = set()  # UploadIDs that actually received a file (Steps 5+7)
         candidates_by_upload_id = {c.upload_id: c for c in reservation.candidates}
@@ -399,7 +420,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
         # though each call answered Success individually.
         pending_registration: list[tuple] = []
 
-        for file_path, exchange in files:
+        for idx, (file_path, exchange) in enumerate(files, start=1):
             record = repo.create_audit_record(
                 file_path,
                 task.folder_date,
@@ -491,7 +512,19 @@ def _process_batch(task: SegmentBatchTask) -> None:
                     rule.upload_id,
                     guid,
                 )
-                client.upload_file(file_path, rule.upload_id, guid)
+                # Persist a heartbeat every 10th chunk (and the last): bounds DB
+                # writes to ~total_chunks/10 while still moving updated_at during
+                # a big file. Loop vars bound as lambda defaults (B023).
+                client.upload_file(
+                    file_path,
+                    rule.upload_id,
+                    guid,
+                    progress_cb=lambda done, total, _f=file_path.name, _i=idx: (
+                        _emit_progress(_i - 1, _f, done, total)
+                        if done == total or done % 10 == 0
+                        else None
+                    ),
+                )
                 request_log.append(
                     {
                         "step": "SaveTradePromodalUploadChunkFile",
