@@ -49,7 +49,6 @@ import json
 import logging
 import random
 import socket
-import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -794,71 +793,43 @@ class BaseCBOSClient(ABC):
         )
 
     def confirm_upload(self, segment: str, trade_date: str) -> str:
-        """Step 9. Poll FILEUPLOAD per SEGMENT (matching the documented payload
-        shape - it carries no PROCESSID/UPLOADID/GUID, only TradeDate as of
-        V5), up to cbos_poll_max_attempts times.
+        """Step 9. Poll FILEUPLOAD ONCE per SEGMENT (payload carries no
+        PROCESSID/UPLOADID/GUID, only TradeDate as of V5).
 
-        Returns CBOS's own last message, uppercased - "TRUE", "FALSE", "SKIP",
-        or POLL_TIMED_OUT if the budget ran out. Callers must not read anything
-        into a non-TRUE value beyond what CBOS said: only TRUE is documented to
-        mean good-to-go, and EDP_Billing is the authoritative poller, so any
-        other answer may still become TRUE later.
+        Trigger-first (SME ruling 2026-07-24): FILEUPLOAD good-to-go does NOT
+        flip TRUE until EDP_Billing fires the trigger, which happens AFTER this
+        upload finishes. So the uploader asks once — "is it already good-to-go?"
+        — and treats any non-TRUE answer as its verdict: the batch is
+        UNCONFIRMED (files in CBOS, good-to-go pending). It must NOT wait/retry
+        for TRUE — that is EDP_Billing's job as the authoritative post-trigger
+        poller. The old ~60s (up to cbos_poll_max_attempts) FALSE-poll only
+        delayed the batch reaching UNCONFIRMED and, with it, the engine's
+        trigger — pure dead time under trigger-first, so it was removed.
 
-        Returning the message rather than a bool is deliberate. CBOS distinguishes
-        FALSE ("still pending") from SKIP, and collapsing both to False cost us a
-        day: SKIP was polled thirty times and reported as a timeout, while the
-        log asserted "a file CBOS expects is still unregistered" - our
-        interpretation, printed as though it were CBOS's.
+        Returns CBOS's own message, uppercased — "TRUE" (→ CONFIRMED), or "FALSE"
+        / "SKIP" / any other value (→ UNCONFIRMED). Returning the message rather
+        than a bool is deliberate: CBOS distinguishes FALSE ("still pending")
+        from SKIP, and collapsing both to False once cost us a day of a
+        misattributed log.
         """
-        # Bound before the loop: a configured attempt budget of 0 skips the body
-        # entirely, and the timeout line below reads msg.
-        msg = ""
-        for attempt in range(1, settings.cbos_poll_max_attempts + 1):
-            # DEBUG on the raw call: the poll can run for many attempts, and the
-            # attempt line below already carries the verdict, which is the part
-            # that matters.
-            raw = self._call(
-                9,
-                "file_process_status(FILEUPLOAD)",
-                lambda: self._file_upload_status(segment, trade_date),
-                level=logging.DEBUG,
-                segment=segment,
-                trade_date=trade_date,
-                attempt=attempt,
-                max_attempts=settings.cbos_poll_max_attempts,
-            )
-            msg = self._gtg_msg(raw).upper()
-            logger.info(
-                "Step 9 FILEUPLOAD poll %d/%d segment=%s MSG=%s",
-                attempt,
-                settings.cbos_poll_max_attempts,
-                segment,
-                msg,
-            )
-
-            if msg == "TRUE":
-                return msg
-            if msg in _TERMINAL_POLL_MESSAGES:
-                # Not "still pending" - CBOS has given its answer, so polling it
-                # another 29 times only delays the batch and buries the message
-                # under identical lines.
-                logger.error(
-                    "Step 9 - FILEUPLOAD returned %s for segment=%s; this is a verdict, not a "
-                    "pending state, so polling stops here",
-                    msg,
-                    segment,
-                )
-                return msg
-            time.sleep(settings.cbos_poll_interval_seconds)
-
-        logger.error(
-            "Step 9 - file_process_status polling timed out after %d attempts (segment=%s), "
-            "last MSG=%s",
-            settings.cbos_poll_max_attempts,
-            segment,
-            msg,
+        raw = self._call(
+            9,
+            "file_process_status(FILEUPLOAD)",
+            lambda: self._file_upload_status(segment, trade_date),
+            level=logging.DEBUG,
+            segment=segment,
+            trade_date=trade_date,
         )
-        return POLL_TIMED_OUT
+        msg = self._gtg_msg(raw).upper()
+        logger.info("Step 9 FILEUPLOAD single poll segment=%s MSG=%s", segment, msg)
+        if msg not in ("TRUE", "") and msg in _TERMINAL_POLL_MESSAGES:
+            # SKIP / a failure status: a distinct verdict, worth flagging.
+            logger.error(
+                "Step 9 - FILEUPLOAD returned %s for segment=%s; a verdict, not a pending state",
+                msg,
+                segment,
+            )
+        return msg
 
     @staticmethod
     def _gtg_msg(response) -> str:

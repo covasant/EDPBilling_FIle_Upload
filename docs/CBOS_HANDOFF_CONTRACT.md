@@ -25,7 +25,14 @@ boundary so the two sides don't collide.
 | 11 | `getNewTradeProcess(PROCESSID=real)` — trigger (was Step 10 pre-V6) | **EDP_Billing** |
 | 12–40 | bill posting / recon / contract notes / collateral / fund transfer / MTF / margin | **EDP_Billing** |
 
-**The uploader's definition of done: make `FILEUPLOAD` go `TRUE`.** Nothing more.
+**The uploader's definition of done (trigger-first, 2026-07-24): get the files
+into CBOS — upload + register every slot — then report the batch `UNCONFIRMED`.**
+It polls `FILEUPLOAD` exactly **once** (in case CBOS already flipped it `TRUE` →
+`CONFIRMED`), but it does **not** wait for `TRUE`: under trigger-first that flag
+does not flip until `EDP_Billing` fires the trigger, which happens *after* the
+upload. `EDP_Billing` is the authoritative post-trigger `FILEUPLOAD` poller. (The
+old ~60s wait-for-`TRUE` loop was pure dead time — it only delayed the batch
+reaching `UNCONFIRMED` and, with it, the engine's trigger — and was removed.)
 
 > **Trigger-first execution order (SME ruling 2026-07-24).** The numbers above
 > are CBOS's own step labels; `EDP_Billing` no longer *executes* them in that
