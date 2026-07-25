@@ -21,11 +21,25 @@ boundary so the two sides don't collide.
 | 7 | `SaveNewTradeProcessPromodalUploadFile` — register GUID→UPLOADID→PID | **Uploader** |
 | 8 | `UpdateNewTradeProcessProcessDetailsIsMandatory` — mark empty slots optional | **Uploader** |
 | 9 | `file_process_status(FILEUPLOAD)` — good-to-go | **EDP_Billing** (authoritative); uploader may read once as its own confirmation |
-| 10 | `file_process_status(CHECKINSTITRADE)` — Insti Trade GTG (**new in V6**) | **EDP_Billing** — must be TRUE *after* FILEUPLOAD and *before* the trigger; CBOS does **not** enforce this server-side |
+| 10 | `file_process_status(CHECKINSTITRADE)` — Insti Trade GTG (**new in V6**) | **EDP_Billing** — post-trigger; must be TRUE *before billposting* (see trigger-first note); CBOS does **not** enforce this server-side |
 | 11 | `getNewTradeProcess(PROCESSID=real)` — trigger (was Step 10 pre-V6) | **EDP_Billing** |
 | 12–40 | bill posting / recon / contract notes / collateral / fund transfer / MTF / margin | **EDP_Billing** |
 
 **The uploader's definition of done: make `FILEUPLOAD` go `TRUE`.** Nothing more.
+
+> **Trigger-first execution order (SME ruling 2026-07-24).** The numbers above
+> are CBOS's own step labels; `EDP_Billing` no longer *executes* them in that
+> order. Field observation: `FILEUPLOAD` good-to-go does **not** go TRUE until
+> the process is triggered — so it cannot be a pre-trigger gate. The engine now:
+> **(a)** fires the trigger (Step 11) first — after a pre-trigger completeness
+> guard that refuses to trigger a batch the uploader parked INCOMPLETE — then
+> **(b)** polls `FILEUPLOAD` (Step 9) good-to-go, then **(c)** polls
+> `CHECKINSTITRADE` (Step 10), which now gates the move into **billposting**, not
+> the trigger. This **reverses** the V6 doc's "insti before trigger" ordering, on
+> the strength of the SME confirmation; completeness is still enforced before the
+> trigger by the guard, so trigger-first does not mean billing on incomplete data.
+> Verified live end-to-end 2026-07-24 (MCX straight-through; EQ INCOMPLETE →
+> guard fails pre-trigger with zero trigger calls → ops proceed+retry → COMPLETED).
 
 ## The two things that cross the boundary — both via CBOS
 

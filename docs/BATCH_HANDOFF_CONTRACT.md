@@ -141,5 +141,5 @@ flips TRUE on incomplete data" hole. Implementation: ticket 07.
 
 | Phase | Trigger chain |
 |---|---|
-| ✅ Current (ticket 10 landed 2026-07-23) | EDP_Billing engine (`DOWNLOADING` state) → bot `/edpb/{code}/download` → bot finalizes → engine (`UPLOADING` state) `POST /batches` → engine polls FILEUPLOAD + batch status (INCOMPLETE ⇒ segment FAILED + email) |
+| ✅ Current (ticket 10; trigger-first 2026-07-24) | EDP_Billing engine (`DOWNLOADING` state) → bot `/edpb/{code}/download` → bot finalizes → engine (`UPLOADING` state) `POST /batches` → engine (`TRIGGERED` state) checks batch status **before firing** (INCOMPLETE/FAILED/REJECTED ⇒ segment FAILED + email, no trigger), then fires the trigger, then polls FILEUPLOAD good-to-go + CHECKINSTITRADE |
 | Standalone/interim fallback | bot callback (`EDPB_UPLOADER_URL`, default off) or `POST /batches/rescan` |
