@@ -225,17 +225,25 @@ def _process_batch(task: SegmentBatchTask) -> None:
         # already uploaded and moved them. Terminal, not silent: leaving
         # this row 'queued' made re-POST/rescan recovery re-enqueue it into
         # the same no-op forever.
-        logger.warning(
-            "Batch %s: no listed file still exists on disk - marking FAILED "
-            "(superseded or already processed)",
+        # SUPERSEDED, not failed: a newer batch for this segment/date already
+        # uploaded these files and moved them into uploaded/. The files ARE in
+        # CBOS under the winning batch, so this is benign. Report UNCONFIRMED
+        # (the normal "files in CBOS, proceed" terminal) rather than FAILED so
+        # the engine does not hard-fail the whole segment on a duplicate. Real
+        # failures (CBOS errors / all-rejected) still report FAILED below.
+        logger.info(
+            "Batch %s: no listed file still exists on disk - a newer batch already "
+            "uploaded and moved them (superseded). Not a failure; reporting UNCONFIRMED "
+            "so the engine proceeds on the winning batch.",
             task.key,
         )
         _set_batch_status(
             task,
-            BatchStatus.FAILED,
+            BatchStatus.UNCONFIRMED,
             {
-                "reason": "no listed file exists on disk - superseded by a newer batch "
-                "or already processed; submit the current manifest instead",
+                "reason": "superseded - a newer batch already uploaded these files; "
+                "the winning batch's PROCESSID governs. Not a failure.",
+                "superseded": True,
             },
         )
         return
