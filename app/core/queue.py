@@ -11,7 +11,7 @@ logger = logging.getLogger("upload_queue")
 class SegmentBatchTask:
     """One CBOS batch = one segment + one trade date. Every file for that
     segment on that date - across ALL its exchange sub-folders - is one unit,
-    because CBOS reserves exactly ONE PROCESSID per segment/date and EDP_Billing
+    because CBOS reserves exactly ONE PROCESSID per segment/date and cams-edp-billing-automation-agent-repo
     reads it back per segment/date via getdropdown (see CONTEXT.md). Slicing by
     exchange would reserve two PIDs for e.g. EQ's BSE + NSE folders and half the
     files would never trigger.

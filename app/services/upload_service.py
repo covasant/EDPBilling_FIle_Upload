@@ -635,7 +635,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
             return
 
         # Step 6: existing-process confirmation lookup, once per batch. Non-fatal -
-        # purely diagnostic (it also confirms EDP_Billing will be able to find our
+        # purely diagnostic (it also confirms cams-edp-billing-automation-agent-repo will be able to find our
         # PROCESSID via getdropdown).
         try:
             client.existing_process(task.segment, trade_date)
@@ -700,7 +700,8 @@ def _process_batch(task: SegmentBatchTask) -> None:
         # this PROCESSID filled or skipped them) are left alone. Non-fatal per
         # slot. NOTE: the trigger (Step 11 in V6; the new Step 10 is the
         # engine's Insti Trade GTG) and every downstream step are
-        # owned by the EDP_Billing scheduler, not this repo - our job ends at
+        # owned by the cams-edp-billing-automation-agent-repo scheduler, not
+        # this repo - our job ends at
         # "every manifest file is in CBOS and nothing is left blocking
         # FILEUPLOAD". See docs/CBOS_HANDOFF_CONTRACT.md.
         #
@@ -721,7 +722,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
                     exc,
                 )
 
-        # Step 9: our own confirmation that the files landed (EDP_Billing is the
+        # Step 9: our own confirmation that the files landed (cams-edp-billing-automation-agent-repo is the
         # authoritative FILEUPLOAD poller + the one that triggers). Per segment.
         #
         # Log the gate's inputs first. CBOS only ever answers TRUE/FALSE, so

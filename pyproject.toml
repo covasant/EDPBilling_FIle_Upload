@@ -20,7 +20,7 @@ dependencies = [
 
 [tool.uv.sources]
 # Sibling checkout (same parent dir on every machine incl. the VDI).
-edpb-core = { path = "../EDP_Billing/packages/edpb-core", editable = true }
+edpb-core = { path = "../cams-edp-billing-automation-agent-repo/packages/edpb-core", editable = true }
 
 [dependency-groups]
 dev = [

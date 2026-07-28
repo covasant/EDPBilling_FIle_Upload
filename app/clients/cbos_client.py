@@ -10,7 +10,7 @@ EDP_Trade_Process_API_Documentation_v4.docx:
 This repo owns the UPLOAD lane only - see CONTEXT.md for the handoff. Our job
 ends at "make FILEUPLOAD go TRUE"; the V6 Step-10 Insti Trade GTG, the
 trigger (Step 11) and everything
-downstream belong to the EDP_Billing scheduler.
+downstream belong to the cams-edp-billing-automation-agent-repo scheduler.
 
 One file-upload batch (one segment + one trade date):
 
@@ -729,7 +729,7 @@ class BaseCBOSClient(ABC):
 
     def existing_process(self, segment: str, trade_date: str) -> None:
         """Step 6. Confirmation lookup, not on the critical path - it also
-        confirms EDP_Billing will be able to find our PROCESSID via
+        confirms cams-edp-billing-automation-agent-repo will be able to find our PROCESSID via
         getdropdown."""
         self._call(
             6,
@@ -797,11 +797,11 @@ class BaseCBOSClient(ABC):
         PROCESSID/UPLOADID/GUID, only TradeDate as of V5).
 
         Trigger-first (SME ruling 2026-07-24): FILEUPLOAD good-to-go does NOT
-        flip TRUE until EDP_Billing fires the trigger, which happens AFTER this
+        flip TRUE until cams-edp-billing-automation-agent-repo fires the trigger, which happens AFTER this
         upload finishes. So the uploader asks once — "is it already good-to-go?"
         — and treats any non-TRUE answer as its verdict: the batch is
         UNCONFIRMED (files in CBOS, good-to-go pending). It must NOT wait/retry
-        for TRUE — that is EDP_Billing's job as the authoritative post-trigger
+        for TRUE — that is cams-edp-billing-automation-agent-repo's job as the authoritative post-trigger
         poller. The old ~60s (up to cbos_poll_max_attempts) FALSE-poll only
         delayed the batch reaching UNCONFIRMED and, with it, the engine's
         trigger — pure dead time under trigger-first, so it was removed.

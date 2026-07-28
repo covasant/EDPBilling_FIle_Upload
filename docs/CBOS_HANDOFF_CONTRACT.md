@@ -1,4 +1,4 @@
-# CBOS handoff contract — Uploader ↔ EDP_Billing
+# CBOS handoff contract — Uploader ↔ cams-edp-billing-automation-agent-repo
 
 Three repos share the CBOS trade-process API. They do **not** call each other —
 all coordination is **through CBOS as the shared backend**. This documents the
@@ -6,9 +6,9 @@ boundary so the two sides don't collide.
 
 | Repo | Owns |
 |------|------|
-| `mofsl_file_download_rpa_bot` | Download files off exchange portals → disk |
-| **`EDPBilling_FIle_Upload`** (this repo) | Get those files **into** CBOS |
-| `EDP_Billing` | Scheduler: **trigger** + downstream (bill posting, recon, margin, MTF, collateral) |
+| `cams-edp-file-download-rpa-bot-repo` | Download files off exchange portals → disk |
+| **`cams-edp-file-handling-agent-repo`** (this repo) | Get those files **into** CBOS |
+| `cams-edp-billing-automation-agent-repo` | Scheduler: **trigger** + downstream (bill posting, recon, margin, MTF, collateral) |
 
 ## Step ownership (per segment + date) — V6 numbering
 
@@ -20,22 +20,22 @@ boundary so the two sides don't collide.
 | 5 | `SaveTradePromodalUploadChunkFile` — upload bytes → GUID | **Uploader** |
 | 7 | `SaveNewTradeProcessPromodalUploadFile` — register GUID→UPLOADID→PID | **Uploader** |
 | 8 | `UpdateNewTradeProcessProcessDetailsIsMandatory` — mark empty slots optional | **Uploader** |
-| 9 | `file_process_status(FILEUPLOAD)` — good-to-go | **EDP_Billing** (authoritative); uploader may read once as its own confirmation |
-| 10 | `file_process_status(CHECKINSTITRADE)` — Insti Trade GTG (**new in V6**) | **EDP_Billing** — post-trigger; must be TRUE *before billposting* (see trigger-first note); CBOS does **not** enforce this server-side |
-| 11 | `getNewTradeProcess(PROCESSID=real)` — trigger (was Step 10 pre-V6) | **EDP_Billing** |
-| 12–40 | bill posting / recon / contract notes / collateral / fund transfer / MTF / margin | **EDP_Billing** |
+| 9 | `file_process_status(FILEUPLOAD)` — good-to-go | **cams-edp-billing-automation-agent-repo** (authoritative); uploader may read once as its own confirmation |
+| 10 | `file_process_status(CHECKINSTITRADE)` — Insti Trade GTG (**new in V6**) | **cams-edp-billing-automation-agent-repo** — post-trigger; must be TRUE *before billposting* (see trigger-first note); CBOS does **not** enforce this server-side |
+| 11 | `getNewTradeProcess(PROCESSID=real)` — trigger (was Step 10 pre-V6) | **cams-edp-billing-automation-agent-repo** |
+| 12–40 | bill posting / recon / contract notes / collateral / fund transfer / MTF / margin | **cams-edp-billing-automation-agent-repo** |
 
 **The uploader's definition of done (trigger-first, 2026-07-24): get the files
 into CBOS — upload + register every slot — then report the batch `UNCONFIRMED`.**
 It polls `FILEUPLOAD` exactly **once** (in case CBOS already flipped it `TRUE` →
 `CONFIRMED`), but it does **not** wait for `TRUE`: under trigger-first that flag
-does not flip until `EDP_Billing` fires the trigger, which happens *after* the
-upload. `EDP_Billing` is the authoritative post-trigger `FILEUPLOAD` poller. (The
+does not flip until `cams-edp-billing-automation-agent-repo` fires the trigger, which happens *after* the
+upload. `cams-edp-billing-automation-agent-repo` is the authoritative post-trigger `FILEUPLOAD` poller. (The
 old ~60s wait-for-`TRUE` loop was pure dead time — it only delayed the batch
 reaching `UNCONFIRMED` and, with it, the engine's trigger — and was removed.)
 
 > **Trigger-first execution order (SME ruling 2026-07-24).** The numbers above
-> are CBOS's own step labels; `EDP_Billing` no longer *executes* them in that
+> are CBOS's own step labels; `cams-edp-billing-automation-agent-repo` no longer *executes* them in that
 > order. Field observation: `FILEUPLOAD` good-to-go does **not** go TRUE until
 > the process is triggered — so it cannot be a pre-trigger gate. The engine now:
 > **(a)** fires the trigger (Step 11) first — after a pre-trigger completeness
@@ -50,21 +50,21 @@ reaching `UNCONFIRMED` and, with it, the engine's trigger — and was removed.)
 
 ## The two things that cross the boundary — both via CBOS
 
-1. **PROCESSID** — the uploader reserves it (Step 2). `EDP_Billing` reads it back
+1. **PROCESSID** — the uploader reserves it (Step 2). `cams-edp-billing-automation-agent-repo` reads it back
    with `getdropdown(EXISTINGPROCESSID)` for that segment/date and triggers *that*
    PID. Never passed directly.
 2. **`FILEUPLOAD` status flag** — flips `TRUE` once every expected slot is filled
-   or marked optional. That flag *is* the "files are in" signal `EDP_Billing`
+   or marked optional. That flag *is* the "files are in" signal `cams-edp-billing-automation-agent-repo`
    waits on. There is no back-channel: if it doesn't flip within the segment's
-   window, `EDP_Billing` times the segment out.
+   window, `cams-edp-billing-automation-agent-repo` times the segment out.
 
 ## Rules that must hold (or the handoff breaks)
 
 1. **One reserver.** `getNewTradeProcess(PROCESSID=0)` mints a **new** PID every
    call. If both repos reserve, there are two PIDs for one segment/date — the
-   uploader fills PID-A, `EDP_Billing` triggers PID-B (empty) → timeout. So the
-   **uploader is the sole reserver**, and **`EDP_Billing` reads-or-waits only**.
-   ✅ *Resolved 2026-07-23:* `EDP_Billing`'s "reserve if none exists" branch was
+   uploader fills PID-A, `cams-edp-billing-automation-agent-repo` triggers PID-B (empty) → timeout. So the
+   **uploader is the sole reserver**, and **`cams-edp-billing-automation-agent-repo` reads-or-waits only**.
+   ✅ *Resolved 2026-07-23:* `cams-edp-billing-automation-agent-repo`'s "reserve if none exists" branch was
    removed (`RealSegmentStateMachine._resolve_process_id` on `feat/edpb-alignment`
    is read-only — `getdropdown(EXISTINGPROCESSID)` misses are a normal wait, and
    the agent never calls reserve-mode `getNewTradeProcess`); the uploader side
@@ -74,7 +74,7 @@ reaching `UNCONFIRMED` and, with it, the engine's trigger — and was removed.)
    segment/date — **not** per exchange folder — so `getdropdown` is unambiguous.
    (Batch unit = `(segment, date)`; exchange is file metadata.)
 3. **Timing.** The uploader must finish (FILEUPLOAD=TRUE) before the segment's
-   trigger window closes on the `EDP_Billing` side.
+   trigger window closes on the `cams-edp-billing-automation-agent-repo` side.
 
 ## Known unknowns (verify against real CBOS)
 
@@ -107,7 +107,7 @@ reaching `UNCONFIRMED` and, with it, the engine's trigger — and was removed.)
   unknown values read as "not optional" so the completeness gate fails
   closed. Verify the real readback vocabulary (and whether it inherits the
   Step-8 `"0"`-means-optional inversion) in UAT.
-- ~~The uploader is on API doc v4; `EDP_Billing`'s client is pinned to v3.~~
+- ~~The uploader is on API doc v4; `cams-edp-billing-automation-agent-repo`'s client is pinned to v3.~~
   ✅ *Resolved on `feat/edpb-alignment`:* both repos now target **V6**
   (V5's TradeDate everywhere + V6's Step-10 Insti Trade gate), with wire
   shapes shared via `edpb_core.cbos` payload builders — no duplicated DTOs.

@@ -21,7 +21,7 @@ class Batch(Base):
     GET /batches/{batch_id}.
 
     status holds edpb_core.batch_api.BatchStatus values (stored as strings;
-    the vocabulary is shared with the EDP_Billing engine so the two sides
+    the vocabulary is shared with the cams-edp-billing-automation-agent-repo engine so the two sides
     cannot drift).
     """
 

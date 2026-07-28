@@ -45,7 +45,7 @@ them into batches. Never calls CBOS, never reads the database.
 ## CBOS concepts
 
 **PROCESSID** — the identifier CBOS issues when a batch is reserved (Step 2).
-One per batch, shared by every file in it. EDP_Billing reads it back per
+One per batch, shared by every file in it. cams-edp-billing-automation-agent-repo reads it back per
 segment and trade date.
 
 **UploadID** — a slot in CBOS's pipeline that expects one particular kind of
@@ -97,7 +97,7 @@ upload, register, mark empty slots optional. Steps 2 through 9.
 **Handoff** — the point where this repo stops. The V6 **Insti Trade GTG**
 (Step 10, CHECKINSTITRADE), the CBOS **trigger** (Step 11) and everything
 downstream (bill posting, recon, margin, MTF, collateral) belong to the
-**EDP_Billing scheduler**, which polls FILEUPLOAD, then CHECKINSTITRADE, and
+**cams-edp-billing-automation-agent-repo scheduler**, which polls FILEUPLOAD, then CHECKINSTITRADE, and
 triggers once both read TRUE. This service must never trigger. See
 `docs/CBOS_HANDOFF_CONTRACT.md`.
 

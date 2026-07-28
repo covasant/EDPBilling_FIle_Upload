@@ -18,7 +18,7 @@ format would put logging concerns into the interface.
 
 Since the manifest handoff (BATCH_HANDOFF_CONTRACT.md), a batch usually
 arrives CARRYING an id: the manifest's correlation_id, minted by the
-EDP_Billing engine (or the bot) and threaded through every service so one
+cams-edp-billing-automation-agent-repo engine (or the bot) and threaded through every service so one
 grep traces a segment-day across engine -> bot -> uploader logs. batch_context
 adopts that id when given one and only mints its own for id-less batches
 (hand-written manifests, old producers).

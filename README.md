@@ -126,9 +126,9 @@ edpb/
 
 ## Setup
 
-> **Prerequisite — sibling checkout of `EDP_Billing`.** This repo depends on the
-> shared `edpb-core` package via `../EDP_Billing/packages/edpb-core` (see
-> `[tool.uv.sources]` in `pyproject.toml`). Before `uv sync`, clone `EDP_Billing`
+> **Prerequisite — sibling checkout of `cams-edp-billing-automation-agent-repo`.** This repo depends on the
+> shared `edpb-core` package via `../cams-edp-billing-automation-agent-repo/packages/edpb-core` (see
+> `[tool.uv.sources]` in `pyproject.toml`). Before `uv sync`, clone `cams-edp-billing-automation-agent-repo`
 > into the **same parent directory** as this repo and make sure it's on a branch
 > that contains `packages/edpb-core`. Missing this gives a `uv sync`
 > path-resolution error for `edpb-core`. For the e2e / mock-CBOS stack you also

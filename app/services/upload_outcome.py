@@ -65,7 +65,7 @@ def unconfirmed(poll_message: str = "") -> FileOutcome:
     didn't confirm good-to-go.
 
     Lands in uploaded/, not uploadFailed/: re-dropping a file CBOS already
-    holds would duplicate it. EDP_Billing is the authoritative FILEUPLOAD
+    holds would duplicate it. cams-edp-billing-automation-agent-repo is the authoritative FILEUPLOAD
     poller and triggers once CBOS reports TRUE.
 
     poll_message is CBOS's last word (FALSE, SKIP, POLL_TIMED_OUT, ...) and is

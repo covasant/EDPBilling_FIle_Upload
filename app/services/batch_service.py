@@ -4,7 +4,7 @@ router (ADR 3): sessions arrive via the documented dependency and ALL
 orchestration (validate → verify → record → enqueue) lives here.
 
 Statuses are edpb_core.batch_api.BatchStatus everywhere (ADR 5) — the same
-enum the EDP_Billing engine reads, so the two sides can't drift.
+enum the cams-edp-billing-automation-agent-repo engine reads, so the two sides can't drift.
 """
 
 from __future__ import annotations

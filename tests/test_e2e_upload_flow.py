@@ -64,7 +64,7 @@ def test_full_mcx_batch_uploads_all_three(monkeypatch):
 
 def test_uploader_does_not_trigger():
     """This repo owns the upload lane only - the CBOS trigger (Step 10) belongs
-    to EDP_Billing. The client must not expose a trigger call."""
+    to cams-edp-billing-automation-agent-repo. The client must not expose a trigger call."""
     from app.clients import cbos_client
 
     assert not hasattr(cbos_client, "trigger_process")

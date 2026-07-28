@@ -242,7 +242,7 @@ wheels = [
 [[package]]
 name = "edpb-core"
 version = "0.1.0"
-source = { editable = "../EDP_Billing/packages/edpb-core" }
+source = { editable = "../cams-edp-billing-automation-agent-repo/packages/edpb-core" }
 dependencies = [
     { name = "jsonschema" },
 ]
@@ -296,7 +296,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "edpb-core", extras = ["mock"], editable = "../EDP_Billing/packages/edpb-core" },
+    { name = "edpb-core", extras = ["mock"], editable = "../cams-edp-billing-automation-agent-repo/packages/edpb-core" },
     { name = "fastapi", specifier = "==0.115.0" },
     { name = "jsonschema", specifier = "==4.25.1" },
     { name = "psycopg2-binary", specifier = "==2.9.9" },

@@ -3,7 +3,7 @@
 Decided 2026-07-23 (wayfinder ticket 05). Replaces the implicit folder-scan
 coupling ("set `EDPB_BASE_DIR` to the uploader's `FILE_ROOT_PATH` and hope")
 with an explicit, atomic, checksummed handoff. Companion to
-`CBOS_HANDOFF_CONTRACT.md` (which governs the Uploader ↔ EDP_Billing side).
+`CBOS_HANDOFF_CONTRACT.md` (which governs the Uploader ↔ cams-edp-billing-automation-agent-repo side).
 
 | Decision | Choice |
 |---|---|
@@ -11,13 +11,13 @@ with an explicit, atomic, checksummed handoff. Companion to
 | Transport | Shared filesystem; `POST /batches` carries the **manifest path** |
 | Folder layout | **Flat `{DD-MM-YYYY}/{SEGMENT}/`** — exchange is per-file metadata; the `{exchange}/` folder level and the `NA` shim are dead |
 | Completeness authority | **Uploader only** (required-files gate, ticket 04). The bot reports `download_outcome` facts, never decides |
-| Uploader trigger | **API-only**: `POST /batches`. Interim caller = bot callback after finalization; final caller = EDP_Billing engine (ticket 10). No folder-scan scheduler |
+| Uploader trigger | **API-only**: `POST /batches`. Interim caller = bot callback after finalization; final caller = cams-edp-billing-automation-agent-repo engine (ticket 10). No folder-scan scheduler |
 
 ## The manifest
 
 One per (segment, trade date): `{FILE_ROOT}/{DD-MM-YYYY}/{SEGMENT}/manifest.json`.
 Schema: `edpb_core/manifest.schema.json` (packaged in the shared `edpb-core`
-package under `EDP_Billing/packages/edpb-core` — THE canonical copy). Example:
+package under `cams-edp-billing-automation-agent-repo/packages/edpb-core` — THE canonical copy). Example:
 
 ```json
 {
@@ -131,7 +131,7 @@ flips TRUE on incomplete data" hole. Implementation: ticket 07.
   slots to mark optional; recorded in the audit trail; then the batch
   resumes Steps 8–9.
 - **Alerting**: the uploader only *exposes* `INCOMPLETE` (via
-  `GET /batches/{batch_id}`); EDP_Billing — which owns Graph email alerting
+  `GET /batches/{batch_id}`); cams-edp-billing-automation-agent-repo — which owns Graph email alerting
   and sees FILEUPLOAD staying FALSE — notifies ops. One alerting system.
 - The initial allowlist contents must be **confirmed with MOFSL ops**
   (seeded from the xlsx sheets + real run logs, but the business call on
@@ -141,5 +141,5 @@ flips TRUE on incomplete data" hole. Implementation: ticket 07.
 
 | Phase | Trigger chain |
 |---|---|
-| ✅ Current (ticket 10; trigger-first 2026-07-24) | EDP_Billing engine (`DOWNLOADING` state) → bot `/edpb/{code}/download` → bot finalizes → engine (`UPLOADING` state) `POST /batches` → engine (`TRIGGERED` state) checks batch status **before firing** (INCOMPLETE/FAILED/REJECTED ⇒ segment FAILED + email, no trigger), then fires the trigger, then polls FILEUPLOAD good-to-go + CHECKINSTITRADE |
+| ✅ Current (ticket 10; trigger-first 2026-07-24) | cams-edp-billing-automation-agent-repo engine (`DOWNLOADING` state) → bot `/edpb/{code}/download` → bot finalizes → engine (`UPLOADING` state) `POST /batches` → engine (`TRIGGERED` state) checks batch status **before firing** (INCOMPLETE/FAILED/REJECTED ⇒ segment FAILED + email, no trigger), then fires the trigger, then polls FILEUPLOAD good-to-go + CHECKINSTITRADE |
 | Standalone/interim fallback | bot callback (`EDPB_UPLOADER_URL`, default off) or `POST /batches/rescan` |

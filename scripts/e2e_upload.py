@@ -19,7 +19,7 @@ production would do.
 Run:
     uv run python -m scripts.e2e_upload
     uv run python -m scripts.e2e_upload --date 17-07-2026 --segment MCX \
-        --source .../mofsl_file_download_rpa_bot/downloads/edpb/17-07-2026/MCX
+        --source .../cams-edp-file-download-rpa-bot-repo/downloads/edpb/17-07-2026/MCX
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ DEFAULT_DOWNLOAD_ROOT = os.environ.get(
     "E2E_DOWNLOAD_ROOT",
     str(
         Path(__file__).resolve().parent.parent.parent
-        / "mofsl_file_download_rpa_bot"
+        / "cams-edp-file-download-rpa-bot-repo"
         / "downloads"
         / "edpb"
     ),

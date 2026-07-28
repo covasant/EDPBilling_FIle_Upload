@@ -120,7 +120,7 @@ def test_confirm_upload_resolves_true_for_a_success_file(monkeypatch):
 def test_confirm_upload_polls_once_and_returns_false(monkeypatch):
     """Trigger-first (SME ruling 2026-07-24): the uploader polls FILEUPLOAD
     exactly ONCE and reports the verdict. A FALSE answer — good-to-go not yet,
-    and it won't flip until EDP_Billing fires the trigger AFTER this upload —
+    and it won't flip until cams-edp-billing-automation-agent-repo fires the trigger AFTER this upload —
     returns immediately as FALSE. It must NOT spin waiting for TRUE (the old
     ~60s wait only delayed the batch reaching UNCONFIRMED and the engine's
     trigger)."""
@@ -141,7 +141,7 @@ def test_confirm_upload_polls_once_and_returns_false(monkeypatch):
 
 def test_uploader_exposes_no_trigger():
     """This repo owns the upload lane only - the CBOS trigger (Step 10) belongs
-    to EDP_Billing. See CONTEXT.md's handoff."""
+    to cams-edp-billing-automation-agent-repo. See CONTEXT.md's handoff."""
     assert not hasattr(cbos_client, "trigger_process")
     assert not hasattr(cbos_client.get_cbos_client(), "trigger_process")
 
