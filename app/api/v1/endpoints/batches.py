@@ -33,6 +33,8 @@ class ProceedRequest(BaseModel):
     reason: str = Field(min_length=1, description="Why billing may proceed without them")
 
 
+
+
 @router.post("", status_code=202)
 def submit_batch(
     submission: BatchSubmission, request: Request, session: Session = Depends(get_db_session)

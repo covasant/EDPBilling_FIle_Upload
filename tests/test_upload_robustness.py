@@ -131,7 +131,12 @@ def test_unconfirmed_upload_goes_to_uploaded_not_failed(monkeypatch):
             assert (folder / "uploaded" / row.file_name).exists()
             assert not (folder / "uploadFailed" / row.file_name).exists()
             assert row.status == "uploaded"
-            assert "not confirmed" in (row.cbos_response or "").lower()
+            # A FALSE Step 9 read does NOT make the file unconfirmed: it is in
+            # CBOS. FILEUPLOAD cannot be TRUE here anyway (the engine triggers
+            # after we return), so the reading is kept as context only.
+            response = (row.cbos_response or "").lower()
+            assert "uploaded and registered in cbos" in response
+            assert "false" in response
     finally:
         session.close()
 

@@ -30,7 +30,7 @@ import logging
 import re
 import time
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from edpb_core.batch_api import BatchStatus
@@ -89,6 +89,56 @@ def _set_batch_status(
         repo.set_status(batch, status, detail)
     finally:
         session.close()
+
+
+def _fileupload_observation(poll_message: str, **extra: object) -> dict:
+    """The Step 9 FILEUPLOAD reading, recorded as DIAGNOSTICS - never as the
+    batch's verdict.
+
+    This flag cannot answer the question the batch status asks. Under trigger-first
+    ordering (SME ruling 2026-07-24) FILEUPLOAD does not go TRUE until the process
+    is TRIGGERED, and the trigger is the engine's, fired after we finish. Measured
+    on 2026-07-30: we polled at 22:09:24 and the engine triggered at 22:09:38 (MCX),
+    22:11:48 vs 22:12:10 (MCXPHY). So Step 9 runs at a moment when FALSE is
+    structurally guaranteed, and deriving the batch status from it made every batch
+    UNCONFIRMED regardless of how well the upload went.
+
+    The flag is also unusable in principle: it carries no PROCESSID (it keys on
+    {Segment, TradeDate, ProcessName, UserID}) and it reverts - MCX/2026-07-24 read
+    TRUE at 15:29:46 under PID 28007 and FALSE three hours later.
+
+    So it is kept for diagnostics, timestamped, and the batch verdict is decided
+    from our own completed work instead. See _batch_upload_complete().
+    """
+    return {
+        "fileupload": poll_message,
+        "observed_at": datetime.now(UTC).isoformat(),
+        "note": (
+            "diagnostics only - FILEUPLOAD cannot be TRUE before the engine's "
+            "trigger, which fires after this poll"
+        ),
+        **extra,
+    }
+
+
+def _batch_upload_complete(file_count: int, **extra: object) -> dict:
+    """Detail for a batch whose files are all in CBOS - our whole responsibility.
+
+    We reach this point only after every manifest file was chunked (Step 5) and
+    registered (Step 7), the completeness gate passed, and every remaining empty
+    slot was marked optional (Step 8). That is first-hand knowledge, and it is the
+    entire question a batch row answers: are this manifest's files in CBOS?
+
+    What happens downstream - trigger, insti-trade, billposting, recon, contract
+    notes - belongs to the engine's segment row, not here. A batch is not "less
+    confirmed" because reconciliation has not run; reconciliation is not ours.
+    """
+    return {
+        "files_in_cbos": file_count,
+        "confirmed_at": datetime.now(UTC).isoformat(),
+        "basis": "all manifest files uploaded + registered; completeness gate passed",
+        **extra,
+    }
 
 
 def _warn_if_process_id_differs(gtg_message: str, process_id: str, task: SegmentBatchTask) -> None:
@@ -651,7 +701,15 @@ def _process_batch(task: SegmentBatchTask) -> None:
         # slot. NOTE: the trigger (Step 11 in V6; the new Step 10 is the
         # engine's Insti Trade GTG) and every downstream step are
         # owned by the EDP_Billing scheduler, not this repo - our job ends at
-        # "make FILEUPLOAD go TRUE". See docs/CBOS_HANDOFF_CONTRACT.md.
+        # "every manifest file is in CBOS and nothing is left blocking
+        # FILEUPLOAD". See docs/CBOS_HANDOFF_CONTRACT.md.
+        #
+        # This used to read "our job ends at making FILEUPLOAD go TRUE". That is
+        # no longer achievable here: trigger-first ordering (SME ruling
+        # 2026-07-24, after this code was written) means FILEUPLOAD cannot go
+        # TRUE until the ENGINE triggers, which happens after we return. We do
+        # everything needed for it to go TRUE; observing that it did is the
+        # engine's job, in WAITING_FOR_FILE_UPLOAD.
         for candidate in empty_slots:
             try:
                 client.mark_step_optional(process_id, candidate.step_no)
@@ -686,10 +744,18 @@ def _process_batch(task: SegmentBatchTask) -> None:
             request_log.append({"step": "file_process_status", "result": poll_message})
             apply_outcome(repo, record, file_path, outcome, request_log)
 
+        # CONFIRMED on our own completed work, not on the Step 9 reading. Every
+        # manifest file is chunked, registered and past the completeness gate by
+        # here; that IS the batch's question answered. The poll cannot be TRUE yet
+        # (it needs the engine's trigger, which comes later) so gating on it made
+        # every batch UNCONFIRMED forever - see _fileupload_observation.
         _set_batch_status(
             task,
-            BatchStatus.CONFIRMED if poll_message == "TRUE" else BatchStatus.UNCONFIRMED,
-            {"fileupload": poll_message},
+            BatchStatus.CONFIRMED,
+            _batch_upload_complete(
+                len(uploaded_candidates),
+                **_fileupload_observation(poll_message),
+            ),
         )
         logger.info(
             "Batch %s complete: %d file(s) in CBOS (%s)",
@@ -803,7 +869,12 @@ def _proceed_batch(task: SegmentBatchTask) -> None:
     poll_message = client.confirm_upload(task.segment, trade_date)
     _set_batch_status(
         task,
-        BatchStatus.CONFIRMED if poll_message == "TRUE" else BatchStatus.UNCONFIRMED,
-        {"fileupload": poll_message, "via": "force-proceed", "proceed_slots": sorted(requested)},
+        BatchStatus.CONFIRMED,
+        _batch_upload_complete(
+            len(requested),
+            **_fileupload_observation(
+                poll_message, via="force-proceed", proceed_slots=sorted(requested)
+            ),
+        ),
     )
     logger.info("Proceed %s complete: FILEUPLOAD MSG=%s", task.key, poll_message)

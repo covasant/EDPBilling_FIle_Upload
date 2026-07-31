@@ -21,8 +21,11 @@ class Destination(StrEnum):
 
 
 class Outcome(StrEnum):
-    CONFIRMED = "confirmed"  # uploaded, registered, FILEUPLOAD TRUE
-    UNCONFIRMED = "unconfirmed"  # uploaded, registered, FILEUPLOAD not yet TRUE
+    CONFIRMED = "confirmed"  # uploaded + registered in CBOS - our job, done
+    # No longer produced by from_poll_result: it meant "FILEUPLOAD not yet TRUE",
+    # which under trigger-first ordering is every file, always. Kept so historical
+    # audit rows written before 2026-07-31 still resolve.
+    UNCONFIRMED = "unconfirmed"
     IDEMPOTENT_SKIP = "idempotent_skip"  # already in CBOS for this batch + UploadID
     REJECTED = "rejected"  # matched no upload rule, or failed a local check
     FAILED = "failed"  # a CBOS call errored
@@ -40,18 +43,19 @@ class FileOutcome:
     stamp_uploaded_at: bool = False
 
 
-def confirmed() -> FileOutcome:
-    """Step 9 reported FILEUPLOAD TRUE.
+def confirmed(poll_message: str = "") -> FileOutcome:
+    """The file is in CBOS: chunked (Step 5) and registered (Step 7).
 
-    The audit row records the verdict, not a payload: the client returns a
-    bool, so anything payload-shaped stored here would be fabricated rather
-    than what CBOS actually sent.
+    poll_message is CBOS's last FILEUPLOAD word, recorded verbatim as context
+    only - it is not what makes this confirmed, and it is normally FALSE here
+    because the engine's trigger has not fired yet. See from_poll_result.
     """
+    said = f" (FILEUPLOAD read {poll_message} - trigger not yet fired)" if poll_message else ""
     return FileOutcome(
         outcome=Outcome.CONFIRMED,
         destination=Destination.UPLOADED,
         status="uploaded",
-        cbos_response="FILEUPLOAD confirmed TRUE",
+        cbos_response=f"Uploaded and registered in CBOS{said}",
         stamp_uploaded_at=True,
     )
 
@@ -144,11 +148,21 @@ def failed(error: Exception) -> FileOutcome:
 
 
 def from_poll_result(poll_message: str) -> FileOutcome:
-    """Step 9's verdict for a file that was uploaded and registered.
+    """Outcome for a file that was uploaded (Step 5) and registered (Step 7).
 
-    poll_message is CBOS's own last FILEUPLOAD message (or POLL_TIMED_OUT).
-    Only TRUE is documented to mean good-to-go; everything else lands in
-    uploaded/ as unconfirmed, carrying the message verbatim so the audit row
-    says what CBOS said rather than what we assumed it meant.
+    That is CONFIRMED regardless of what Step 9 reads. The file is in CBOS - we
+    put it there and CBOS acknowledged the registration - and that is the whole
+    question this audit row answers.
+
+    It used to key off `poll_message == "TRUE"`, which was unreachable in
+    practice: under trigger-first ordering (SME ruling 2026-07-24) FILEUPLOAD
+    cannot go TRUE until the engine TRIGGERS, which happens after we finish. So
+    every file was recorded as "good-to-go not confirmed" no matter how cleanly
+    it uploaded. poll_message is still carried into the batch's status_detail as
+    diagnostics (upload_service._fileupload_observation).
+
+    Note both branches always produced status="uploaded" and destination=
+    UPLOADED, so this only ever changed the wording of the audit trail - never
+    where a file landed or whether it counted as uploaded.
     """
-    return confirmed() if poll_message == "TRUE" else unconfirmed(poll_message)
+    return confirmed(poll_message)
