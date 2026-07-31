@@ -55,6 +55,15 @@ class Settings(BaseSettings):
     # the previous behaviour.
     cbos_upload_ip_address: str = ""
 
+    # Checksum verification (manifest_service.verify_checksums) opt-out, keyed
+    # by "EXCHANGE:kind" pairs matching a manifest file's "exchange"/"kind"
+    # metadata (e.g. "MCX:product_master"). Listed files still must exist, but
+    # neither size_bytes nor sha256 are compared - for slow-changing reference
+    # files (product masters etc.) whose declared checksum may go stale between
+    # manifest generation and upload. Comma-separated in .env:
+    # CHECKSUM_SKIP_KINDS=MCX:product_master,EQ:product_master
+    checksum_skip_kinds: str = ""
+
     # Whether Step 1 (BeginFileUpload) may actually stop a batch.
     #
     # Default False - observe only: the check runs and its answer is logged, but

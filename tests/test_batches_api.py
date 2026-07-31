@@ -170,6 +170,28 @@ def test_checksum_mismatch_is_422_and_recorded(client):
     assert (manifest_path.parent / FULL_MCX_FILES[1][0]).exists()
 
 
+def test_checksum_skip_kinds_bypasses_size_and_sha256(client, monkeypatch):
+    monkeypatch.setenv("CHECKSUM_SKIP_KINDS", "MCX:product_master")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    manifest_path = _make_batch_dir(_root(), batch_id="MCX-2026-07-20-eeeeeeee")
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"][0]["kind"] = "product_master"
+    manifest_path.write_text(json.dumps(manifest))
+
+    # Tamper with both the product master's bytes and its length - a skipped
+    # kind bypasses both the size and sha256 comparisons, existence only.
+    product_master = manifest_path.parent / FULL_MCX_FILES[0][0]
+    product_master.write_bytes(b"tampered, different length too")
+
+    resp = client.post("/batches", json={"manifest_path": str(manifest_path)})
+    assert resp.status_code == 202
+
+    get_settings.cache_clear()
+
+
 def test_rescan_queues_unknown_manifests_only(client):
     known = _make_batch_dir(_root(), batch_id="MCX-2026-07-20-cccccccc")
     client.post("/batches", json={"manifest_path": str(known)})
