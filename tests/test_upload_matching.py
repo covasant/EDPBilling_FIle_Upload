@@ -241,3 +241,60 @@ def test_processing_steps_are_never_asked_for_upload_settings():
 
     assert asked == ["535"], f"Step 4 must only run for real file slots, asked: {asked}"
     assert len(rules) == 1, "a processing step must not become a matching rule"
+
+
+# ---------------------------------------------------------------------------
+# Control-record files (NCDEX physical AL02 and friends)
+# ---------------------------------------------------------------------------
+
+# The real NCDEX physical trade file, trade date 2026-06-17. Line 1 is a
+# control record (7 columns); line 2 is the delivery row (20 columns), which
+# is what CBOS's rule 321 declares. The first-line-only sniff rejected this
+# before CBOS ever saw it.
+_AL02_REAL = (
+    "AL02,01240,17062026,1,120,120,0\n"
+    "17-JUN-2026,D,2026016,FUTCOM,GUARGUM5,19-JUN-2026,0.00,FF,0,JODHPUR,"
+    "01240,C,H30081,S,120,120,0,Y,120,0\n"
+)
+
+
+def test_control_record_file_is_not_rejected(tmp_path):
+    """A file whose FIRST line is a control record must still match on its data
+    rows. Observed live 2026-06-17: NCDEXPHY's AL02 was rejected for "has 7
+    column(s), expected 20" while its data row had exactly 20."""
+    rules = [_rule(321, "NCDEX_AL02_01240_", ext="CSV", cols=20, name="NCDEX Physical Trade File")]
+    f = _write(tmp_path, "NCDEX_AL02_01240_17062026.CSV", content=_AL02_REAL)
+
+    assert match_file(f, rules).upload_id == "321"
+
+
+def test_genuinely_wrong_width_is_still_rejected(tmp_path):
+    """The relaxation must not disarm the check: when NO sniffed line has the
+    expected width the file is still refused."""
+    rules = [_rule(321, "NCDEX_AL02_01240_", ext="CSV", cols=99)]
+    f = _write(tmp_path, "NCDEX_AL02_01240_17062026.CSV", content=_AL02_REAL)
+
+    with pytest.raises(ColumnCountMismatch):
+        match_file(f, rules)
+
+
+def test_first_line_match_still_works(tmp_path):
+    """The common case - no control record, line 1 is data - is unchanged.
+    This is what every segment uploading successfully today relies on."""
+    rules = [_rule(84, "C_STT_IND", ext="CSV", cols=3)]
+    f = _write(tmp_path, "C_STT_IND_22062026.csv", content="a,b,c\n1,2,3\n")
+
+    assert match_file(f, rules).upload_id == "84"
+
+
+def test_only_the_first_few_lines_are_sniffed(tmp_path):
+    """Bounded so a 77MB trade file is not read end to end. A matching width
+    that appears only past the sniff window does not rescue the file."""
+    from app.services.upload_matching import COLUMN_SNIFF_LINES
+
+    body = "".join("a,b\n" for _ in range(COLUMN_SNIFF_LINES + 3)) + "a,b,c,d,e\n"
+    rules = [_rule(90, "DEEP", ext="CSV", cols=5)]
+    f = _write(tmp_path, "DEEP_1.csv", content=body)
+
+    with pytest.raises(ColumnCountMismatch):
+        match_file(f, rules)
