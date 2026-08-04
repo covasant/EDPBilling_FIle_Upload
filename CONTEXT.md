@@ -20,6 +20,24 @@ makes it the unit this service batches by.
 **not** a partition key: a segment's exchange sub-folders all belong to the same
 batch. Used for audit and to break matching ties.
 
+**Physical segment** — `MCXPHY`, `NCDEXPHY`: the physical-settlement counterpart
+of `MCX` / `NCDEX`. Its own segment, own batch, own PROCESSID — but its process
+**ends at Bill Posting**, because there is one recon per **pair** rather than one
+per segment.
+
+**Pair** — a parent segment and its physical counterpart (MCX + MCXPHY,
+NCDEX + NCDEXPHY). The unit reconciliation operates on: a single recon runs under
+the **parent's** groupname and covers both sides.
+
+**Anchor file** — the one date-stamped file that answers "was there physical
+delivery on this trade date?" (`MCXPHY.PHYSICAL`, `NCDEXPHY.PHYSICAL_TRADE`). Its
+filename carries the trade date, so its absence is meaningful. NCDEXPHY's other
+file, `SS06`, is named for its delivery **cycle** and cannot answer the question.
+
+**Delivery cycle** — physical delivery does not happen every trading day. A date
+with no anchor file is a normal no-op, not a failure — for NCDEX it is the common
+case.
+
 ```
 {FILE_ROOT_PATH}/{trade date}/{segment}/{exchange}/{file}
 ```
@@ -100,6 +118,12 @@ downstream (bill posting, recon, margin, MTF, collateral) belong to the
 **cams-edp-billing-automation-agent-repo scheduler**, which polls FILEUPLOAD, then CHECKINSTITRADE, and
 triggers once both read TRUE. This service must never trigger. See
 `docs/CBOS_HANDOFF_CONTRACT.md`.
+
+**Gate** — a parent segment holding its own trigger until its physical
+counterpart has posted its bills. Lives entirely in the EDP_Billing engine, not
+here, but it changes what this repo's output means: a batch this service accepts
+for MCX no longer leads straight to billing. See that repo's
+`docs/adr/0001-cross-segment-dependency-gate.md`.
 
 **Audit log** — the `uploaded_files` table. Written to record what was
 attempted and what CBOS said. Read for exactly one decision: the idempotency

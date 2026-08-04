@@ -371,7 +371,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
         for attempt in range(1, settings.cbos_max_retries + 1):
             try:
                 reservation = client.reserve_process(task.segment, trade_date, existing_process_id)
-                rules = upload_matching.fetch_upload_rules(reservation.candidates, client)
+                rules = upload_matching.fetch_upload_rules(reservation.candidates, client, task.segment)
                 break
             except CBOSUploadError as exc:
                 logger.warning(

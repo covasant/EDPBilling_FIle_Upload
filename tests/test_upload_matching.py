@@ -233,7 +233,7 @@ def test_processing_steps_are_never_asked_for_upload_settings():
     asked: list[str] = []
 
     class _Client:
-        def upload_settings(self, upload_id, fallback_name=""):
+        def upload_settings(self, upload_id, fallback_name="", segment=""):
             asked.append(upload_id)
             return _rule(535, "MCX_CO_0_CM", ext="csv", name="MCX COM TRADE FILE")
 
@@ -241,3 +241,154 @@ def test_processing_steps_are_never_asked_for_upload_settings():
 
     assert asked == ["535"], f"Step 4 must only run for real file slots, asked: {asked}"
     assert len(rules) == 1, "a processing step must not become a matching rule"
+
+
+# ---------------------------------------------------------------------------
+# Control-record files (NCDEX physical AL02 and friends)
+# ---------------------------------------------------------------------------
+
+# The real NCDEX physical trade file, trade date 2026-06-17. Line 1 is a
+# control record (7 columns); line 2 is the delivery row (20 columns), which
+# is what CBOS's rule 321 declares. The first-line-only sniff rejected this
+# before CBOS ever saw it.
+_AL02_REAL = (
+    "AL02,01240,17062026,1,120,120,0\n"
+    "17-JUN-2026,D,2026016,FUTCOM,GUARGUM5,19-JUN-2026,0.00,FF,0,JODHPUR,"
+    "01240,C,H30081,S,120,120,0,Y,120,0\n"
+)
+
+
+def test_control_record_file_is_not_rejected(tmp_path):
+    """A file whose FIRST line is a control record must still match on its data
+    rows. Observed live 2026-06-17: NCDEXPHY's AL02 was rejected for "has 7
+    column(s), expected 20" while its data row had exactly 20."""
+    rules = [_rule(321, "NCDEX_AL02_01240_", ext="CSV", cols=20, name="NCDEX Physical Trade File")]
+    f = _write(tmp_path, "NCDEX_AL02_01240_17062026.CSV", content=_AL02_REAL)
+
+    assert match_file(f, rules).upload_id == "321"
+
+
+def test_genuinely_wrong_width_is_still_rejected(tmp_path):
+    """The relaxation must not disarm the check: when NO sniffed line has the
+    expected width the file is still refused."""
+    rules = [_rule(321, "NCDEX_AL02_01240_", ext="CSV", cols=99)]
+    f = _write(tmp_path, "NCDEX_AL02_01240_17062026.CSV", content=_AL02_REAL)
+
+    with pytest.raises(ColumnCountMismatch):
+        match_file(f, rules)
+
+
+def test_first_line_match_still_works(tmp_path):
+    """The common case - no control record, line 1 is data - is unchanged.
+    This is what every segment uploading successfully today relies on."""
+    rules = [_rule(84, "C_STT_IND", ext="CSV", cols=3)]
+    f = _write(tmp_path, "C_STT_IND_22062026.csv", content="a,b,c\n1,2,3\n")
+
+    assert match_file(f, rules).upload_id == "84"
+
+
+def test_only_the_first_few_lines_are_sniffed(tmp_path):
+    """Bounded so a 77MB trade file is not read end to end. A matching width
+    that appears only past the sniff window does not rescue the file."""
+    from app.services.upload_matching import COLUMN_SNIFF_LINES
+
+    body = "".join("a,b\n" for _ in range(COLUMN_SNIFF_LINES + 3)) + "a,b,c,d,e\n"
+    rules = [_rule(90, "DEEP", ext="CSV", cols=5)]
+    f = _write(tmp_path, "DEEP_1.csv", content=body)
+
+    with pytest.raises(ColumnCountMismatch):
+        match_file(f, rules)
+
+
+# ---------------------------------------------------------------------------
+# Step-40 fallback for a slot whose Step-4 pattern is blank
+# ---------------------------------------------------------------------------
+
+
+def test_blank_step4_pattern_falls_back_to_step40(monkeypatch):
+    """NCDEXPHY/482 live: Step 4 returns 'FILE NAME (CONTAINS)': '' while Step
+    40 returns '%%'. Dropping the slot strands SS06, which CBOS lists as a
+    MANDATORY Table2 slot - so the batch can never complete."""
+    from app.clients import cbos_client as cc
+
+    row = {
+        "ID": 482,
+        "NAME": "NCDEX DELIVERY FILE - SS06",
+        "FILE NAME (CONTAINS)": "",
+        "FILEEXTENSION": "CSV",
+        "NO. OF COLUMNS": 9,
+    }
+    assert cc._parse_upload_rule("482", row, "SS06") is None  # today's behaviour
+
+    rule = cc._parse_upload_rule("482", row, "SS06", override_pattern="")
+    assert rule is not None and rule.upload_id == "482"
+    assert rule.file_name_pattern == ""  # '%%' means "no filename constraint"
+    assert rule.column_count == 9
+
+
+def test_wildcard_slot_is_a_last_resort_never_a_thief(tmp_path):
+    """An empty pattern matches anything, so the only thing protecting the real
+    slots is longest-pattern-wins. AL02 must still go to 321, not 482."""
+    rules = [
+        _rule(321, "NCDEX_AL02_01240_", ext="CSV", cols=20),
+        _rule(482, "", ext="CSV", cols=9),  # the '%%' slot
+    ]
+    al02 = _write(tmp_path, "NCDEX_AL02_01240_17062026.CSV", content=_AL02_REAL)
+    ss06 = _write(
+        tmp_path,
+        "NCDEX_SS06_01240_D2026016.CSV",
+        content="SS06,01240,17062026,D,2026016,000002,1,0,0,0,1\n36,GUARGUM5,JODHPUR,,35,0,0.00,4078637.50,M51085\n",
+    )
+
+    assert match_file(al02, rules).upload_id == "321", "the specific slot must win"
+    assert match_file(ss06, rules).upload_id == "482", "the leftover file takes the wildcard slot"
+
+
+def test_step40_concrete_filename_is_refused(monkeypatch):
+    """Step 40 answers in two shapes. EQ/81 returns 'SCRIP_030826.TXT' - a
+    literal name whose date Step 40 computes from the SERVER's clock, since the
+    request carries no trade date. Adopting it would reject valid files on every
+    backfill, so only wildcard-delimited values are usable."""
+    from app.clients.cbos_client import CBOSClient
+
+    captured = {}
+
+    class _Probe(CBOSClient):
+        def __init__(self):
+            pass
+
+        def get_expected_filename(self, segment, upload_id):
+            captured["asked"] = (segment, upload_id)
+            return {"Status": "Success", "Data": [{"ExpectedFileNamePattern1": "SCRIP_030826.TXT"}]}
+
+    assert _Probe()._expected_name_pattern("EQ", "81") is None
+    assert captured["asked"] == ("EQ", "81")
+
+
+def test_step40_wildcard_shapes_are_stripped(monkeypatch):
+    """The two usable shapes, both measured against real CBOS."""
+    from app.clients.cbos_client import CBOSClient
+
+    class _Probe(CBOSClient):
+        def __init__(self, value):
+            self._value = value
+
+        def get_expected_filename(self, segment, upload_id):
+            return {"Status": "Success", "Data": [{"ExpectedFileNamePattern1": self._value}]}
+
+    assert _Probe("%NCDEX_AL02_01240_%")._expected_name_pattern("NCDEXPHY", "321") == "NCDEX_AL02_01240_"
+    assert _Probe("%%")._expected_name_pattern("NCDEXPHY", "482") == ""
+
+
+def test_step40_failure_never_breaks_the_batch(monkeypatch):
+    """An optional cross-check must not turn a working batch into a failed one."""
+    from app.clients.cbos_client import CBOSClient
+
+    class _Boom(CBOSClient):
+        def __init__(self):
+            pass
+
+        def get_expected_filename(self, segment, upload_id):
+            raise RuntimeError("CBOS down")
+
+    assert _Boom()._expected_name_pattern("NCDEXPHY", "482") is None

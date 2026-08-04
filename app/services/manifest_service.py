@@ -81,18 +81,40 @@ def load_manifest(manifest_path: Path) -> LoadedManifest:
         files=files,
     )
 
+def _checksum_skip_set() -> set[tuple[str, str]]:
+    """Parse settings.checksum_skip_kinds ("MCX:product_master,EQ:trade") into
+    a set of (exchange, kind) pairs, upper/lower-normalized to match the
+    manifest's "exchange"/"kind" fields."""
+    pairs = set()
+    for token in settings.checksum_skip_kinds.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        exchange, _, kind = token.partition(":")
+        pairs.add((exchange.strip().upper(), kind.strip().lower()))
+    return pairs
 
 def verify_checksums(manifest_path: Path, data: dict | None = None) -> None:
     """Confirm every listed file exists with the declared sha256 and size.
     Raises ChecksumMismatchError naming the first offending file. Pass the
-    already-parsed manifest as `data` to skip a redundant read+parse."""
+    already-parsed manifest as `data` to skip a redundant read+parse.
+
+    A file whose ("exchange", "kind") is listed in settings.checksum_skip_kinds
+    still must exist, but its size_bytes and sha256 are not compared - for
+    slow-changing reference files (e.g. product masters) whose declared
+    checksum may go stale between manifest generation and upload."""
     if data is None:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    skip_set = _checksum_skip_set()
     base = manifest_path.parent
     for entry in data["files"]:
         path = base / entry["name"]
         if not path.is_file():
             raise ChecksumMismatchError(f"listed file missing: {entry['name']}")
+        key = ((entry.get("exchange") or "").upper(), (entry.get("kind") or "").lower())
+        if key in skip_set:
+            logger.info("Manifest %s: %s checksum-skipped (%s)", manifest_path, entry["name"], key)
+            continue
         size = path.stat().st_size
         if size != entry["size_bytes"]:
             raise ChecksumMismatchError(

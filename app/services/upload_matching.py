@@ -29,6 +29,11 @@ from app.core.config import settings
 
 logger = logging.getLogger("upload_matching")
 
+# How many non-empty lines _count_columns looks at. Enough to see past a
+# control record into real data rows, small enough to stay a cheap sniff on a
+# 77MB trade file.
+COLUMN_SNIFF_LINES = 5
+
 
 def _pattern_matches(pattern: str, operator: str, name: str) -> bool:
     """Apply CBOS's declared match semantics against the filename. The operator
@@ -73,14 +78,18 @@ class AmbiguousUploadRule(FileRejected):
     couldn't single one out - reject loudly rather than silently pick wrong."""
 
 
-def fetch_upload_rules(candidates, client) -> list[UploadRule]:
+def fetch_upload_rules(candidates, client, segment: str = "") -> list[UploadRule]:
     """Step 4: fetch upload settings for every distinct UploadID a batch's
     reservation offers (not just the first one), so every candidate's matching
     rule is known before any file is matched.
 
     `candidates` are cbos_client.UploadCandidate values; `client` is the CBOS
     client the batch is already using. Decoding each row into an UploadRule
-    is the client's job."""
+    is the client's job.
+
+    `segment` lets the client fall back to Step 40 for a slot whose Step-4
+    pattern is blank - without it such a slot is dropped and its mandatory file
+    can never be uploaded (see CBOSClient.upload_settings)."""
     rules: list[UploadRule] = []
     seen_ids: set[str] = set()
 
@@ -100,7 +109,7 @@ def fetch_upload_rules(candidates, client) -> list[UploadRule]:
             continue
         seen_ids.add(upload_id)
 
-        rule = client.upload_settings(upload_id, fallback_name=candidate.name)
+        rule = client.upload_settings(upload_id, fallback_name=candidate.name, segment=segment)
         if rule is not None:
             rules.append(rule)
 
@@ -108,20 +117,40 @@ def fetch_upload_rules(candidates, client) -> list[UploadRule]:
     return rules
 
 
-def _count_columns(file_path: Path) -> int | None:
-    """Best-effort column count from the first non-empty line, split on
-    settings.upload_match_delimiter. Returns None if the file can't be read
-    as delimited text (binary formats like .xlsx aren't sniffed here - see
-    the module docstring's known limitation)."""
+def _count_columns(file_path: Path) -> list[int] | None:
+    """Best-effort column counts for the first COLUMN_SNIFF_LINES non-empty
+    lines, split on settings.upload_match_delimiter. Returns None if the file
+    can't be read as delimited text (binary formats like .xlsx aren't sniffed
+    here - see the module docstring's known limitation).
+
+    SEVERAL lines, not just the first, because some exchange files open with a
+    CONTROL RECORD whose width has nothing to do with the data. NCDEX's
+    physical trade file is one:
+
+        AL02,01240,17062026,1,120,120,0                     <- 7  (control)
+        17-JUN-2026,D,2026016,FUTCOM,GUARGUM5,...           <- 20 (data)
+
+    CBOS's rule 321 for that UploadID declares 20 - it describes the data
+    rows. Reading only the first line saw 7, so a perfectly valid file the
+    exchange had just published was rejected before CBOS ever saw it
+    (observed live, trade date 2026-06-17). Since the engine's job is to pick
+    the right UploadID and CBOS's own Step 5/7/9 responses are the arbiter of
+    acceptance (see the module docstring), a local sniff must not be the thing
+    that blocks a real file.
+    """
+    counts: list[int] = []
     try:
         with open(file_path, encoding="utf-8", errors="strict", newline="") as fh:
             for line in fh:
-                if line.strip():
-                    return len(next(csv.reader([line], delimiter=settings.upload_match_delimiter)))
+                if not line.strip():
+                    continue
+                counts.append(len(next(csv.reader([line], delimiter=settings.upload_match_delimiter))))
+                if len(counts) >= COLUMN_SNIFF_LINES:
+                    break
     except (UnicodeDecodeError, OSError) as exc:
         logger.debug("upload_matching: could not sniff columns for %s: %s", file_path.name, exc)
         return None
-    return None
+    return counts or None
 
 
 def _disambiguate(
@@ -218,11 +247,28 @@ def match_file(file_path: Path, rules: list[UploadRule], exchange: str | None = 
 
     if settings.upload_match_validate_columns and rule.column_count is not None:
         actual = _count_columns(file_path)
-        if actual is not None and actual != rule.column_count:
+        # ANY sniffed line matching is enough. Strictly more permissive than the
+        # old first-line-only check, so nothing that uploads today can start
+        # failing - those files already match on line 1. What it adds is
+        # control-record files (see _count_columns), which were being rejected
+        # for a header whose width CBOS's rule never described.
+        if actual is not None and rule.column_count not in actual:
             raise ColumnCountMismatch(
                 f"'{file_path.name}' matched UploadID={rule.upload_id} ({rule.name}) "
-                f"but has {actual} "
+                f"but has {actual[0] if len(actual) == 1 else actual} "
                 f"column(s), expected {rule.column_count}"
+            )
+        if actual is not None and actual[0] != rule.column_count:
+            # Matched on a later line: the first line is a control record. Worth
+            # a breadcrumb - it is the difference between "file is fine" and
+            # "file is malformed" when someone reads this back.
+            logger.info(
+                "upload_matching: %s opens with a %d-column control record; "
+                "matched UploadID=%s on a later %d-column data line",
+                file_path.name,
+                actual[0],
+                rule.upload_id,
+                rule.column_count,
             )
 
     return rule
