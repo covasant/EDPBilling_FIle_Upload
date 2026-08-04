@@ -366,7 +366,12 @@ def _extract_pattern(setting: dict) -> tuple[str, str]:
     return str(setting.get("FileNameToCompare") or "").strip(), ""
 
 
-def _parse_upload_rule(upload_id: str, setting: dict, fallback_name: str = "") -> UploadRule | None:
+def _parse_upload_rule(
+    upload_id: str,
+    setting: dict,
+    fallback_name: str = "",
+    override_pattern: str | None = None,
+) -> UploadRule | None:
     """Decode one raw Step-4 settings row into an UploadRule.
 
     Returns None if the row can't produce a usable rule, which is a skip and
@@ -396,7 +401,20 @@ def _parse_upload_rule(upload_id: str, setting: dict, fallback_name: str = "") -
         .upper()
     )
 
-    if not pattern or not extension:
+    if override_pattern is not None:
+        # Step-40 fallback (see upload_settings). An EMPTY override is
+        # meaningful and must not be treated as "no pattern": CBOS's '%%' says
+        # this slot constrains nothing. Matching is longest-pattern-wins, so an
+        # empty fragment scores zero and only ever takes a file nothing else
+        # matched.
+        pattern, compare_operator = override_pattern, "CONTAINS"
+    elif not pattern:
+        logger.warning(
+            "Incomplete upload settings for UPLOADID=%s (%s), skipping", upload_id, setting
+        )
+        return None
+
+    if not extension:
         logger.warning(
             "Incomplete upload settings for UPLOADID=%s (%s), skipping", upload_id, setting
         )
@@ -627,12 +645,15 @@ class BaseCBOSClient(ABC):
             )
         )
 
-    def upload_settings(self, upload_id: str, fallback_name: str = "") -> UploadRule | None:
+    def upload_settings(
+        self, upload_id: str, fallback_name: str = "", segment: str = ""
+    ) -> UploadRule | None:
         """Step 4. This UploadID's matching rule, decoded. Returns None if CBOS
         offered no settings for it, or the row can't produce a usable rule.
 
         fallback_name is used when the settings row carries no NAME - pass the
-        Table2 slot's label.
+        Table2 slot's label. `segment` enables the Step-40 fallback below; omit
+        it and behaviour is exactly as before.
         """
         raw = self._call(
             4,
@@ -645,7 +666,64 @@ class BaseCBOSClient(ABC):
         if not result:
             logger.warning("No upload settings returned for UPLOADID=%s", upload_id)
             return None
-        return _parse_upload_rule(upload_id, result[0], fallback_name)
+
+        rule = _parse_upload_rule(upload_id, result[0], fallback_name)
+        if rule is not None or not segment:
+            return rule
+        # Step 4 gave no usable pattern - but CBOS publishes the SAME slot's
+        # pattern through Step 40 (get_expected_filename), so the slot is not
+        # actually unconfigured and dropping it here strands a mandatory file.
+        # Observed live on NCDEXPHY/482 ("NCDEX DELIVERY FILE - SS06"): Step 4
+        # returns 'FILE NAME (CONTAINS)': '' while Step 40 returns '%%'.
+        pattern = self._expected_name_pattern(segment, upload_id)
+        if pattern is None:
+            return None
+        logger.info(
+            "UPLOADID=%s had no Step-4 pattern; using Step-40 pattern %r for segment=%s",
+            upload_id,
+            pattern,
+            segment,
+        )
+        return _parse_upload_rule(upload_id, result[0], fallback_name, override_pattern=pattern)
+
+    def _expected_name_pattern(self, segment: str, upload_id: str) -> str | None:
+        """Step 40's filename pattern for a slot, as a CONTAINS fragment, or
+        None when it can't be used.
+
+        ONLY wildcard-delimited values are accepted. Step 40 answers in two
+        shapes, measured against real CBOS:
+
+            NCDEXPHY/321 -> '%NCDEX_AL02_01240_%'   a contains-pattern
+            NCDEXPHY/482 -> '%%'                    no constraint: match all
+            EQ/81        -> 'SCRIP_030826.TXT'      a CONCRETE filename
+
+        The third shape is refused deliberately. It is a literal name whose date
+        Step 40 computes from the server's own clock - the request carries no
+        trade date - so on any backfill it names the wrong day, and even today
+        it is far stricter than the plain 'SCRIP' Step 4 gives for the same
+        slot. Adopting it would invent a rule CBOS never applied.
+
+        '%%' strips to an empty fragment, which is CBOS saying "this slot has no
+        filename constraint" (its DateBasis is 'N/A' - SS06 is named by delivery
+        cycle, not date). Matching is longest-pattern-wins, so an empty fragment
+        scores zero and can only ever take a file that matched nothing else.
+        """
+        try:
+            raw = self.get_expected_filename(segment, upload_id)
+        except Exception as exc:  # never let an optional cross-check fail a batch
+            logger.warning("Step 40 lookup failed for UPLOADID=%s: %s", upload_id, exc)
+            return None
+        data = (_decode_body(raw, "get_expected_filename").get("Data") or [{}])[0]
+        raw_pattern = str(data.get("ExpectedFileNamePattern1") or "")
+        if not (raw_pattern.startswith("%") and raw_pattern.endswith("%")):
+            logger.warning(
+                "Step 40 gave UPLOADID=%s a non-wildcard value %r - refusing to use it as a "
+                "pattern (it is a concrete filename carrying a server-side date)",
+                upload_id,
+                raw_pattern,
+            )
+            return None
+        return raw_pattern.strip("%")
 
     def upload_file(
         self,

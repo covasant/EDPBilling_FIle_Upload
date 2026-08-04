@@ -78,14 +78,18 @@ class AmbiguousUploadRule(FileRejected):
     couldn't single one out - reject loudly rather than silently pick wrong."""
 
 
-def fetch_upload_rules(candidates, client) -> list[UploadRule]:
+def fetch_upload_rules(candidates, client, segment: str = "") -> list[UploadRule]:
     """Step 4: fetch upload settings for every distinct UploadID a batch's
     reservation offers (not just the first one), so every candidate's matching
     rule is known before any file is matched.
 
     `candidates` are cbos_client.UploadCandidate values; `client` is the CBOS
     client the batch is already using. Decoding each row into an UploadRule
-    is the client's job."""
+    is the client's job.
+
+    `segment` lets the client fall back to Step 40 for a slot whose Step-4
+    pattern is blank - without it such a slot is dropped and its mandatory file
+    can never be uploaded (see CBOSClient.upload_settings)."""
     rules: list[UploadRule] = []
     seen_ids: set[str] = set()
 
@@ -105,7 +109,7 @@ def fetch_upload_rules(candidates, client) -> list[UploadRule]:
             continue
         seen_ids.add(upload_id)
 
-        rule = client.upload_settings(upload_id, fallback_name=candidate.name)
+        rule = client.upload_settings(upload_id, fallback_name=candidate.name, segment=segment)
         if rule is not None:
             rules.append(rule)
 
