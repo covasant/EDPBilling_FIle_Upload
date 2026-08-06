@@ -119,11 +119,31 @@ downstream (bill posting, recon, margin, MTF, collateral) belong to the
 triggers once both read TRUE. This service must never trigger. See
 `docs/CBOS_HANDOFF_CONTRACT.md`.
 
-**Gate** — a parent segment holding its own trigger until its physical
-counterpart has posted its bills. Lives entirely in the EDP_Billing engine, not
-here, but it changes what this repo's output means: a batch this service accepts
-for MCX no longer leads straight to billing. See that repo's
+**Gate** — a hold evaluated inside a stage's handler, after its fail-fast check
+and before its outward call, that stops the stage until some condition is met.
+Lives entirely in the EDP_Billing engine, not here, but it changes what this
+repo's output means: a batch this service accepts for MCX no longer leads
+straight to billing. There are two kinds, distinguished by what opens them.
+
+**Dependency gate** — opened by a sibling segment. A parent holds its own
+trigger until its physical counterpart has posted its bills. See that repo's
 `docs/adr/0001-cross-segment-dependency-gate.md`.
+
+**Approval gate** — opened by a **person**. A segment configured with
+`approval_gates` stops before handing files over (`UPLOADING`) or before the
+trigger (`TRIGGERED`) and waits, with **no timeout**, until someone answers.
+This is the one that can affect this repo directly: a manifest this service is
+waiting for may never arrive, because a human declined to release it. See
+`docs/adr/0002-human-approval-gates.md`.
+
+**Approval** — the human act that opens an approval gate, recorded against one
+*attempt* rather than a segment-day. Re-driving a segment supersedes any
+outstanding approval and asks again, so an approval granted for one attempt can
+never release a later one.
+
+**Gate point** — one of the fixed places a gate may be evaluated. Code, not
+config: a stage with no call site can never be gated however the configuration
+reads.
 
 **Audit log** — the `uploaded_files` table. Written to record what was
 attempted and what CBOS said. Read for exactly one decision: the idempotency
