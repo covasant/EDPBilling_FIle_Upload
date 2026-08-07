@@ -42,3 +42,7 @@ docs/adr/
 
 # Local file drop folder (FILE_ROOT_PATH) - real exchange data, never commit
 /edpb/
+
+# LOCAL ONLY - stub for the missing edpb-core sibling checkout.
+# Temporary scaffolding, never to be pushed. See _local_stubs/edpb_core/__init__.py
+/_local_stubs/

@@ -161,6 +161,66 @@ class Settings(BaseSettings):
     cbos_setl_mock_random_success_rate: float = 0.9
     cbos_setl_mock_pending_polls: int = 2
 
+    # ---- NSDL SPEED-e settlement upload -----------------------------------
+    # A THIRD upstream, unrelated to both of the above: the "NSDL Speedy" file
+    # upload API (see app/clients/nsdl_speede_client.py). Different host,
+    # different endpoint names, no auth header at all - LOGINID travels in the
+    # body. It ingests the 12 Margin Pledge reports the SPEED-e download bot
+    # pulls from eservices.nsdl.com.
+    nsdl_speede_mode: str = "MOCK"
+
+    nsdl_speede_base_url: str = ""  # e.g. http://10.167.202.164:8009
+    # The API doc says /api/settlement; UAT answers 404 there and 200 on
+    # /v1/api/settlement (confirmed 2026-08-06), which is also the prefix the
+    # settlement automation workflow.json uses against this same host. Same
+    # /api vs /v1/api disagreement the DP upload docs have.
+    nsdl_speede_api_prefix: str = "/v1/api/settlement"
+
+    # Travels in the body as LOGINID (call 1) / LOGINID (call 4) - this API has
+    # no session header, unlike the DP upload API above.
+    nsdl_speede_login_id: str = ""
+    nsdl_speede_group_name: str = "NSDL"
+
+    # ROOT of where the SPEED-e download bot drops its files - not the day's
+    # folder. The bot creates one dated folder per run
+    # (<NSDL_SPEEDE_DOWNLOAD_DIR>/nsdl_speede_<DDMMYYYY>/, see the download
+    # repo's src/portals/nsdl_speede/run.py), so this must be its parent and
+    # the day is appended per request.
+    nsdl_speede_shared_folder_path: str = ""
+
+    # The dated sub-folder, strftime-formatted from the request's trade_date.
+    # Must stay in step with the bot's naming; both sides derive it from the
+    # same trade_date, so they agree without either knowing the other. Set to
+    # "" to read files straight out of the root (useful when uploading a folder
+    # assembled by hand).
+    nsdl_speede_date_folder_format: str = "nsdl_speede_%d%m%Y"
+
+    nsdl_speede_timeout_seconds: int = 60
+    nsdl_speede_upload_timeout_seconds: int = 600  # chunk PUTs; 58MB files observed
+
+    nsdl_speede_poll_interval_seconds: int = 5
+    nsdl_speede_poll_max_attempts: int = 60
+
+    # SaveSettlementPromodalUploadChunkFile. Their own UI was observed at ~11
+    # chunks for a 37MB file; 5MB is within that and matches the DP API's cap.
+    nsdl_speede_chunk_size_kb: int = 5120
+
+    # Every SPEED-e export carries exactly one header row (confirmed against
+    # real samples for all 4 report types) and the upload API has no
+    # server-side validate call, so both of these are ours to enforce.
+    nsdl_speede_strip_header: bool = True
+    nsdl_speede_validate_columns: bool = True
+
+    # No SPEED-e export ends with a line terminator, and CBOS drops the final
+    # unterminated line: UPLOADID 24 loaded 72,921 rows from a file holding
+    # 72,922 (UAT, 2026-08-06, TRANID 339086). Sending a closing newline is
+    # what a normal CSV writer would emit anyway. Set false only if a load is
+    # ever found to gain a phantom empty row.
+    nsdl_speede_append_trailing_newline: bool = True
+
+    # MockNsdlSpeedeClient tuning - irrelevant when nsdl_speede_mode=REAL.
+    nsdl_speede_mock_pending_polls: int = 1
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

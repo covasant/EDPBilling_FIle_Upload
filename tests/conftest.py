@@ -22,7 +22,15 @@ def test_env(monkeypatch, tmp_path):
     monkeypatch.setenv("CBOS_SETL_SHARED_FOLDER_PATH", str(tmp_path / "settlement"))
     (tmp_path / "settlement").mkdir(exist_ok=True)
 
-    from app.clients import cbos_client, dp_upload_client
+    # NSDL SPEED-e - a third upstream again (see
+    # app/clients/nsdl_speede_client.py), with its own shared folder holding
+    # the download bot's "NSDL <code> <label>.csv" reports.
+    monkeypatch.setenv("NSDL_SPEEDE_MODE", "MOCK")
+    monkeypatch.setenv("NSDL_SPEEDE_SHARED_FOLDER_PATH", str(tmp_path / "nsdl_speede"))
+    monkeypatch.setenv("NSDL_SPEEDE_LOGIN_ID", "21429")
+    (tmp_path / "nsdl_speede").mkdir(exist_ok=True)
+
+    from app.clients import cbos_client, dp_upload_client, nsdl_speede_client
     from app.core import database
     from app.core.config import get_settings
 
@@ -32,6 +40,7 @@ def test_env(monkeypatch, tmp_path):
         database.get_sessionmaker.cache_clear()
         cbos_client.reset_cbos_client()
         dp_upload_client.reset_dp_upload_client()
+        nsdl_speede_client.reset_nsdl_speede_client()
 
     _clear()  # this test's env wins
     yield

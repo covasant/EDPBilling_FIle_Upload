@@ -28,7 +28,12 @@ def get_sessionmaker() -> sessionmaker:
 def init_db() -> None:
     # Imported for their side effect: registering the tables on Base.metadata
     # so create_all below sees them.
-    from app.models import batch, settlement_upload, uploaded_file  # noqa: F401
+    from app.models import (  # noqa: F401
+        batch,
+        nsdl_speede_upload,
+        settlement_upload,
+        uploaded_file,
+    )
 
     engine = get_engine()
     logger.debug("init_db: creating tables (create_all) against %s", engine.url)
