@@ -36,7 +36,7 @@ def submit_upload(req: NsdlSpeedeUploadRequest, session: Session = Depends(get_d
     selectors = [selector.model_dump() for selector in req.files] if req.files else None
     try:
         return nsdl_speede_service.process_upload(
-            session, req.trade_date, selectors, req.correlation_id
+            session, req.trade_date, selectors, req.correlation_id, req.force
         )
     except UnknownSpeedeFileError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

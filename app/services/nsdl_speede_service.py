@@ -330,6 +330,7 @@ def _process_entry(
     correlation_id: str | None,
     categories: list[UploadCategory],
     settings_cache: dict[int, UploadSettings],
+    force: bool = False,
 ) -> dict:
     """One catalogue entry, end to end, never raising - a failure is this
     file's verdict, not the whole call's."""
@@ -348,21 +349,45 @@ def _process_entry(
         repo.update(record, correlation_id=correlation_id or record.correlation_id)
 
     # Already finished: answer from the row without touching the API, so a
-    # re-run of a completed day is free and cannot append anything.
-    if record.status == "success":
+    # re-run of a completed day is free and cannot append anything. `force`
+    # overrides this too — see the tran_id branch below for why that's risky.
+    if record.status == "success" and not force:
         logger.info("%s: already uploaded on %s (TRANID=%s)", entry.key, trade_date, record.tran_id)
         return _result(record, entry, "already uploaded")
 
     try:
-        # Already sent but not yet confirmed: re-poll the existing TRANID. This
-        # is the branch a workflow retry lands in, and the reason it must never
-        # fall through to a second finalize.
-        if record.tran_id:
-            logger.info(
-                "%s: TRANID=%s already exists - re-polling rather than re-uploading "
-                "(this API appends; a second upload would duplicate every row)",
+        if record.tran_id and force:
+            # Deliberate operator override, not automatic status-based logic
+            # — there's no reliable way to tell "stuck forever" from "just
+            # slow" from inside this service, so the caller decides. NSDL has
+            # no "replace" call, only "append": if the old TRANID's stored
+            # procedure already wrote any rows (a poll stuck at in_progress
+            # after partially processing, or one that later fails), this
+            # retry's rows land ALONGSIDE them, not in place of them.
+            logger.warning(
+                "%s: force=true - clearing existing TRANID=%s (status=%s) and "
+                "re-uploading as a fresh attempt. NSDL will carry this attempt's rows "
+                "alongside the previous one's if it wrote any before getting stuck/failing.",
                 entry.key,
                 record.tran_id,
+                record.status,
+            )
+            repo.update(record, tran_id=None, guid=None, status="pending", error_detail=None)
+            repo.commit()
+        elif record.tran_id:
+            # Already sent but not yet confirmed: re-poll the existing TRANID
+            # rather than re-uploading — this API appends, so a second upload
+            # would duplicate every row. This is the branch a workflow retry
+            # lands in for a slow-but-fine upload; it's also where a TRANID
+            # stuck at "in_progress" forever gets stuck too — that's what
+            # `force` is for.
+            logger.info(
+                "%s: TRANID=%s already exists (status=%s) - re-polling rather than "
+                "re-uploading (this API appends; a second upload would duplicate every "
+                "row). Pass force=true to override.",
+                entry.key,
+                record.tran_id,
+                record.status,
             )
             _apply_status(repo, record, client.check_status_once(record.tran_id))
             return _result(record, entry, record.upload_status or None)
@@ -393,6 +418,7 @@ def process_upload(
     trade_date: str,
     selectors: list[dict] | None = None,
     correlation_id: str | None = None,
+    force: bool = False,
 ) -> dict:
     """Upload the selected SPEED-e reports, sequentially, in catalogue order.
 
@@ -400,6 +426,10 @@ def process_upload(
     CMPA pledge should stop CMFA's is the orchestrator's call (its step's
     `critical` flag), not ours. The aggregate `status` is `success` only when
     every selected file reached SUCCESS on both upload and process.
+
+    `force` re-uploads every selected file even if it already has a TRANID
+    (including one stuck "in_progress" forever) — see _process_entry for why
+    this can duplicate rows in NSDL and should only be used deliberately.
     """
     entries = resolve_selection(selectors)
     repo = NsdlSpeedeUploadRepository(session)
@@ -420,7 +450,7 @@ def process_upload(
         settings_cache: dict[int, UploadSettings] = {}
         results = [
             _process_entry(
-                repo, client, entry, trade_date, correlation_id, categories, settings_cache
+                repo, client, entry, trade_date, correlation_id, categories, settings_cache, force
             )
             for entry in entries
         ]
