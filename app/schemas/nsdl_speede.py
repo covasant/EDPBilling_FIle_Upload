@@ -30,6 +30,16 @@ class NsdlSpeedeUploadRequest(BaseModel):
         default=None,
         description="Which reports to upload. Omit for all 12, in the fixed catalogue order.",
     )
+    force: bool = Field(
+        default=False,
+        description=(
+            "Re-upload the selected files even though a TRANID already exists for them "
+            "(including one stuck 'in_progress' indefinitely). This API has no 'replace' "
+            "call, only 'append': if the stuck/earlier attempt already wrote any rows, "
+            "this WILL duplicate them in NSDL. Use only to break a file out of a TRANID "
+            "that will never resolve — never as a routine retry."
+        ),
+    )
     correlation_id: str | None = Field(
         default=None, description="The orchestrator's run id, stamped on every log line for this call"
     )
