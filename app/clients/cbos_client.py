@@ -59,6 +59,7 @@ from pathlib import Path
 import requests
 
 from app.core.config import reveal, settings
+from app.core.redaction import redact_response_text
 
 logger = logging.getLogger("cbos_client")
 
@@ -972,16 +973,26 @@ class CBOSClient(BaseCBOSClient):
 
     def _handle(self, url: str, response) -> dict:
         logger.debug(
-            "Response <- %s: status=%s body=%s", url, response.status_code, response.text[:1000]
+            "Response <- %s: status=%s body=%s",
+            url,
+            response.status_code,
+            # DEBUG is still a log line, and a successful response can echo a field too.
+            redact_response_text(response.text, limit=1000),
         )
         if not response.ok:
-            logger.error("Response <- %s failed: %s %s", url, response.status_code, response.text)
-            raise CBOSUploadError(f"{url} failed: {response.status_code} {response.text}")
+            safe = redact_response_text(response.text)
+            # Redacted + capped: the server may echo our own request back, and this same
+            # string becomes the exception message, which upload_service persists into
+            # uploaded_files.cbos_response. A DB row outlives any log retention.
+            logger.error("Response <- %s failed: %s %s", url, response.status_code, safe)
+            raise CBOSUploadError(f"{url} failed: {response.status_code} {safe}")
 
         try:
             parsed = response.json()
         except ValueError as exc:
-            raise CBOSUploadError(f"{url} returned non-JSON response: {response.text}") from exc
+            raise CBOSUploadError(
+                f"{url} returned non-JSON response: {redact_response_text(response.text)}"
+            ) from exc
 
         body = _decode_body(parsed, url)
         _raise_on_failed_status(url, body)

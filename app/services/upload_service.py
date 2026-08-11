@@ -142,6 +142,27 @@ def _batch_upload_complete(file_count: int, **extra: object) -> dict:
     }
 
 
+def _batch_proceed_complete(**extra: object) -> dict:
+    """Detail for a force-proceed. NO files moved here — that is the whole point.
+
+    _batch_upload_complete was being reused with len(requested), the count of ops-named
+    slots being force-proceeded. It landed under `files_in_cbos` with the basis text
+    "all manifest files uploaded + registered", so GET /batches/{id} reported a batch
+    where ops had proceeded past 2 unfilled slots as having put 2 files into CBOS. Zero
+    files moved. The number and the sentence were both wrong, and this is an audit trail
+    for an action a human deliberately took — it has to describe what happened.
+    """
+    return {
+        "files_in_cbos": 0,
+        "confirmed_at": datetime.now(UTC).isoformat(),
+        "basis": (
+            "force-proceed: named slots marked optional so FILEUPLOAD is not held; "
+            "no files were uploaded by this action"
+        ),
+        **extra,
+    }
+
+
 def _warn_if_process_id_differs(gtg_message: str, process_id: str, task: SegmentBatchTask) -> None:
     """Compare the PROCESSID in Step 3's message against the one we reserved.
 
@@ -614,7 +635,13 @@ def _process_batch(task: SegmentBatchTask) -> None:
                     }
                 )
                 pending_registration.append((record, file_path, rule, guid, request_log))
-            except Exception as exc:
+            except CBOSUploadError as exc:
+                # Narrowed from `except Exception`. A blanket catch recorded an
+                # AttributeError or TypeError in our own code as an ordinary "CBOS call
+                # errored" outcome in the per-file audit trail, where it read as an
+                # upstream problem and nobody went looking. Real bugs now propagate to
+                # the worker, which logs the traceback and marks the batch FAILED
+                # (mark_batch_failed) — visible instead of absorbed.
                 logger.error(
                     "Batch %s: upload sequence failed for %s: %s", task.key, file_path.name, exc
                 )
@@ -639,7 +666,10 @@ def _process_batch(task: SegmentBatchTask) -> None:
 
                 uploaded_candidates.append((record, file_path, request_log))
                 filled_upload_ids.add(str(rule.upload_id))
-            except Exception as exc:
+            except CBOSUploadError as exc:
+                # Narrowed for the same reason as Step 5 above: a programming error
+                # recorded as a CBOS failure is a bug that hides itself in the audit
+                # trail. Real bugs propagate and land as a FAILED batch.
                 logger.error(
                     "Batch %s: registration failed for %s: %s", task.key, file_path.name, exc
                 )
@@ -928,8 +958,7 @@ def _proceed_batch(task: SegmentBatchTask) -> None:
     _set_batch_status(
         task,
         BatchStatus.CONFIRMED,
-        _batch_upload_complete(
-            len(requested),
+        _batch_proceed_complete(
             **_fileupload_observation(
                 poll_message,
                 via="force-proceed",

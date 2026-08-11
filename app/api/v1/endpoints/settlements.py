@@ -25,7 +25,10 @@ from app.clients.dp_upload_client import DPUploadError, get_dp_upload_client
 from app.core.database import get_db_session
 from app.schemas.settlement import SettlementUploadRequest, SettlementUploadResponse
 from app.services import settlement_service
-from app.services.settlement_service import SettlementFileNotFoundError, UnknownSettlementUploadError
+from app.services.settlement_service import (
+    SettlementFileNotFoundError,
+    UnknownSettlementUploadError,
+)
 
 logger = logging.getLogger("settlements_endpoint")
 router = APIRouter(prefix="/settlements", tags=["settlements"])

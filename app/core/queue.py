@@ -11,6 +11,12 @@ class QueueFullError(Exception):
     """Intake is at capacity. Surfaced by POST /batches as 503, never blocked on."""
 
 
+# Put on the queue to tell the worker to stop. A sentinel rather than a flag because the
+# worker blocks in queue.get(): a flag would only be noticed after the NEXT batch
+# arrived, which on a quiet queue is never.
+SHUTDOWN = object()
+
+
 @dataclass
 class SegmentBatchTask:
     """One CBOS batch = one segment + one trade date. Every file for that
@@ -110,8 +116,15 @@ class BatchQueue:
             return batch_key in self._in_flight
 
     def get(self) -> SegmentBatchTask:
-        """Block until a batch is available, then hand it over."""
+        """Block until a batch is available, then hand it over.
+
+        May return the :data:`SHUTDOWN` sentinel; the worker checks for it.
+        """
         return self._queue.get()
+
+    def request_shutdown(self) -> None:
+        """Wake the worker out of get() so it can exit its loop."""
+        self._queue.put(SHUTDOWN)
 
     def task_done(self) -> None:
         """Mark the batch just handed out by get() as finished."""

@@ -1,6 +1,6 @@
 import logging
 
-from app.core.queue import BatchQueue
+from app.core.queue import SHUTDOWN, BatchQueue
 from app.services import upload_service
 
 logger = logging.getLogger("upload_worker")
@@ -16,6 +16,10 @@ def run(queue: BatchQueue) -> None:
     logger.info("Queue worker started")
     while True:
         task = queue.get()
+        if task is SHUTDOWN:
+            queue.task_done()
+            logger.info("Queue worker stopping on shutdown signal")
+            return
         logger.debug("Worker picked up batch: %s (queue size now %d)", task.key, queue.size)
         try:
             upload_service.process_batch(task)

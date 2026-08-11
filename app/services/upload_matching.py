@@ -73,6 +73,14 @@ class ColumnCountMismatch(FileRejected):
     """File matched a pattern/extension but its column count didn't match."""
 
 
+class EmptyFile(ColumnCountMismatch):
+    """File matched a rule but contains no data line to validate.
+
+    A subclass of ColumnCountMismatch so every existing handler keeps catching it — it
+    is the same class of local rejection, just a more specific reason.
+    """
+
+
 class AmbiguousUploadRule(FileRejected):
     """Multiple equally-specific UploadIDs matched and extension + exchange
     couldn't single one out - reject loudly rather than silently pick wrong."""
@@ -150,7 +158,11 @@ def _count_columns(file_path: Path) -> list[int] | None:
     except (UnicodeDecodeError, OSError) as exc:
         logger.debug("upload_matching: could not sniff columns for %s: %s", file_path.name, exc)
         return None
-    return counts or None
+    # [] means "read it fine, there was nothing in it" — NOT the same as None, which
+    # means "could not be read as delimited text at all" (a .xlsx, say) and is a
+    # legitimate reason to skip the check. Collapsing the two let a zero-byte file take
+    # the .xlsx exemption and sail through to CBOS.
+    return counts
 
 
 def _disambiguate(
@@ -252,6 +264,15 @@ def match_file(file_path: Path, rules: list[UploadRule], exchange: str | None = 
         # failing - those files already match on line 1. What it adds is
         # control-record files (see _count_columns), which were being rejected
         # for a header whose width CBOS's rule never described.
+        if actual == []:
+            # Fail safe, not open. A zero-byte or all-blank placeholder that happens to
+            # match an UploadID's filename pattern is exactly the kind of file local
+            # validation exists to stop — forwarding it wastes a CBOS round trip and
+            # lands an empty file in the billing data.
+            raise EmptyFile(
+                f"'{file_path.name}' matched UploadID={rule.upload_id} ({rule.name}) "
+                f"but contains no data line to validate"
+            )
         if actual is not None and rule.column_count not in actual:
             raise ColumnCountMismatch(
                 f"'{file_path.name}' matched UploadID={rule.upload_id} ({rule.name}) "

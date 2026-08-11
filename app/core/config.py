@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     # see. 0 disables the bound.
     batch_queue_maxsize: int = 256
 
+    # How long shutdown waits for the queue worker to finish its current batch. A batch
+    # can legitimately take minutes, so this is a bound on the WAIT, not a promise the
+    # batch will finish — the thread is a daemon and the process exits regardless.
+    worker_shutdown_grace_seconds: float = 30.0
+
     # CBOS trade-upload API (Steps 2/3/4/6/7 in cbos_client.py).
     # MOCK -> MockCBOSClient (no network calls, no CBOS_BASE_URL/CBOS_LOGIN_ID needed).
     # REAL -> CBOSClient (talks to the actual CBOS host).

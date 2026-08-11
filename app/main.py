@@ -43,6 +43,26 @@ async def lifespan(app: FastAPI):
     logger.info("Startup complete - awaiting batches (POST /batches)")
     yield
 
+    # Signal the worker and wait for it, rather than just logging and walking away.
+    # Harmless at real process exit — the thread is a daemon — but any interpreter that
+    # runs the lifespan more than once leaked a blocked thread per cycle, and a test
+    # suite using `with TestClient(app):` repeatedly does exactly that.
+    #
+    # A sentinel, not a flag: the worker blocks in queue.get(), so a flag would only be
+    # noticed after the next batch arrived, which on a quiet queue is never.
+    logger.info("Shutdown: signalling the queue worker")
+    batch_queue.request_shutdown()
+    worker_thread.join(timeout=settings.worker_shutdown_grace_seconds)
+    if worker_thread.is_alive():
+        # Mid-batch, and a batch can legitimately take minutes. Daemon=True means the
+        # process still exits; say so rather than pretending it drained.
+        logger.warning(
+            "Queue worker still running after %.0fs — exiting anyway; a batch was in flight.",
+            settings.worker_shutdown_grace_seconds,
+        )
+    else:
+        logger.info("Queue worker stopped cleanly")
+
     logger.info("Shutdown complete")
 
 

@@ -49,6 +49,7 @@ import requests
 
 from app.clients.cbos_client import _redact, _summarise
 from app.core.config import reveal, settings
+from app.core.redaction import redact_response_text
 
 logger = logging.getLogger("dp_upload_client")
 
@@ -503,15 +504,25 @@ class DPUploadClient(BaseDPUploadClient):
 
     def _handle(self, url: str, response) -> dict:
         logger.debug(
-            "Response <- %s: status=%s body=%s", url, response.status_code, response.text[:1000]
+            "Response <- %s: status=%s body=%s",
+            url,
+            response.status_code,
+            # DEBUG is still a log line, and a successful response can echo a field too.
+            redact_response_text(response.text, limit=1000),
         )
         if not response.ok:
-            logger.error("Response <- %s failed: %s %s", url, response.status_code, response.text)
-            raise DPUploadError(f"{url} failed: {response.status_code} {response.text}")
+            safe = redact_response_text(response.text)
+            # Redacted + capped: the server may echo our own request back, and this same
+            # string becomes the exception message, which upload_service persists into
+            # uploaded_files.cbos_response. A DB row outlives any log retention.
+            logger.error("Response <- %s failed: %s %s", url, response.status_code, safe)
+            raise DPUploadError(f"{url} failed: {response.status_code} {safe}")
         try:
             body = response.json()
         except ValueError as exc:
-            raise DPUploadError(f"{url} returned non-JSON response: {response.text}") from exc
+            raise DPUploadError(
+                f"{url} returned non-JSON response: {redact_response_text(response.text)}"
+            ) from exc
         if not isinstance(body, dict):
             raise DPUploadError(f"{url} returned {type(body).__name__}, expected a JSON object")
         logger.debug("Response <- %s: %s", url, body)
