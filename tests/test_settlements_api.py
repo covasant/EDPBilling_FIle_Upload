@@ -82,9 +82,15 @@ def test_submit_upload_validation_failure_marks_failed(client):
     resp = client.post(
         "/settlements/uploads", json={"upload_id": 22, "file_name": "fail_settlement.csv"}
     )
-    assert resp.status_code == 200
+    # 502, not 200. This endpoint is called synchronously by the orchestrator, and an
+    # integration that checks only the status code — the normal thing to do — used to
+    # read a fully failed settlement upload as a success and never retry it.
+    assert resp.status_code == 502
     body = resp.json()
     assert body["status"] == "failed"
+    # The BODY is unchanged: the caller still needs the id and the failure detail to
+    # record the attempt, which is why this is a response code and not an HTTPException.
+    assert body["settlement_upload_id"]
 
     detail = client.get(f"/settlements/uploads/{body['settlement_upload_id']}").json()
     assert detail["status"] == "failed"

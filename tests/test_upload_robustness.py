@@ -1,7 +1,10 @@
 """Regression tests for B1 (manual-upload UNIQUE loop) and H4/H5 (retry &
 idempotency) - all against the MOCK client, no network."""
 
+import json
 from pathlib import Path
+
+import pytest
 
 from app.clients import cbos_client
 from app.clients.cbos_client import CBOSUploadError, MockCBOSClient
@@ -137,6 +140,85 @@ def test_unconfirmed_upload_goes_to_uploaded_not_failed(monkeypatch):
             response = (row.cbos_response or "").lower()
             assert "uploaded and registered in cbos" in response
             assert "false" in response
+    finally:
+        session.close()
+
+
+# --- Step 9 poll FAILING must not strand a fully-uploaded batch ---------------
+
+
+class _ConfirmDies(MockCBOSClient):
+    """Step 9 blows up, exactly like a transient link drop on the final call."""
+
+    def confirm_upload(self, segment, trade_date):
+        raise CBOSUploadError("file-process-status failed: 503 upstream unavailable")
+
+
+def test_a_failed_step_9_poll_still_records_and_moves_the_files(monkeypatch):
+    """The most-complete batch possible must not be the one that gets stranded.
+
+    By Step 9 every file is chunked, registered and past the completeness gate. The poll
+    is diagnostics — from_poll_result() confirms on our own work whatever it reads — so
+    its failure decides nothing. Unguarded it decided everything: the raise unwound past
+    the outcome-recording loop into the worker's blanket `except Exception`, leaving the
+    files in the intake tree, every row at 'pending', and the batch at UPLOADING with no
+    way back but manual DB surgery."""
+    _fast(monkeypatch)
+    from app.core import database
+    from app.models.uploaded_file import UploadedFile
+    from app.services import upload_service
+
+    database.init_db()
+    cbos_client.set_cbos_client(_ConfirmDies())
+
+    folder = _root() / "21-07-2026" / "MCX" / "NA"
+    files = [
+        _write(folder, "MCX_ProductMaster.csv", cols=68),
+        _write(folder, "Position_MCXCCL_CO_0_CM_55930_20260721_F_0000.csv"),
+        _write(folder, "Trade_MCX_CO_0_CM_55930_20260721_F_0000.csv"),
+    ]
+
+    # Must NOT raise — that is the whole regression.
+    upload_service.process_batch(_batch(date="21-07-2026", files=[str(f) for f in files]))
+
+    session = database.get_sessionmaker()()
+    try:
+        rows = session.query(UploadedFile).all()
+        assert len(rows) == 3
+        for row in rows:
+            assert row.status == "uploaded", "a failed poll must not leave rows at 'pending'"
+            assert (folder / "uploaded" / row.file_name).exists(), "file never left the intake tree"
+            assert not (folder / "uploadFailed" / row.file_name).exists()
+    finally:
+        session.close()
+
+
+def test_the_failed_poll_is_recorded_without_the_upstream_body(monkeypatch):
+    """poll_message lands in batch status_detail and in every file's request_log, and
+    CBOSUploadError carries the raw upstream response — so the marker goes in and the
+    detail stays in the log. Widening the blast radius of an unredacted upstream body
+    is the open finding H3; this fix must not feed it."""
+    _fast(monkeypatch)
+    from app.core import database
+    from app.models.uploaded_file import UploadedFile
+    from app.services import upload_service
+
+    database.init_db()
+    cbos_client.set_cbos_client(_ConfirmDies())
+
+    folder = _root() / "22-07-2026" / "MCX" / "NA"
+    files = [
+        _write(folder, "MCX_ProductMaster.csv", cols=68),
+        _write(folder, "Position_MCXCCL_CO_0_CM_55930_20260722_F_0000.csv"),
+        _write(folder, "Trade_MCX_CO_0_CM_55930_20260722_F_0000.csv"),
+    ]
+    upload_service.process_batch(_batch(date="22-07-2026", files=[str(f) for f in files]))
+
+    session = database.get_sessionmaker()()
+    try:
+        logs = " ".join((r.request_log or "") for r in session.query(UploadedFile).all())
+        assert "Step 9 poll failed" in logs, "the failure must be visible in the audit trail"
+        assert "upstream unavailable" not in logs, "the upstream body must not be persisted"
     finally:
         session.close()
 
@@ -423,3 +505,156 @@ def test_holiday_check_is_observe_only_by_default(monkeypatch):
 
     assert len(client.upload_calls) == 1, "observe-only must not block the upload"
     assert (folder / "uploaded" / name).exists()
+
+
+# --- Bad inputs must arrive as CBOSUploadError, not as a bare ValueError -------
+
+
+def test_a_malformed_trade_date_is_a_cbos_error_not_a_bare_value_error(monkeypatch):
+    """_to_cbos_date runs inside Steps 1/2/3/7/9, and upload_service's retry loop
+    catches CBOSUploadError only. A bare ValueError from strptime sailed straight past
+    it and out of process_batch, so a malformed folder date skipped the intended
+    "exhaust retries -> move to uploadFailed/" path entirely."""
+    _fast(monkeypatch)
+    from app.clients.cbos_client import _to_cbos_date
+
+    with pytest.raises(CBOSUploadError) as excinfo:
+        _to_cbos_date("2026-07-17")  # ISO, but date_folder_format is dd-mm-yyyy
+
+    assert "date_folder_format" in str(excinfo.value)
+
+
+def test_a_slot_with_no_stepno_is_refused_rather_than_sent_as_the_string_none(monkeypatch):
+    """STEPNO is stringified for the payload, so a slot that came back without one was
+    sent as the literal "None". Best case CBOS rejects it; worst case it coerces to a
+    step number and marks the WRONG step optional — silent, and nothing unwinds it."""
+    _fast(monkeypatch)
+    client = MockCBOSClient()
+
+    with pytest.raises(CBOSUploadError) as excinfo:
+        client.mark_step_optional("17649", None)
+
+    assert "STEPNO" in str(excinfo.value)
+
+
+def test_the_settlement_poll_does_not_sleep_after_its_final_attempt(monkeypatch):
+    """The loop slept unconditionally, including after the last poll — so every timeout
+    paid one extra interval before telling the caller POLL_TIMED_OUT. The settlement
+    endpoint is called synchronously by the orchestrator, so that sat on its critical
+    path for nothing."""
+    monkeypatch.setenv("CBOS_SETL_MODE", "MOCK")
+    monkeypatch.setenv("CBOS_SETL_POLL_MAX_ATTEMPTS", "3")
+    monkeypatch.setenv("CBOS_SETL_POLL_INTERVAL_SECONDS", "7")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    from app.clients import dp_upload_client
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(dp_upload_client.time, "sleep", lambda s: sleeps.append(s))
+
+    class _AlwaysPending(dp_upload_client.MockDPUploadClient):
+        def _get_upload_status(self, tran_id):
+            # "Result" is the envelope key check_status_once reads.
+            return {
+                "Result": [{"Status": dp_upload_client.STATUS_IN_PROCESS, "Description": "busy"}]
+            }
+
+    status, _ = _AlwaysPending().poll_status("123")
+
+    assert status == dp_upload_client.POLL_TIMED_OUT
+    assert len(sleeps) == 2, f"3 attempts should sleep twice, not {len(sleeps)} times"
+
+
+def test_a_non_numeric_tran_id_is_a_dp_error_not_a_bare_value_error(monkeypatch):
+    """Same shape as the trade-date fix, on the settlement side: settlement_service's
+    retry loop catches DPUploadError only, so int() raising ValueError left the
+    settlement_uploads row stuck at 'pending' with no error detail."""
+    # The real adapter's __init__ refuses to build without these, and that refusal is
+    # itself a DPUploadError — set them, or the assertion below passes on the
+    # constructor's error and proves nothing about the cast.
+    monkeypatch.setenv("CBOS_SETL_MODE", "REAL")
+    monkeypatch.setenv("CBOS_SETL_BASE_URL", "http://dp.invalid")
+    monkeypatch.setenv("CBOS_SETL_SESKEY", "k")
+    monkeypatch.setenv("CBOS_SETL_USER_ID", "u")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    from app.clients.dp_upload_client import DPUploadClient, DPUploadError, _as_int
+
+    # The helper itself.
+    with pytest.raises(DPUploadError):
+        _as_int("not-a-number", "Tran_Id")
+
+    # And that the call site actually goes through it. The payload is built before
+    # _post runs, so this raises on the cast without any network call.
+    with pytest.raises(DPUploadError) as excinfo:
+        DPUploadClient()._get_upload_status("not-a-number")
+    assert "Tran_Id" in str(excinfo.value), "raised, but not from the id cast"
+
+
+# --- M11: a crashed batch must be visible as FAILED, not left mid-flight ------
+
+
+def test_a_crashed_batch_is_recorded_as_failed_not_left_uploading(monkeypatch, tmp_path):
+    """The worker's blanket `except Exception` keeps the WORKER alive, which is right.
+    But it left the BATCH at whatever status it held when the exception fired — normally
+    UPLOADING — so through GET /batches/{id} a dead batch was indistinguishable from one
+    still running, and only the worker log said otherwise."""
+    _fast(monkeypatch)
+    from edpb_core.batch_api import BatchStatus
+
+    from app.core import database
+    from app.core.queue import BatchQueue
+    from app.models.batch import Batch
+    from app.repositories.batch_repository import BatchRepository
+    from app.services import upload_service
+    from app.workers import upload_worker
+
+    database.init_db()
+
+    task = _batch(date="23-07-2026", files=[])
+    task.batch_id = "MCX-2026-07-23-deadbeef"
+    session = database.get_sessionmaker()()
+    try:
+        BatchRepository(session).create(
+            batch_id=task.batch_id,
+            segment="MCX",
+            trade_date="2026-07-23",
+            folder_date="23-07-2026",
+            manifest_path="/nowhere/manifest.json",
+            correlation_id="c-1",
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    def boom(_task):
+        raise RuntimeError("simulated crash deep in process_batch")
+
+    monkeypatch.setattr(upload_service, "process_batch", boom)
+
+    # Drive ONE worker iteration, then break out of its infinite loop.
+    queue = BatchQueue()
+    queue.enqueue(task)
+    original_get = queue.get
+    calls = {"n": 0}
+
+    def get_once():
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise KeyboardInterrupt  # unwinds run()'s while True
+        return original_get()
+
+    monkeypatch.setattr(queue, "get", get_once)
+    with pytest.raises(KeyboardInterrupt):
+        upload_worker.run(queue)
+
+    session = database.get_sessionmaker()()
+    try:
+        row = session.query(Batch).filter_by(batch_id=task.batch_id).one()
+        assert row.status == BatchStatus.FAILED, f"crashed batch left at {row.status!r}"
+        assert "simulated crash" in json.dumps(row.status_detail or {})
+    finally:
+        session.close()

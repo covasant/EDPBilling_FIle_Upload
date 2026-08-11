@@ -18,7 +18,7 @@ GET  /settlements/upload-masters/{upload_id}          and Step 2 passthroughs -
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.clients.dp_upload_client import DPUploadError, get_dp_upload_client
@@ -49,8 +49,19 @@ def get_upload_master(upload_id: int):
     return config.raw
 
 
+# Terminal statuses from process_upload that are NOT a success. This endpoint is called
+# synchronously by the orchestrator (see the module docstring), and an integration that
+# checks the HTTP status code alone — the normal thing to do — read a fully failed
+# settlement upload as a success and never retried it, because every outcome came back
+# 200. The body is unchanged; only the code now reflects the outcome.
+_FAILED_STATUS = "failed"
+_NON_TERMINAL_STATUSES = frozenset({"in_progress", "pending", "polling"})
+
+
 @router.post("/uploads", response_model=SettlementUploadResponse)
-def submit_upload(req: SettlementUploadRequest, session: Session = Depends(get_db_session)):
+def submit_upload(
+    req: SettlementUploadRequest, response: Response, session: Session = Depends(get_db_session)
+):
     try:
         result = settlement_service.process_upload(
             session, req.upload_id, req.file_name, req.correlation_id
@@ -59,6 +70,16 @@ def submit_upload(req: SettlementUploadRequest, session: Session = Depends(get_d
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except DPUploadError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    # Set on the response rather than raising: the caller still needs the body (the
+    # settlement_upload_id, the final step, the DP error detail) to record the attempt
+    # and to poll /uploads/{id}/status later. An HTTPException would throw all of that
+    # away and hand back only a detail string.
+    status = str(result.get("status") or "")
+    if status == _FAILED_STATUS:
+        response.status_code = 502  # upstream DP/CBOS rejected or errored the file
+    elif status in _NON_TERMINAL_STATUSES:
+        response.status_code = 202  # accepted, still running — poll for the outcome
     return result
 
 
@@ -72,7 +93,13 @@ def get_upload(settlement_upload_id: int, session: Session = Depends(get_db_sess
 
 @router.get("/uploads/{settlement_upload_id}/status")
 def get_upload_status(settlement_upload_id: int, session: Session = Depends(get_db_session)):
-    result = settlement_service.check_status(session, settlement_upload_id)
+    try:
+        result = settlement_service.check_status(session, settlement_upload_id)
+    except DPUploadError as exc:
+        # submit_upload maps this to 502; without the same handler here a routine
+        # re-poll during a DP blip surfaced as an opaque 500, so the two endpoints
+        # disagreed about what an upstream failure looks like.
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(
             status_code=404,

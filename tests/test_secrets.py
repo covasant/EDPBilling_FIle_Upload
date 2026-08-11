@@ -9,13 +9,34 @@ from app.clients.cbos_client import CBOSUploadError, _redact
 def test_no_credentials_committed_in_defaults():
     """With nothing in the environment for them, the CBOS creds/hosts are empty -
     no real values baked into the code."""
-    from app.core.config import Settings
+    from app.core.config import Settings, reveal
 
     s = Settings(_env_file=None, file_root_path="/x", database_url="sqlite://")
     assert s.cbos_login_id == ""
-    assert s.cbos_password == ""
+    # Through reveal(): cbos_password is a SecretStr, so `== ""` compares against the
+    # wrapper and is True for ANY password. Comparing the revealed text is the only
+    # form of this assertion that still fails if a credential is ever committed.
+    assert reveal(s.cbos_password) == ""
+    assert reveal(s.cbos_setl_seskey) == ""
     assert s.cbos_gtg_base_url == ""
     assert s.cbos_core_base_url == ""
+
+
+def test_credential_fields_are_not_rendered_by_repr():
+    """The point of SecretStr: a stray logger.debug(settings), a ValidationError
+    traceback, or an error tracker that serialises locals must not print the password."""
+    from app.core.config import Settings
+
+    s = Settings(
+        _env_file=None,
+        file_root_path="/x",
+        database_url="sqlite://",
+        cbos_password="hunter2",
+        cbos_setl_seskey="seskey-secret",
+    )
+    rendered = f"{s!r} {s!s}"
+    assert "hunter2" not in rendered
+    assert "seskey-secret" not in rendered
 
 
 def test_real_mode_without_credentials_fails_fast(monkeypatch):

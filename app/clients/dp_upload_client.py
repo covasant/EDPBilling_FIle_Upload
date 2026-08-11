@@ -48,7 +48,7 @@ from dataclasses import dataclass
 import requests
 
 from app.clients.cbos_client import _redact, _summarise
-from app.core.config import settings
+from app.core.config import reveal, settings
 
 logger = logging.getLogger("dp_upload_client")
 
@@ -87,6 +87,21 @@ POLL_TIMED_OUT = -1
 
 class DPUploadError(Exception):
     pass
+
+
+def _as_int(value: object, field: str) -> int:
+    """Cast an id the caller handed us into an int, as DPUploadError on failure.
+
+    The DP API takes these as JSON numbers, but they reach us as strings from the
+    request body and the audit row. A bare int() raises ValueError/TypeError, which
+    settlement_service's retry loop does not catch (it catches DPUploadError only), so a
+    malformed id escaped the retry path entirely and left the settlement_uploads row
+    stuck at 'pending' with no error detail recorded.
+    """
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (ValueError, TypeError) as exc:
+        raise DPUploadError(f"{field} {value!r} is not a valid integer id") from exc
 
 
 @dataclass(frozen=True)
@@ -434,7 +449,12 @@ class BaseDPUploadClient(ABC):
             )
             if status_code not in _PENDING_STATUS_CODES:
                 return status_code, description
-            time.sleep(settings.cbos_setl_poll_interval_seconds)
+            # Not after the last attempt: no poll follows it, so the wait buys nothing
+            # and every timeout paid an extra cbos_setl_poll_interval_seconds before the
+            # caller was told POLL_TIMED_OUT. The settlement endpoint is called
+            # synchronously by the orchestrator, so that delay is on its critical path.
+            if attempt < max_attempts:
+                time.sleep(settings.cbos_setl_poll_interval_seconds)
 
         logger.error(
             "Step 6 - GetFileUploadStatus polling timed out after %d attempts (Tran_Id=%s), last Status=%s",
@@ -468,7 +488,7 @@ class BaseDPUploadClient(ABC):
 class DPUploadClient(BaseDPUploadClient):
     def __init__(self) -> None:
         required = ("cbos_setl_base_url", "cbos_setl_seskey", "cbos_setl_user_id")
-        missing = [name.upper() for name in required if not getattr(settings, name)]
+        missing = [name.upper() for name in required if not reveal(getattr(settings, name))]
         if missing:
             raise DPUploadError(
                 f"CBOS_SETL_MODE=REAL requires {', '.join(missing)} in .env (no committed defaults)"
@@ -479,7 +499,7 @@ class DPUploadClient(BaseDPUploadClient):
         return f"{settings.cbos_setl_base_url.rstrip('/')}{prefix}{path}"
 
     def _headers(self) -> dict:
-        return {"Session-Value": f"{settings.cbos_setl_seskey}|{settings.cbos_setl_user_id}"}
+        return {"Session-Value": f"{reveal(settings.cbos_setl_seskey)}|{settings.cbos_setl_user_id}"}
 
     def _handle(self, url: str, response) -> dict:
         logger.debug(
@@ -529,7 +549,7 @@ class DPUploadClient(BaseDPUploadClient):
         )
 
     def _get_upload_master_details(self, upload_id: str) -> dict:
-        return self._post(self._url(GET_UPLOAD_MASTER_PATH), {"Method_Name": "GET", "Upload_Id": int(upload_id)})
+        return self._post(self._url(GET_UPLOAD_MASTER_PATH), {"Method_Name": "GET", "Upload_Id": _as_int(upload_id, "Upload_Id")})
 
     def _validate_file(self, config: UploadMasterConfig, file_name: str, unique_identifier: str) -> dict:
         payload = {
@@ -562,7 +582,7 @@ class DPUploadClient(BaseDPUploadClient):
         return self._post(self._url(FINALIZE_UPLOAD_PATH), payload)
 
     def _get_upload_status(self, tran_id: str) -> dict:
-        return self._post(self._url(GET_STATUS_PATH), {"Id": int(tran_id), "Method_Name": "Details"})
+        return self._post(self._url(GET_STATUS_PATH), {"Id": _as_int(tran_id, "Tran_Id"), "Method_Name": "Details"})
 
     def _run_process(self, config: UploadMasterConfig, unique_identifier: str, tran_id: str) -> dict:
         payload = {

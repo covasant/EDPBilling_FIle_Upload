@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.v1.router import api_router
+from app.core.config import settings
 from app.core.database import init_db
 from app.core.logging import configure_logging
 from app.core.queue import BatchQueue
@@ -29,7 +30,7 @@ async def lifespan(app: FastAPI):
 
     # One queue for the process, handed to everything that touches it - the
     # worker and the API endpoints via app.state.
-    batch_queue = BatchQueue()
+    batch_queue = BatchQueue(maxsize=settings.batch_queue_maxsize)
     app.state.batch_queue = batch_queue
 
     logger.info("Startup: step 2/2 - starting queue worker thread")

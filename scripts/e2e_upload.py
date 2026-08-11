@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import shutil
 import uuid
@@ -155,8 +156,7 @@ def main() -> int:
     from app.services import manifest_service, upload_service
 
     get_settings.cache_clear()
-    database.get_engine.cache_clear()
-    database.get_sessionmaker.cache_clear()
+    database.reset_engine()
     cbos_client.reset_cbos_client()
     configure_logging()
     database.init_db()
@@ -182,11 +182,19 @@ def main() -> int:
     queue.enqueue(manifest_service.to_task(manifest))
 
     processed = 0
+    errors: list[str] = []
     while not queue.empty():
         task = queue.get()
         try:
             upload_service.process_batch(task)
             processed += 1
+        except Exception as exc:
+            # The production worker keeps going on a crashed batch; this script used to
+            # abort instead, so the exception killed the run before the summary below
+            # printed — losing the step-by-step outcome that is the only reason to run
+            # this script at all. Record and carry on; the summary reports it.
+            logging.getLogger("e2e").exception("batch %s failed", task.key)
+            errors.append(f"{task.key}: {exc}")
         finally:
             queue.release(task.key)
             queue.task_done()
@@ -215,8 +223,13 @@ def main() -> int:
     failed = list((stage_dir / "uploadFailed").glob("*"))
     print(f"\n  uploaded/     : {[p.name for p in uploaded]}")
     print(f"  uploadFailed/ : {[p.name for p in failed]}")
+    if errors:
+        print("\n  BATCHES THAT RAISED:")
+        for e in errors:
+            print(f"    {e}")
     print("=" * 78)
-    return 0
+    # Non-zero when a batch raised, so the script is usable as a smoke check.
+    return 1 if errors else 0
 
 
 if __name__ == "__main__":

@@ -2,9 +2,23 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from app.models.settlement_upload import SettlementUpload
+from app.models.settlement_upload import STATUSES, SettlementUpload
 
 logger = logging.getLogger("settlement_upload_repository")
+
+
+
+def _check_status(fields: dict) -> None:
+    """Reject a status outside the model's vocabulary.
+
+    update() is a blind setattr over **fields, so a typo'd literal used to be written
+    without complaint. Because the state checks elsewhere match the exact string, that
+    row then became invisible to every state-based query — silently, and permanently.
+    Raising here turns a silent data-integrity bug into an immediate, obvious one.
+    """
+    status = fields.get("status")
+    if status is not None and status not in STATUSES:
+        raise ValueError(f"unknown status {status!r}; expected one of {sorted(STATUSES)}")
 
 
 class SettlementUploadRepository:
@@ -33,6 +47,7 @@ class SettlementUploadRepository:
         return self.session.get(SettlementUpload, settlement_upload_id)
 
     def update(self, record: SettlementUpload, **fields) -> SettlementUpload:
+        _check_status(fields)
         logger.debug("update: record id=%s <- %s", record.id, fields)
         for key, value in fields.items():
             setattr(record, key, value)

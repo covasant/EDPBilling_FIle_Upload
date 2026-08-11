@@ -38,6 +38,7 @@ from edpb_core.batch_api import BatchStatus
 from app.clients import cbos_client
 from app.clients.cbos_client import CBOSUploadError
 from app.core import correlation
+from app.core.clock import utcnow
 from app.core.config import settings
 from app.core.database import get_sessionmaker
 from app.core.queue import SegmentBatchTask
@@ -202,7 +203,7 @@ def apply_outcome(
     if outcome.counts_as_retry:
         fields["retry_count"] = (record.retry_count or 0) + 1
     if outcome.stamp_uploaded_at:
-        fields["uploaded_at"] = datetime.utcnow()
+        fields["uploaded_at"] = utcnow()
     if request_log is not None:
         fields["request_log"] = json.dumps(request_log, default=str)
 
@@ -249,6 +250,28 @@ def _fail_all_files(
 # Worker: process one queued segment/date batch. Steps 2/3/4/8/9 run once for
 # the whole batch; Steps 5/6/7 run once per matched file.
 # --------------------------------------------------------------------------
+
+
+def mark_batch_failed(task: SegmentBatchTask, exc: BaseException) -> None:
+    """Record an unhandled crash on the batch row, for the worker's outer handler.
+
+    Without this a crashed batch kept whatever status it held when the exception fired —
+    almost always UPLOADING — so through the API it was indistinguishable from one still
+    in progress, and only the worker log said otherwise. Ops had no way to see it, and
+    nothing would ever move it.
+
+    The detail carries the exception TYPE and message only, deliberately not a traceback:
+    status_detail is returned by GET /batches/{id}, and this repo already has an open
+    finding about upstream text being persisted verbatim. The traceback is in the log.
+    """
+    _set_batch_status(
+        task,
+        BatchStatus.FAILED,
+        {
+            "error": f"{type(exc).__name__}: {exc}",
+            "note": "unhandled error in process_batch; see the worker log for the traceback",
+        },
+    )
 
 
 def process_batch(task: SegmentBatchTask) -> None:
@@ -739,7 +762,30 @@ def _process_batch(task: SegmentBatchTask) -> None:
             sorted(filled_upload_ids) or "none",
             marked_optional or "none",
         )
-        poll_message = client.confirm_upload(task.segment, trade_date)
+        # Guarded like every other CBOS call in this flow (Steps 1, 3, 6, 8), and for a
+        # sharper reason than symmetry: Step 9 is DIAGNOSTICS, never the verdict.
+        # from_poll_result() confirms on our own completed work whatever the flag reads,
+        # and _fileupload_observation() files the reading as a note. So the poll's value
+        # cannot change the outcome — and its FAILURE must not either.
+        #
+        # Unguarded, it did. By here every manifest file is chunked, registered and past
+        # the completeness gate; a transient blip on this one call raised through the
+        # worker's blanket `except Exception`, so the outcome-recording loop below never
+        # ran: files never moved out of the intake tree, uploaded_files rows stayed
+        # 'pending', and the batch sat at UPLOADING with no recovery path short of manual
+        # DB surgery. The most-complete batch possible, stranded by the one call that
+        # does not matter.
+        try:
+            poll_message = client.confirm_upload(task.segment, trade_date)
+            poll_failed = False
+        except CBOSUploadError as exc:
+            # The upstream body is deliberately NOT carried into poll_message: this value
+            # is persisted to batch status_detail and to every file's request_log, and
+            # CBOSUploadError embeds the raw upstream response. Marker here, detail in
+            # the log.
+            logger.warning("Batch %s: Step 9 poll failed (non-fatal): %s", task.key, exc)
+            poll_message = "UNKNOWN (Step 9 poll failed)"
+            poll_failed = True
         outcome = upload_outcome.from_poll_result(poll_message)
         for record, file_path, request_log in uploaded_candidates:
             request_log.append({"step": "file_process_status", "result": poll_message})
@@ -755,7 +801,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
             BatchStatus.CONFIRMED,
             _batch_upload_complete(
                 len(uploaded_candidates),
-                **_fileupload_observation(poll_message),
+                **_fileupload_observation(poll_message, poll_failed=poll_failed),
             ),
         )
         logger.info(
@@ -867,14 +913,28 @@ def _proceed_batch(task: SegmentBatchTask) -> None:
                 exc,
             )
 
-    poll_message = client.confirm_upload(task.segment, trade_date)
+    # Same guard, same reasoning as Step 9 in _process_batch: the poll is diagnostics, so
+    # neither its value nor its failure decides the batch. Force-proceed has already done
+    # the only thing that matters — every named slot marked optional — and losing that to
+    # a blip on the confirmation call would leave ops re-running a proceed that already
+    # took effect.
+    try:
+        poll_message = client.confirm_upload(task.segment, trade_date)
+        poll_failed = False
+    except CBOSUploadError as exc:
+        logger.warning("Proceed %s: Step 9 poll failed (non-fatal): %s", task.key, exc)
+        poll_message = "UNKNOWN (Step 9 poll failed)"
+        poll_failed = True
     _set_batch_status(
         task,
         BatchStatus.CONFIRMED,
         _batch_upload_complete(
             len(requested),
             **_fileupload_observation(
-                poll_message, via="force-proceed", proceed_slots=sorted(requested)
+                poll_message,
+                via="force-proceed",
+                proceed_slots=sorted(requested),
+                poll_failed=poll_failed,
             ),
         ),
     )
