@@ -34,6 +34,12 @@ logger = logging.getLogger("upload_matching")
 # 77MB trade file.
 COLUMN_SNIFF_LINES = 5
 
+# Tried after settings.upload_match_delimiter when that one does not produce the
+# width CBOS declared. Pipe is what NSE's contract masters use; tab covers the
+# other common non-CSV export. Deliberately a SHORT list - each extra delimiter
+# is another chance for a malformed file to hit the declared width by accident.
+_FALLBACK_DELIMITERS = ("|", "\t")
+
 
 def _pattern_matches(pattern: str, operator: str, name: str) -> bool:
     """Apply CBOS's declared match semantics against the filename. The operator
@@ -125,11 +131,22 @@ def fetch_upload_rules(candidates, client, segment: str = "") -> list[UploadRule
     return rules
 
 
-def _count_columns(file_path: Path) -> list[int] | None:
+def _candidate_delimiters() -> tuple[str, ...]:
+    """The configured delimiter first, then the fallbacks it does not already
+    cover. Order matters: first is what an error message reports, so a
+    comma-delimited estate reads exactly as it did before this fallback existed.
+    """
+    configured = settings.upload_match_delimiter
+    return (configured, *(d for d in _FALLBACK_DELIMITERS if d != configured))
+
+
+def _count_columns(file_path: Path) -> dict[str, list[int]] | None:
     """Best-effort column counts for the first COLUMN_SNIFF_LINES non-empty
-    lines, split on settings.upload_match_delimiter. Returns None if the file
-    can't be read as delimited text (binary formats like .xlsx aren't sniffed
-    here - see the module docstring's known limitation).
+    lines, counted under EACH of _candidate_delimiters(). Returns
+    ``{delimiter: [width per sniffed line]}`` - every delimiter mapping to a
+    list of the same length - or None if the file can't be read as delimited
+    text (binary formats like .xlsx aren't sniffed here - see the module
+    docstring's known limitation).
 
     SEVERAL lines, not just the first, because some exchange files open with a
     CONTROL RECORD whose width has nothing to do with the data. NCDEX's
@@ -141,28 +158,40 @@ def _count_columns(file_path: Path) -> list[int] | None:
     CBOS's rule 321 for that UploadID declares 20 - it describes the data
     rows. Reading only the first line saw 7, so a perfectly valid file the
     exchange had just published was rejected before CBOS ever saw it
-    (observed live, trade date 2026-06-17). Since the engine's job is to pick
-    the right UploadID and CBOS's own Step 5/7/9 responses are the arbiter of
-    acceptance (see the module docstring), a local sniff must not be the thing
-    that blocks a real file.
+    (observed live, trade date 2026-06-17).
+
+    SEVERAL delimiters, for the same reason one axis over. Not every exchange
+    file is a CSV. NSE's contract masters are PIPE-delimited - co_contract on
+    trade date 2026-08-11 opens with a 3-field control record and then carries
+    8.7MB of 69-field rows, which is exactly the width CBOS's rule 139
+    declares. Counted on a comma every line is one field, so the sniff reported
+    [1, 1, 1, 1, 1] against an expected 69 and rejected a file both NSE and
+    CBOS agreed was correct.
+
+    Since the engine's job is to pick the right UploadID and CBOS's own Step
+    5/7/9 responses are the arbiter of acceptance (see the module docstring), a
+    local sniff must not be the thing that blocks a real file.
     """
-    counts: list[int] = []
+    lines: list[str] = []
     try:
         with open(file_path, encoding="utf-8", errors="strict", newline="") as fh:
             for line in fh:
                 if not line.strip():
                     continue
-                counts.append(len(next(csv.reader([line], delimiter=settings.upload_match_delimiter))))
-                if len(counts) >= COLUMN_SNIFF_LINES:
+                lines.append(line)
+                if len(lines) >= COLUMN_SNIFF_LINES:
                     break
     except (UnicodeDecodeError, OSError) as exc:
         logger.debug("upload_matching: could not sniff columns for %s: %s", file_path.name, exc)
         return None
-    # [] means "read it fine, there was nothing in it" — NOT the same as None, which
-    # means "could not be read as delimited text at all" (a .xlsx, say) and is a
-    # legitimate reason to skip the check. Collapsing the two let a zero-byte file take
-    # the .xlsx exemption and sail through to CBOS.
-    return counts
+    # All-empty lists mean "read it fine, there was nothing in it" — NOT the same as
+    # None, which means "could not be read as delimited text at all" (a .xlsx, say) and
+    # is a legitimate reason to skip the check. Collapsing the two let a zero-byte file
+    # take the .xlsx exemption and sail through to CBOS.
+    return {
+        delimiter: [len(next(csv.reader([line], delimiter=delimiter))) for line in lines]
+        for delimiter in _candidate_delimiters()
+    }
 
 
 def _disambiguate(
@@ -258,38 +287,62 @@ def match_file(file_path: Path, rules: list[UploadRule], exchange: str | None = 
     logger.info("Selected UploadID = %s", rule.upload_id)
 
     if settings.upload_match_validate_columns and rule.column_count is not None:
-        actual = _count_columns(file_path)
-        # ANY sniffed line matching is enough. Strictly more permissive than the
-        # old first-line-only check, so nothing that uploads today can start
-        # failing - those files already match on line 1. What it adds is
-        # control-record files (see _count_columns), which were being rejected
-        # for a header whose width CBOS's rule never described.
-        if actual == []:
-            # Fail safe, not open. A zero-byte or all-blank placeholder that happens to
-            # match an UploadID's filename pattern is exactly the kind of file local
-            # validation exists to stop — forwarding it wastes a CBOS round trip and
-            # lands an empty file in the billing data.
-            raise EmptyFile(
-                f"'{file_path.name}' matched UploadID={rule.upload_id} ({rule.name}) "
-                f"but contains no data line to validate"
+        sniffed = _count_columns(file_path)
+        configured = settings.upload_match_delimiter
+        # ANY sniffed line under ANY candidate delimiter matching is enough.
+        # Strictly more permissive than both earlier versions of this check, so
+        # nothing that uploads today can start failing - those files already
+        # match on line 1 under the configured delimiter. What it adds is
+        # control-record files and non-CSV files (see _count_columns), which
+        # were being rejected over a shape CBOS's rule never described.
+        if sniffed is not None:
+            if not any(sniffed.values()):
+                # Fail safe, not open. A zero-byte or all-blank placeholder that happens
+                # to match an UploadID's filename pattern is exactly the kind of file
+                # local validation exists to stop — forwarding it wastes a CBOS round
+                # trip and lands an empty file in the billing data.
+                raise EmptyFile(
+                    f"'{file_path.name}' matched UploadID={rule.upload_id} ({rule.name}) "
+                    f"but contains no data line to validate"
+                )
+            matched_delimiter = next(
+                (d for d, widths in sniffed.items() if rule.column_count in widths), None
             )
-        if actual is not None and rule.column_count not in actual:
-            raise ColumnCountMismatch(
-                f"'{file_path.name}' matched UploadID={rule.upload_id} ({rule.name}) "
-                f"but has {actual[0] if len(actual) == 1 else actual} "
-                f"column(s), expected {rule.column_count}"
-            )
-        if actual is not None and actual[0] != rule.column_count:
-            # Matched on a later line: the first line is a control record. Worth
-            # a breadcrumb - it is the difference between "file is fine" and
-            # "file is malformed" when someone reads this back.
-            logger.info(
-                "upload_matching: %s opens with a %d-column control record; "
-                "matched UploadID=%s on a later %d-column data line",
-                file_path.name,
-                actual[0],
-                rule.upload_id,
-                rule.column_count,
-            )
+            if matched_delimiter is None:
+                # Reported under the CONFIGURED delimiter, which is the estate's norm and
+                # what the reader will assume. The tried list is named so the next person
+                # to read this is not misled the way a bare "has 1 column(s)" misled us.
+                actual = sniffed[configured]
+                raise ColumnCountMismatch(
+                    f"'{file_path.name}' matched UploadID={rule.upload_id} ({rule.name}) "
+                    f"but has {actual[0] if len(actual) == 1 else actual} "
+                    f"column(s), expected {rule.column_count} "
+                    f"(delimiters tried: {', '.join(repr(d) for d in sniffed)})"
+                )
+            widths = sniffed[matched_delimiter]
+            if matched_delimiter != configured:
+                # Not an error, but never silent: "this segment's file is not a CSV" is a
+                # fact about the estate worth being able to grep for later.
+                logger.info(
+                    "upload_matching: %s is %r-delimited, not %r; matched UploadID=%s "
+                    "on its %d-column rows",
+                    file_path.name,
+                    matched_delimiter,
+                    configured,
+                    rule.upload_id,
+                    rule.column_count,
+                )
+            if widths[0] != rule.column_count:
+                # Matched on a later line: the first line is a control record. Worth
+                # a breadcrumb - it is the difference between "file is fine" and
+                # "file is malformed" when someone reads this back.
+                logger.info(
+                    "upload_matching: %s opens with a %d-column control record; "
+                    "matched UploadID=%s on a later %d-column data line",
+                    file_path.name,
+                    widths[0],
+                    rule.upload_id,
+                    rule.column_count,
+                )
 
     return rule

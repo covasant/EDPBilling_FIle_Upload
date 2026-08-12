@@ -92,9 +92,14 @@ def test_an_empty_file_is_rejected_rather_than_skipping_validation(tmp_path, mon
     blank = tmp_path / "blank.csv"
     blank.write_text("\n\n   \n")
 
-    # [] — read fine, nothing in it — as distinct from None, which means not sniffable.
-    assert upload_matching._count_columns(empty) == []
-    assert upload_matching._count_columns(blank) == []
+    # Read fine, nothing in it — as distinct from None, which means not sniffable.
+    # Every candidate delimiter maps to an empty width list; the caller treats that
+    # (not None) as EmptyFile. Asserted per-delimiter rather than against a literal
+    # so adding a delimiter cannot quietly turn "empty" back into "unsniffable".
+    for path in (empty, blank):
+        sniffed = upload_matching._count_columns(path)
+        assert sniffed is not None, f"{path.name} is readable text, not a binary exemption"
+        assert not any(sniffed.values()), f"{path.name} has no data line to validate"
 
 
 def test_an_unsniffable_file_still_skips_the_check(tmp_path, monkeypatch):

@@ -287,6 +287,65 @@ def test_first_line_match_still_works(tmp_path):
     assert match_file(f, rules).upload_id == "84"
 
 
+# ---------------------------------------------------------------------------
+# Non-CSV files (NSE's pipe-delimited contract masters)
+# ---------------------------------------------------------------------------
+
+# The real NSE CO contract master, trade date 2026-08-11, first two lines
+# verbatim (the data row truncated to the first 12 of its 69 fields, with the
+# rest supplied below so the width is exact). Line 1 is a 3-field control
+# record; the data rows carry 69 fields, which is what CBOS's rule 139
+# declares. Counted on a comma every line is ONE field, so the sniff reported
+# [1, 1, 1, 1, 1] and rejected it before CBOS ever saw it.
+_CO_CONTRACT_REAL = "NEATCO|15500|\n" + "".join(
+    "|".join(
+        ["1", "0", "UNDCOM", "GOLD", "XX", "", "-1", "-1", "XX", "2", "0", ""]
+        + ["0"] * 57  # 12 + 57 = 69 fields, the real row's width
+    )
+    + "\n"
+    for _ in range(3)
+)
+
+
+def test_pipe_delimited_contract_master_is_not_rejected(tmp_path):
+    """NSE's contract masters are pipe-delimited, not CSV. Observed live
+    2026-08-11: co_contract was rejected for "has [1, 1, 1, 1, 1] column(s),
+    expected 69" while its data rows had exactly the 69 CBOS asked for."""
+    rules = [_rule(139, "CO_CONTRACT", ext="*", cols=69, name="CONTRACT MASTER - NSECOM")]
+    f = _write(tmp_path, "co_contract", content=_CO_CONTRACT_REAL)
+
+    assert match_file(f, rules).upload_id == "139"
+
+
+def test_a_wrong_width_is_still_rejected_under_every_delimiter(tmp_path):
+    """The fallback must not disarm the check: when NO delimiter produces the
+    declared width on any sniffed line, the file is still refused."""
+    rules = [_rule(139, "CO_CONTRACT", ext="*", cols=70)]
+    f = _write(tmp_path, "co_contract", content=_CO_CONTRACT_REAL)
+
+    with pytest.raises(ColumnCountMismatch):
+        match_file(f, rules)
+
+
+def test_the_rejection_names_the_delimiters_it_tried(tmp_path):
+    """A bare "has 1 column(s)" is what sent us looking at NSE's file instead of
+    our own sniff. The message must say what it counted with."""
+    rules = [_rule(139, "CO_CONTRACT", ext="*", cols=70)]
+    f = _write(tmp_path, "co_contract", content=_CO_CONTRACT_REAL)
+
+    with pytest.raises(ColumnCountMismatch, match=r"delimiters tried:.*\|"):
+        match_file(f, rules)
+
+
+def test_a_comma_file_is_unaffected_by_the_fallback(tmp_path):
+    """The configured delimiter still wins: a comma file whose width matches
+    must not be re-counted under a fallback that happens to agree."""
+    rules = [_rule(84, "C_STT_IND", ext="CSV", cols=3)]
+    f = _write(tmp_path, "C_STT_IND_22062026.csv", content="a,b,c\n1,2,3\n")
+
+    assert match_file(f, rules).upload_id == "84"
+
+
 def test_only_the_first_few_lines_are_sniffed(tmp_path):
     """Bounded so a 77MB trade file is not read end to end. A matching width
     that appears only past the sniff window does not rescue the file."""
@@ -376,7 +435,10 @@ def test_step40_wildcard_shapes_are_stripped(monkeypatch):
         def get_expected_filename(self, segment, upload_id):
             return {"Status": "Success", "Data": [{"ExpectedFileNamePattern1": self._value}]}
 
-    assert _Probe("%NCDEX_AL02_01240_%")._expected_name_pattern("NCDEXPHY", "321") == "NCDEX_AL02_01240_"
+    assert (
+        _Probe("%NCDEX_AL02_01240_%")._expected_name_pattern("NCDEXPHY", "321")
+        == "NCDEX_AL02_01240_"
+    )
     assert _Probe("%%")._expected_name_pattern("NCDEXPHY", "482") == ""
 
 
