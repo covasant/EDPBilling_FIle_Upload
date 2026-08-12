@@ -3,7 +3,17 @@ from datetime import datetime
 from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.clock import utcnow as _utcnow
 from app.core.database import Base
+
+# The status vocabulary, as a value rather than a comment. Idempotency and state checks
+# elsewhere match on the EXACT string (find_completed, the 'uploaded' checks in
+# upload_service), so a typo'd literal — 'uplaoded' — is written silently and makes the
+# row permanently invisible to every state-based query, with nothing raised anywhere.
+# Enforced in UploadedFileRepository.update rather than as a DB CheckConstraint: SQLite
+# cannot add a CHECK to an existing table without rebuilding it, so a constraint would
+# only bind on freshly-created databases and give false confidence on the deployed ones.
+STATUSES = frozenset({"pending", "uploaded", "failed"})
 
 
 class UploadedFile(Base):
@@ -21,9 +31,7 @@ class UploadedFile(Base):
     folder_date: Mapped[str] = mapped_column(String, nullable=False)
     segment: Mapped[str] = mapped_column(String, nullable=False)
     exchange: Mapped[str | None] = mapped_column(String, nullable=True)
-    status: Mapped[str] = mapped_column(
-        String, nullable=False, default="pending"
-    )  # pending | uploaded | failed
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     cbos_response: Mapped[str | None] = mapped_column(
         String, nullable=True
     )  # final outcome (Step 7 result, or the error that failed the sequence)
@@ -59,4 +67,4 @@ class UploadedFile(Base):
     )  # JSON list of {step, request/response} for every CBOS call made
 
     uploaded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)

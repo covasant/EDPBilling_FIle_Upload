@@ -3,7 +3,25 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.clock import utcnow as _utcnow
 from app.core.database import Base
+
+# See uploaded_file.STATUSES for why this is a value and where it is enforced.
+STATUSES = frozenset(
+    {
+        "pending",
+        "validating",
+        "uploading",
+        "uploaded",
+        "registered",
+        "polling",
+        "success",
+        "processed",
+        "failed",
+        "timed_out",
+        "in_progress",
+    }
+)
 
 
 class SettlementUpload(Base):
@@ -43,9 +61,7 @@ class SettlementUpload(Base):
         Boolean, nullable=False, default=False
     )  # echoed from Step 2 config; gates Step 7
 
-    status: Mapped[str] = mapped_column(
-        String, nullable=False, default="pending"
-    )  # pending|validating|uploading|uploaded|registered|polling|success|processed|failed|timed_out
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     last_step: Mapped[str | None] = mapped_column(String, nullable=True)
     status_code: Mapped[int | None] = mapped_column(
         Integer, nullable=True
@@ -63,7 +79,7 @@ class SettlementUpload(Base):
     )  # JSON list of {step, request/response} for every DP upload API call made
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+        DateTime, default=_utcnow, onupdate=_utcnow, nullable=False
     )

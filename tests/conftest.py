@@ -36,8 +36,9 @@ def test_env(monkeypatch, tmp_path):
 
     def _clear():
         get_settings.cache_clear()
-        database.get_engine.cache_clear()
-        database.get_sessionmaker.cache_clear()
+        # reset_engine, not cache_clear: it disposes the pool before dropping the
+        # reference, so a full run doesn't leak a connection per test.
+        database.reset_engine()
         cbos_client.reset_cbos_client()
         dp_upload_client.reset_dp_upload_client()
         nsdl_speede_client.reset_nsdl_speede_client()

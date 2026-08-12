@@ -4,6 +4,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app.models import UploadedFile
+from app.models.uploaded_file import STATUSES
 
 logger = logging.getLogger("uploaded_file_repository")
 
@@ -11,6 +12,20 @@ logger = logging.getLogger("uploaded_file_repository")
 # to be a location on disk. Contains characters Windows forbids in a path, so it
 # can never collide with a real file. See claim_file_path.
 _SUPERSEDED_MARKER = " <superseded by row "
+
+
+
+def _check_status(fields: dict) -> None:
+    """Reject a status outside the model's vocabulary.
+
+    update() is a blind setattr over **fields, so a typo'd literal used to be written
+    without complaint. Because the state checks elsewhere match the exact string, that
+    row then became invisible to every state-based query — silently, and permanently.
+    Raising here turns a silent data-integrity bug into an immediate, obvious one.
+    """
+    status = fields.get("status")
+    if status is not None and status not in STATUSES:
+        raise ValueError(f"unknown status {status!r}; expected one of {sorted(STATUSES)}")
 
 
 class UploadedFileRepository:
@@ -162,6 +177,7 @@ class UploadedFileRepository:
         )
 
     def update(self, record: UploadedFile, **fields) -> UploadedFile:
+        _check_status(fields)
         logger.debug("update: record id=%s <- %s", record.id, fields)
         for key, value in fields.items():
             setattr(record, key, value)

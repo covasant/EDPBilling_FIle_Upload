@@ -1,6 +1,24 @@
 from functools import lru_cache
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def reveal(value: "SecretStr | str | None") -> str:
+    """The plain text behind a setting, whether or not it is a SecretStr.
+
+    Credential fields are SecretStr so that a stray `logger.debug(settings)`, a
+    ValidationError traceback, or an error-tracking integration that serialises locals
+    renders `**********` instead of the password — failing closed rather than open.
+
+    Use this at every read. `SecretStr("")` is TRUTHY, so the fail-fast "is this
+    configured?" checks in the clients (`if not getattr(settings, name)`) silently stop
+    working the moment a field becomes a SecretStr — they would build a REAL client with
+    an empty password instead of refusing. Going through here keeps those checks honest.
+    """
+    if value is None:
+        return ""
+    return value.get_secret_value() if isinstance(value, SecretStr) else str(value)
 
 
 class Settings(BaseSettings):
@@ -18,6 +36,17 @@ class Settings(BaseSettings):
     # The Step-8 optional-slot allowlist (completeness gate). Code-reviewed
     # YAML; see app/services/optional_slots.py.
     optional_slots_path: str = "app/config/optional_slots.yaml"
+
+    # Cap on batches waiting for the worker. Sized well above the handful of real
+    # segment/date combinations, so it should never bind in normal operation - it is a
+    # backstop that turns "intake silently outruns the worker" into a 503 someone can
+    # see. 0 disables the bound.
+    batch_queue_maxsize: int = 256
+
+    # How long shutdown waits for the queue worker to finish its current batch. A batch
+    # can legitimately take minutes, so this is a bound on the WAIT, not a promise the
+    # batch will finish — the thread is a daemon and the process exits regardless.
+    worker_shutdown_grace_seconds: float = 30.0
 
     # CBOS trade-upload API (Steps 2/3/4/6/7 in cbos_client.py).
     # MOCK -> MockCBOSClient (no network calls, no CBOS_BASE_URL/CBOS_LOGIN_ID needed).
@@ -37,7 +66,7 @@ class Settings(BaseSettings):
     cbos_gtg_base_url: str = ""
     cbos_core_base_url: str = ""
     cbos_login_id: str = ""
-    cbos_password: str = ""
+    cbos_password: SecretStr = SecretStr("")
     cbos_timeout_seconds: int = 30  # JSON calls
     cbos_upload_timeout_seconds: int = 300  # Step 5 multipart chunk upload - much longer than JSON
     cbos_poll_interval_seconds: int = 2
@@ -138,7 +167,7 @@ class Settings(BaseSettings):
     # Session-Value header: "<seskey>|<user_id>". Static config for now
     # (mirrors cbos_login_id/cbos_password above) - whether seskey needs its
     # own login/refresh call is unconfirmed.
-    cbos_setl_seskey: str = ""
+    cbos_setl_seskey: SecretStr = SecretStr("")
     cbos_setl_user_id: str = ""
     cbos_setl_created_by: str = ""
 

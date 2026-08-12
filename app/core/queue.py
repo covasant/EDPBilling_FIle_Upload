@@ -1,10 +1,20 @@
 import logging
 import threading
 from dataclasses import dataclass, field
-from queue import Queue
+from queue import Full, Queue
 from typing import Literal
 
 logger = logging.getLogger("upload_queue")
+
+
+class QueueFullError(Exception):
+    """Intake is at capacity. Surfaced by POST /batches as 503, never blocked on."""
+
+
+# Put on the queue to tell the worker to stop. A sentinel rather than a flag because the
+# worker blocks in queue.get(): a flag would only be noticed after the NEXT batch
+# arrived, which on a quiet queue is never.
+SHUTDOWN = object()
 
 
 @dataclass
@@ -63,20 +73,40 @@ class BatchQueue:
     itself thread-safe.
     """
 
-    def __init__(self) -> None:
-        self._queue: Queue[SegmentBatchTask] = Queue()
+    def __init__(self, maxsize: int = 0) -> None:
+        # Bounded by default (see settings.batch_queue_maxsize). There is no
+        # backpressure anywhere else between intake and the single worker thread
+        # draining this, so an unbounded queue meant POST /batches would accept work
+        # forever while the worker fell further behind, with nothing to alarm on. The
+        # real segment/date combinations are few, so the cap is not expected to bind —
+        # it exists so that if that assumption ever stops holding, intake says so
+        # instead of growing silently. 0 keeps the old unbounded behaviour.
+        self._queue: Queue[SegmentBatchTask] = Queue(maxsize=maxsize)
         self._in_flight: set[str] = set()
         self._lock = threading.Lock()
 
     def enqueue(self, task: SegmentBatchTask) -> bool:
         """Add a batch unless that segment/date is already queued or in flight.
-        Returns True if it was added."""
+        Returns True if it was added.
+
+        Raises :class:`QueueFullError` when the queue is at capacity, so intake can
+        answer 503 rather than block the request thread on a full queue.
+        """
         with self._lock:
             if task.key in self._in_flight:
                 return False
             self._in_flight.add(task.key)
 
-        self._queue.put(task)
+        try:
+            self._queue.put_nowait(task)
+        except Full as exc:
+            # Release the guard we just took, or this segment/date could never be
+            # enqueued again for the life of the process.
+            with self._lock:
+                self._in_flight.discard(task.key)
+            raise QueueFullError(
+                f"batch queue is full ({self._queue.maxsize} waiting); retry shortly"
+            ) from exc
         logger.info("Added to queue: %s (%d file(s))", task.key, len(task.files))
         logger.info("Queue size: %d", self._queue.qsize())
         return True
@@ -86,8 +116,15 @@ class BatchQueue:
             return batch_key in self._in_flight
 
     def get(self) -> SegmentBatchTask:
-        """Block until a batch is available, then hand it over."""
+        """Block until a batch is available, then hand it over.
+
+        May return the :data:`SHUTDOWN` sentinel; the worker checks for it.
+        """
         return self._queue.get()
+
+    def request_shutdown(self) -> None:
+        """Wake the worker out of get() so it can exit its loop."""
+        self._queue.put(SHUTDOWN)
 
     def task_done(self) -> None:
         """Mark the batch just handed out by get() as finished."""

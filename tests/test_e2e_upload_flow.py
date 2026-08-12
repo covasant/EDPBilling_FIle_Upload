@@ -21,8 +21,7 @@ def test_full_mcx_batch_uploads_all_three(monkeypatch):
     from app.services import upload_service
 
     get_settings.cache_clear()
-    database.get_engine.cache_clear()
-    database.get_sessionmaker.cache_clear()
+    database.reset_engine()
     database.init_db()
 
     date, segment, exchange = "17-07-2026", "MCX", "NA"

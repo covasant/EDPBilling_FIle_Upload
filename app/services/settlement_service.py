@@ -26,6 +26,7 @@ from app.clients.dp_upload_client import (
 )
 from app.core.config import settings
 from app.core.correlation import batch_context
+from app.core.safe_path import UnsafePathError, resolve_within
 from app.models.settlement_upload import SettlementUpload
 from app.repositories.settlement_upload_repository import SettlementUploadRepository
 
@@ -42,8 +43,18 @@ class UnknownSettlementUploadError(Exception):
 
 
 def _locate_file(file_name: str) -> Path:
+    """The named file on the shared folder, confined to that folder.
+
+    file_name comes straight from the request body. `root / file_name` alone does not
+    confine anything: pathlib DISCARDS root when file_name is absolute, so
+    "/etc/passwd" resolved to itself, passed is_file(), and was uploaded to the external
+    DP endpoint. A relative "../.." escaped the same way. See app/core/safe_path.py.
+    """
     root = Path(settings.cbos_setl_shared_folder_path)
-    file_path = root / file_name
+    try:
+        file_path = resolve_within(root, file_name, what="file_name")
+    except UnsafePathError as exc:
+        raise SettlementFileNotFoundError(str(exc)) from exc
     if not file_path.is_file():
         raise SettlementFileNotFoundError(f"{file_name} not found under {root}")
     return file_path

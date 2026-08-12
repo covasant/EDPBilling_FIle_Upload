@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db_session
+from app.core.queue import QueueFullError
 from app.services import batch_service
 from app.services.batch_service import ProceedNotAllowedError, UnknownBatchError
 from app.services.manifest_service import ChecksumMismatchError, ManifestError
@@ -47,6 +48,13 @@ def submit_batch(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ChecksumMismatchError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except QueueFullError as exc:
+        # 503 + Retry-After rather than blocking the request thread on a full queue.
+        # The batch row is already recorded by this point, so a re-POST of the same
+        # manifest is the documented recovery path and will re-enqueue it.
+        raise HTTPException(
+            status_code=503, detail=str(exc), headers={"Retry-After": "30"}
+        ) from exc
     body = {"batch_id": result.batch_id, "status": result.status}
     if result.already_known:
         return JSONResponse(status_code=200, content=body)

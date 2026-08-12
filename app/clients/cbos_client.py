@@ -49,6 +49,7 @@ import json
 import logging
 import random
 import socket
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -57,7 +58,8 @@ from pathlib import Path
 
 import requests
 
-from app.core.config import settings
+from app.core.config import reveal, settings
+from app.core.redaction import redact_response_text
 
 logger = logging.getLogger("cbos_client")
 
@@ -94,8 +96,22 @@ def _to_cbos_date(folder_date: str) -> str:
     """Reformats a trade date (settings.date_folder_format, e.g. dd-mm-yyyy)
     into the yyyy-mm-dd shape CBOS's TRADEDATE/paraM1 fields require. Only
     affects the outgoing CBOS payload - folder names and DB records are
-    untouched."""
-    return datetime.strptime(folder_date, settings.date_folder_format).strftime("%Y-%m-%d")
+    untouched.
+
+    A date that does not match the configured format is raised as CBOSUploadError, not
+    as the bare ValueError strptime gives: this is called from inside Steps 1/2/3/7/9,
+    and upload_service's retry loop only catches CBOSUploadError. A ValueError escaped
+    it entirely and propagated out of process_batch, so a malformed folder date skipped
+    the intended "exhaust retries -> move to uploadFailed/" path and left the batch
+    wherever it happened to be.
+    """
+    try:
+        return datetime.strptime(folder_date, settings.date_folder_format).strftime("%Y-%m-%d")
+    except (ValueError, TypeError) as exc:
+        raise CBOSUploadError(
+            f"trade date {folder_date!r} does not match the configured "
+            f"date_folder_format {settings.date_folder_format!r}"
+        ) from exc
 
 
 def _upload_ip_address() -> str:
@@ -800,6 +816,11 @@ class BaseCBOSClient(ABC):
                         )
                         if attempt >= retries:
                             raise
+                        # Back off, as the batch-setup retry loop in upload_service does.
+                        # Without it a large multi-chunk file retried back-to-back with no
+                        # pause at all, so a CBOS endpoint that was degraded or rate-limiting
+                        # got hit hardest exactly when it was least able to answer.
+                        time.sleep(settings.cbos_retry_delay_seconds * attempt)
                 if progress_cb is not None:
                     progress_cb(current_chunk + 1, total_chunks)
 
@@ -861,7 +882,22 @@ class BaseCBOSClient(ABC):
 
     def mark_step_optional(self, process_id: str, step_no) -> None:
         """Step 8. Mark an empty slot optional so it doesn't hold FILEUPLOAD at
-        FALSE. One call per empty non-zero slot, after Steps 5+7."""
+        FALSE. One call per empty non-zero slot, after Steps 5+7.
+
+        UploadCandidate.step_no is `object | None`, and the payload stringifies it, so a
+        Table2 slot that came back without a STEPNO used to go out as the literal "None".
+        Best case CBOS rejects it; worst case it coerces to a step number and marks the
+        WRONG step optional — silent, and nothing unwinds it. Refused here on the base
+        class rather than in an adapter: it is a precondition of the operation, true for
+        the mock and the real client alike. The caller already treats a failed
+        mark-optional as non-fatal and logs it, so this surfaces the bad slot without
+        sinking the batch.
+        """
+        if step_no is None:
+            raise CBOSUploadError(
+                f"cannot mark a step optional for PROCESSID={process_id}: "
+                "the Table2 slot has no STEPNO"
+            )
         self._call(
             8,
             "UpdateNewTradeProcessProcessDetailsIsMandatory",
@@ -923,7 +959,7 @@ class BaseCBOSClient(ABC):
 class CBOSClient(BaseCBOSClient):
     def __init__(self) -> None:
         required = ("cbos_core_base_url", "cbos_gtg_base_url", "cbos_login_id", "cbos_password")
-        missing = [name.upper() for name in required if not getattr(settings, name)]
+        missing = [name.upper() for name in required if not reveal(getattr(settings, name))]
         if missing:
             raise CBOSUploadError(
                 f"CBOS_MODE=REAL requires {', '.join(missing)} in .env (no committed defaults)"
@@ -937,16 +973,26 @@ class CBOSClient(BaseCBOSClient):
 
     def _handle(self, url: str, response) -> dict:
         logger.debug(
-            "Response <- %s: status=%s body=%s", url, response.status_code, response.text[:1000]
+            "Response <- %s: status=%s body=%s",
+            url,
+            response.status_code,
+            # DEBUG is still a log line, and a successful response can echo a field too.
+            redact_response_text(response.text, limit=1000),
         )
         if not response.ok:
-            logger.error("Response <- %s failed: %s %s", url, response.status_code, response.text)
-            raise CBOSUploadError(f"{url} failed: {response.status_code} {response.text}")
+            safe = redact_response_text(response.text)
+            # Redacted + capped: the server may echo our own request back, and this same
+            # string becomes the exception message, which upload_service persists into
+            # uploaded_files.cbos_response. A DB row outlives any log retention.
+            logger.error("Response <- %s failed: %s %s", url, response.status_code, safe)
+            raise CBOSUploadError(f"{url} failed: {response.status_code} {safe}")
 
         try:
             parsed = response.json()
         except ValueError as exc:
-            raise CBOSUploadError(f"{url} returned non-JSON response: {response.text}") from exc
+            raise CBOSUploadError(
+                f"{url} returned non-JSON response: {redact_response_text(response.text)}"
+            ) from exc
 
         body = _decode_body(parsed, url)
         _raise_on_failed_status(url, body)
@@ -983,7 +1029,7 @@ class CBOSClient(BaseCBOSClient):
         payload = {
             "GROUPNAME": segment,
             "LOGINID": settings.cbos_login_id,
-            "PASSWORD": settings.cbos_password,
+            "PASSWORD": reveal(settings.cbos_password),
             "TRADEDATE": _to_cbos_date(trade_date),
             "PROCESSID": process_id,  # "0" = create new; otherwise re-fetch/validate this one
         }
@@ -1078,6 +1124,9 @@ class CBOSClient(BaseCBOSClient):
         # PROCESSID and STEPNO are both quoted strings in the doc's example
         # payload ("17649", "12") even though Table2 hands STEPNO back as a
         # JSON number - stringify both here rather than relying on the caller.
+        #
+        # step_no is guaranteed non-None here: mark_step_optional refuses it on the base
+        # class, so str() can never produce the literal "None".
         payload = {"PROCESSID": str(process_id), "STEPNO": str(step_no), "ISOPTIONAL": "0"}
         return self._post(self._core_url(UPDATE_IS_MANDATORY_PATH), payload)
 

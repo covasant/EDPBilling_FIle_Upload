@@ -18,6 +18,7 @@ from edpb_core.manifest import ManifestValidationError, validate_manifest
 
 from app.core.config import settings
 from app.core.queue import SegmentBatchTask
+from app.core.safe_path import UnsafePathError, assert_within, resolve_within
 from app.services import file_service
 
 logger = logging.getLogger("manifest_service")
@@ -52,6 +53,16 @@ def load_manifest(manifest_path: Path) -> LoadedManifest:
     files (that's verify_checksums, a separate, slower step)."""
     if not manifest_path.is_file():
         raise ManifestError(f"manifest not found: {manifest_path}")
+    # The manifest path is client-supplied (POST /batches body). Confine it to the
+    # intake root before reading it: every files[].name below is resolved relative to
+    # its PARENT, so an out-of-tree manifest relocates the whole batch with it.
+    try:
+        manifest_path = assert_within(
+            settings.file_root_path, manifest_path, what="manifest_path"
+        )
+    except UnsafePathError as exc:
+        raise ManifestError(str(exc)) from exc
+
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -65,11 +76,20 @@ def load_manifest(manifest_path: Path) -> LoadedManifest:
     trade_date = data["trade_date"]
     folder_date = datetime.strptime(trade_date, "%Y-%m-%d").strftime(settings.date_folder_format)
 
+    # Each name must stay inside the manifest's own directory. These paths are handed
+    # to file_service.move_to_uploaded/move_to_failed, so an unconfined one does not
+    # merely read the wrong file — it MOVES it out of wherever it really lived.
     base = manifest_path.parent
-    files = [
-        (str(base / f["name"]), f.get("exchange") or file_service.NO_EXCHANGE)
-        for f in data["files"]
-    ]
+    try:
+        files = [
+            (
+                str(resolve_within(base, f["name"], what="manifest file name")),
+                f.get("exchange") or file_service.NO_EXCHANGE,
+            )
+            for f in data["files"]
+        ]
+    except UnsafePathError as exc:
+        raise ManifestError(str(exc)) from exc
     return LoadedManifest(
         raw=data,
         batch_id=data["batch_id"],
@@ -108,7 +128,10 @@ def verify_checksums(manifest_path: Path, data: dict | None = None) -> None:
     skip_set = _checksum_skip_set()
     base = manifest_path.parent
     for entry in data["files"]:
-        path = base / entry["name"]
+        try:
+            path = resolve_within(base, entry["name"], what="manifest file name")
+        except UnsafePathError as exc:
+            raise ChecksumMismatchError(str(exc)) from exc
         if not path.is_file():
             raise ChecksumMismatchError(f"listed file missing: {entry['name']}")
         key = ((entry.get("exchange") or "").upper(), (entry.get("kind") or "").lower())

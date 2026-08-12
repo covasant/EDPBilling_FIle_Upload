@@ -1,14 +1,11 @@
-from datetime import UTC, datetime
+from datetime import datetime
 
 from edpb_core.batch_api import BatchStatus
 from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.clock import utcnow as _utcnow
 from app.core.database import Base
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
 
 
 class Batch(Base):

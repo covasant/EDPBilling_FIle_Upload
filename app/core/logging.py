@@ -33,14 +33,27 @@ def configure_logging(level: int | str | None = None) -> None:
 
         level = get_settings().log_level
 
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(name)s %(levelname)s [%(corr)s] %(message)s",
-    )
+    root = logging.getLogger()
 
-    # basicConfig is a no-op if handlers already exist (repeated calls, pytest,
-    # uvicorn's own setup), so attach the filter to whatever handlers are on the
-    # root - otherwise a second call would leave %(corr)s unpopulated.
-    for handler in logging.getLogger().handlers:
+    # basicConfig() only installs a handler when the root has none — documented, and
+    # the trap here: on a SECOND call it is a silent no-op, so the new level was
+    # discarded and only the filter re-attachment below still took effect. Anything that
+    # configured root logging first (uvicorn, pytest, a library, a re-init) left this
+    # stuck on whatever level happened to win the race, with nothing logged to say so.
+    # Install the handler once ourselves, then set the level UNCONDITIONALLY, so
+    # configure_logging() means the same thing every time it is called.
+    if not root.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(name)s %(levelname)s [%(corr)s] %(message)s")
+        )
+        root.addHandler(handler)
+
+    root.setLevel(level)
+    for handler in root.handlers:
+        handler.setLevel(logging.NOTSET)  # let the root level decide, not a stale one
         if not any(isinstance(f, _CorrelationFilter) for f in handler.filters):
+            # Every handler needs it, including ones we did not install: the format
+            # string references %(corr)s, and a record reaching a handler without the
+            # filter raises rather than logging.
             handler.addFilter(_CorrelationFilter())

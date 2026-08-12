@@ -3,4 +3,4 @@ from app.models.nsdl_speede_upload import NsdlSpeedeUpload
 from app.models.settlement_upload import SettlementUpload
 from app.models.uploaded_file import UploadedFile
 
-__all__ = ["Batch", "UploadedFile", "SettlementUpload", "NsdlSpeedeUpload"]
+__all__ = ["Batch", "NsdlSpeedeUpload", "SettlementUpload", "UploadedFile"]
