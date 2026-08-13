@@ -295,29 +295,45 @@ class UploadCandidate:
         return self.upload_id not in ("0", "")
 
     @property
-    def needs_upload(self) -> bool:
-        """False once this slot already has a file for the reserved
+    def already_in_cbos(self) -> bool:
+        """True once this slot already has a file for the reserved
         PROCESSID - re-uploading would duplicate a file CBOS already
-        accepted.
+        accepted. Deliberately IGNORES is_optional: that flag is a policy
+        decision (this slot may be skipped if empty), not a fact about
+        whether a file already landed. A file present in THIS batch for an
+        is_optional slot must still be uploaded normally - only re-sending
+        into a slot CBOS already has a file for is what this guards
+        against (see upload_service.py's per-file loop).
 
         STATUS alone is enough for the zero-UploadID steps (computation/
         posting - there's no "file" for STATUSDESC to describe). For a
         file-expecting slot, only trust STATUS=PENDING once STATUSDESC also
         confirms it's specifically the file upload that's pending
-        ("UPLOAD FILE PENDING") - a missing STATUSDESC is treated as "needs
-        upload" rather than silently skipping a file CBOS is still waiting on.
+        ("UPLOAD FILE PENDING") - a missing STATUSDESC is treated as "not
+        yet in CBOS" rather than silently skipping a file CBOS is still
+        waiting on.
         """
-        if self.is_optional:
-            # CBOS already excuses this slot - uploading into it is neither
-            # required nor expected.
-            return False
         if self.status is None:
-            return True
-        if self.status.strip().upper() != "PENDING":
             return False
+        if self.status.strip().upper() != "PENDING":
+            return True
         if self.expects_a_file and self.status_desc is not None:
-            return _UPLOAD_PENDING_DESC in self.status_desc.strip().upper()
-        return True
+            return _UPLOAD_PENDING_DESC not in self.status_desc.strip().upper()
+        return False
+
+    @property
+    def needs_upload(self) -> bool:
+        """False once this slot is EXCUSED from the completeness gate -
+        either CBOS already has a file for it (already_in_cbos) or it's
+        flagged optional (is_optional). Used ONLY to decide whether a
+        slot may legitimately stay empty (completeness gate / Step 8
+        candidates) - NOT for the per-file loop's real idempotency check,
+        which uses already_in_cbos directly so an is_optional slot with a
+        file actually present in this batch still gets uploaded rather
+        than silently idempotent-skipped."""
+        if self.is_optional:
+            return False
+        return not self.already_in_cbos
 
 
 @dataclass(frozen=True)
