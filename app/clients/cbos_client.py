@@ -332,6 +332,75 @@ class ProcessReservation:
     candidates: list[UploadCandidate]
 
 
+def build_reservation(
+    table1: list[dict],
+    table2: list[dict],
+    segment: str,
+    process_id: str | None = None,
+) -> ProcessReservation:
+    """Parse a getNewTradeProcess-shaped Table1/Table2 pair into a
+    ProcessReservation. Shared by two callers:
+
+      - reserve_process (below): a real CBOS response, process_id=None ->
+        PROCESSID is read out of table1[0].
+      - upload_service, when the Automation Agent supplies a pre-resolved
+        process_id + table1 + table2 on POST /batches (the Agent is now the
+        sole reserver - see that repo's RealSegmentStateMachine module
+        docstring): process_id is passed explicitly, so table1 only needs
+        to carry ISRUNNABLE.
+
+    One parsing implementation either way, so the completeness gate and
+    Step 8 optional-slot handling behave identically regardless of where
+    the reservation came from.
+
+    Raises CBOSUploadError if no PROCESSID can be determined or Table2 is
+    empty - either makes the batch unprocessable.
+    """
+    row1 = table1[0] if table1 else {}
+    if process_id is None:
+        if not table1 or row1.get("PROCESSID") is None:
+            raise CBOSUploadError(
+                f"getNewTradeProcess response had no Table1[0].PROCESSID: {table1}"
+            )
+        process_id = str(row1["PROCESSID"])
+    # Default True: a missing ISRUNNABLE (mock/older responses, or an
+    # Agent-supplied table1) must not block every batch - only an explicit
+    # False stops one.
+    is_runnable = bool(row1.get("ISRUNNABLE", True))
+
+    if not table2:
+        raise CBOSUploadError(
+            f"getNewTradeProcess response had no Table2 upload candidates for process_id={process_id}"
+        )
+
+    candidates = [
+        UploadCandidate(
+            upload_id=str(row.get("UPLOADID", "0")),
+            step_no=row.get("STEPNO"),
+            name=str(row.get("NAME") or ""),
+            status=row.get("STATUS"),
+            status_desc=row.get("STATUSDESC"),
+            is_optional=_parse_isoptional(row.get("ISOPTIONAL")),
+        )
+        for row in table2
+    ]
+    # The Table2 slot list is the batch's whole plan - which UploadIDs CBOS
+    # expects a file at today. Logged once here so a run's later "why is
+    # FILEUPLOAD still FALSE" can be answered from the log alone.
+    expects = [c.upload_id for c in candidates if c.expects_a_file]
+    logger.info(
+        "Step 2 reserved ProcessID=%s segment=%s ISRUNNABLE=%s: %d Table2 slot(s), "
+        "%d expecting a file %s",
+        process_id,
+        segment,
+        is_runnable,
+        len(candidates),
+        len(expects),
+        expects,
+    )
+    return ProcessReservation(process_id=process_id, is_runnable=is_runnable, candidates=candidates)
+
+
 @dataclass(frozen=True)
 class UploadRule:
     """One UploadID's file-name pattern, extension and column count (Step 4),
@@ -571,51 +640,7 @@ class BaseCBOSClient(ABC):
         )
         response = _decode_body(raw, "getNewTradeProcess")
         result = response.get("Result") or {}
-
-        table1 = result.get("Table1") or []
-        if not table1 or table1[0].get("PROCESSID") is None:
-            raise CBOSUploadError(
-                f"getNewTradeProcess response had no Table1[0].PROCESSID: {response}"
-            )
-        process_id = str(table1[0]["PROCESSID"])
-        # Default True: a missing ISRUNNABLE (mock/older responses) must not
-        # block every batch - only an explicit False stops one.
-        is_runnable = bool(table1[0].get("ISRUNNABLE", True))
-
-        table2 = result.get("Table2") or []
-        if not table2:
-            raise CBOSUploadError(
-                f"getNewTradeProcess response had no Table2 upload candidates: {response}"
-            )
-
-        candidates = [
-            UploadCandidate(
-                upload_id=str(row.get("UPLOADID", "0")),
-                step_no=row.get("STEPNO"),
-                name=str(row.get("NAME") or ""),
-                status=row.get("STATUS"),
-                status_desc=row.get("STATUSDESC"),
-                is_optional=_parse_isoptional(row.get("ISOPTIONAL")),
-            )
-            for row in table2
-        ]
-        # The Table2 slot list is the batch's whole plan - which UploadIDs CBOS
-        # expects a file at today. Logged once here so a run's later "why is
-        # FILEUPLOAD still FALSE" can be answered from the log alone.
-        expects = [c.upload_id for c in candidates if c.expects_a_file]
-        logger.info(
-            "Step 2 reserved ProcessID=%s segment=%s ISRUNNABLE=%s: %d Table2 slot(s), "
-            "%d expecting a file %s",
-            process_id,
-            segment,
-            is_runnable,
-            len(candidates),
-            len(expects),
-            expects,
-        )
-        return ProcessReservation(
-            process_id=process_id, is_runnable=is_runnable, candidates=candidates
-        )
+        return build_reservation(result.get("Table1") or [], result.get("Table2") or [], segment)
 
     def may_begin_upload(self, segment: str, trade_date: str) -> bool:
         """Step 1 - Check Holiday. True when CBOS says to go ahead.

@@ -45,8 +45,22 @@ class IntakeResult:
     already_known: bool  # True -> API answers 200, else 202
 
 
-def submit_manifest(session: Session, queue: BatchQueue, manifest_path: Path) -> IntakeResult:
+def submit_manifest(
+    session: Session,
+    queue: BatchQueue,
+    manifest_path: Path,
+    process_id: str | None = None,
+    table1: list[dict] | None = None,
+    table2: list[dict] | None = None,
+) -> IntakeResult:
     """The intake lane: validate -> verify checksums -> record -> enqueue.
+
+    process_id/table1/table2 are the PID + CBOS Table1/Table2 the
+    Automation Agent already resolved at its INIT state (the engine is now
+    the sole reserver — see that repo's RealSegmentStateMachine module
+    docstring). Optional and default None: rescan and any caller that
+    doesn't supply them get the uploader's own self-reserve fallback in
+    upload_service.py, unchanged.
 
     Idempotent on batch_id, airtight under concurrency: a lost create race
     (uq_batches_batch_id) is treated as "already known", never a 500. A
@@ -62,7 +76,7 @@ def submit_manifest(session: Session, queue: BatchQueue, manifest_path: Path) ->
 
     existing = repo.find_by_batch_id(manifest.batch_id)
     if existing is not None:
-        return _acknowledge_known(queue, manifest, existing)
+        return _acknowledge_known(queue, manifest, existing, process_id, table1, table2)
 
     try:
         manifest_service.verify_checksums(manifest_path, manifest.raw)
@@ -105,14 +119,19 @@ def submit_manifest(session: Session, queue: BatchQueue, manifest_path: Path) ->
             manifest.batch_id,
             existing.status,
         )
-        return _acknowledge_known(queue, manifest, existing)
+        return _acknowledge_known(queue, manifest, existing, process_id, table1, table2)
 
-    _enqueue_checked(queue, manifest)
+    _enqueue_checked(queue, manifest, process_id, table1, table2)
     return IntakeResult(batch_id=manifest.batch_id, status=BatchStatus.QUEUED, already_known=False)
 
 
 def _acknowledge_known(
-    queue: BatchQueue, manifest: LoadedManifest, existing: Batch
+    queue: BatchQueue,
+    manifest: LoadedManifest,
+    existing: Batch,
+    process_id: str | None = None,
+    table1: list[dict] | None = None,
+    table2: list[dict] | None = None,
 ) -> IntakeResult:
     """A batch_id we already recorded. Non-terminal (QUEUED/UPLOADING) rows
     are re-enqueued — idempotently: the in-memory guard drops the duplicate
@@ -123,18 +142,24 @@ def _acknowledge_known(
         # lost - without this, that row was stranded forever. A LIVE mid-
         # flight batch is safe: its guard key is still held, so this enqueue
         # is dropped.
-        _enqueue_checked(queue, manifest)
+        _enqueue_checked(queue, manifest, process_id, table1, table2)
     logger.info(
         "submit_manifest: batch %s already known (status=%s)", existing.batch_id, existing.status
     )
     return IntakeResult(batch_id=existing.batch_id, status=existing.status, already_known=True)
 
 
-def _enqueue_checked(queue: BatchQueue, manifest: LoadedManifest) -> None:
+def _enqueue_checked(
+    queue: BatchQueue,
+    manifest: LoadedManifest,
+    process_id: str | None = None,
+    table1: list[dict] | None = None,
+    table2: list[dict] | None = None,
+) -> None:
     """Enqueue and LOG a dropped duplicate. The guard key includes batch_id
     (see SegmentBatchTask.key), so a superseding manifest for the same
     segment/date is a different key and can never be silently swallowed."""
-    task = manifest_service.to_task(manifest)
+    task = manifest_service.to_task(manifest, process_id=process_id, table1=table1, table2=table2)
     if not queue.enqueue(task):
         logger.info("Batch %s already queued/in flight - not enqueued twice", task.key)
 

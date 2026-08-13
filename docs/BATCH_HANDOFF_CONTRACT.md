@@ -83,7 +83,11 @@ batch to reach a terminal status first.
 ## POST /batches (uploader side)
 
 ```
-POST /batches            {"manifest_path": "/abs/path/.../manifest.json"}
+POST /batches            {"manifest_path": "/abs/path/.../manifest.json",
+                           "process_id": "17658",       ← optional (see below)
+                           "table1": [{"ISRUNNABLE": true}],
+                           "table2": [{"UPLOADID": "...", "STEPNO": ..., "NAME": "...",
+                                       "STATUS": "...", "STATUSDESC": "...", "ISOPTIONAL": false}, ...]}
   202 {"batch_id": "...", "status": "queued"}
   200 {"batch_id": "...", "status": "<current>"}     ← already-known batch_id (idempotent)
   400 manifest unreadable / schema-invalid           422 checksum mismatch (batch rejected, files left in place)
@@ -97,8 +101,22 @@ POST /batches/rescan     {}
   Walks FILE_ROOT for manifest.json files not yet known to the audit trail and
   queues them. THE manual ops path (replaces drop-a-file-in-folder + /run-now)
   and the catch-up path when the bot's callback couldn't reach the uploader.
+  Never carries process_id/table1/table2 — a rescanned batch always falls
+  back to the uploader's own self-reserve path (see below).
 ```
 
+- **`process_id`/`table1`/`table2` (added 2026-08-13, see `CBOS_HANDOFF_CONTRACT.md`
+  "One reserver"):** the Automation Agent now resolves the PID at its `INIT`
+  state and hands it to the uploader here. `table1`/`table2` are CBOS's own
+  `getNewTradeProcess` response shape (`Table1`/`Table2`, uppercase keys) so
+  the uploader parses an Agent-supplied reservation with the exact same code
+  (`cbos_client.build_reservation`) as a real CBOS response. All three fields
+  are optional — omitted entirely (e.g. a rescan, or a caller that hasn't
+  adopted this field), the uploader falls back to reserving the PID itself
+  exactly as before (`reserve_process`/`find_existing_process_id`). When
+  `process_id` is present, the uploader does **not** call
+  `getNewTradeProcess` for that batch — this is what keeps PID reservation
+  single-writer across the ownership change.
 - The APScheduler folder-scan trigger is **removed** (ticket 09). Nothing is
   uploaded without a manifest.
 - Upload processing itself is unchanged: Steps 1–9, existing-PID reuse,
@@ -126,6 +144,12 @@ flips TRUE on incomplete data" hole. Implementation: ticket 07.
   would duplicate them — CBOS's per-slot STATUS readback idempotent-skips
   them on any re-run); the batch-level INCOMPLETE verdict lives on the
   batches row. A superseding manifest (re-download) is the normal fix.
+- **Agent-supplied `ISOPTIONAL`**: when the Automation Agent's Table2 already
+  marks a slot `ISOPTIONAL=true`, the uploader explicitly calls Step 8
+  (`mark_step_optional`) for it rather than assuming CBOS already recorded
+  that — it's excluded from upload matching either way
+  (`UploadCandidate.needs_upload`), but the Skip API call itself is not
+  assumed, it's made.
 - **Audited force-proceed**: `POST /batches/{batch_id}/proceed
   {"slots": [<uploadid>...], "reason": "..."}` — ops explicitly names the
   slots to mark optional; recorded in the audit trail; then the batch
