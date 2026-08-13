@@ -400,44 +400,74 @@ def _process_batch(task: SegmentBatchTask) -> None:
     try:
         repo = UploadedFileRepository(session)
 
-        # Steps 2 + 4: reserve the PROCESSID (shared by every file in the batch)
-        # and fetch each UploadID's matching rule, up front. Bounded retry so a
-        # transient CBOS blip doesn't hot-loop the batch forever - after
-        # cbos_max_retries attempts the files are routed to uploadFailed.
-        # Reuse this segment/date's PROCESSID if CBOS already has one (Step 6,
-        # getdropdown(EXISTINGPROCESSID)) instead of minting a new one on every
-        # rescan - see BaseCBOSClient.find_existing_process_id.
-        existing_process_id = client.find_existing_process_id(task.segment, trade_date) or "0"
-        if existing_process_id != "0":
-            logger.info("Batch %s: reusing existing PROCESSID=%s", task.key, existing_process_id)
-
+        # Steps 2 + 4: resolve the PROCESSID (shared by every file in the
+        # batch) and fetch each UploadID's matching rule, up front.
+        #
+        # The Automation Agent is now the sole reserver (see that repo's
+        # RealSegmentStateMachine module docstring): when it supplies a
+        # process_id on POST /batches, build the reservation directly from
+        # the table1/table2 it already resolved - no CBOS call, no retry
+        # loop, and critically no second getNewTradeProcess reservation for
+        # a segment/date that already has one.
+        #
+        # No process_id supplied (any other caller that hasn't adopted this
+        # field) falls back to self-reserving exactly as before: bounded
+        # retry so a transient CBOS blip doesn't hot-loop the batch forever
+        # - after cbos_max_retries attempts the files are routed to
+        # uploadFailed. Reuse this segment/date's PROCESSID if CBOS already
+        # has one (Step 6, getdropdown(EXISTINGPROCESSID)) instead of
+        # minting a new one on every rescan - see
+        # BaseCBOSClient.find_existing_process_id.
         reservation = rules = None
-        for attempt in range(1, settings.cbos_max_retries + 1):
+        if task.process_id:
             try:
-                reservation = client.reserve_process(task.segment, trade_date, existing_process_id)
+                reservation = cbos_client.build_reservation(
+                    task.table1 or [], task.table2 or [], task.segment, process_id=task.process_id
+                )
                 rules = upload_matching.fetch_upload_rules(reservation.candidates, client, task.segment)
-                break
             except CBOSUploadError as exc:
-                logger.warning(
-                    "Batch %s: setup attempt %d/%d failed: %s",
+                logger.error(
+                    "Batch %s: supplied process_id=%s reservation payload invalid: %s",
                     task.key,
-                    attempt,
-                    settings.cbos_max_retries,
+                    task.process_id,
                     exc,
                 )
-                if attempt < settings.cbos_max_retries:
-                    time.sleep(settings.cbos_retry_delay_seconds)
-                else:
-                    logger.error(
-                        "Batch %s: setup exhausted %d attempt(s) - routing files to uploadFailed",
+                _fail_all_files(repo, files, task, exc)
+                _set_batch_status(
+                    task, BatchStatus.FAILED, {"reason": f"invalid supplied reservation: {exc}"}
+                )
+                return
+        else:
+            existing_process_id = client.find_existing_process_id(task.segment, trade_date) or "0"
+            if existing_process_id != "0":
+                logger.info("Batch %s: reusing existing PROCESSID=%s", task.key, existing_process_id)
+
+            for attempt in range(1, settings.cbos_max_retries + 1):
+                try:
+                    reservation = client.reserve_process(task.segment, trade_date, existing_process_id)
+                    rules = upload_matching.fetch_upload_rules(reservation.candidates, client, task.segment)
+                    break
+                except CBOSUploadError as exc:
+                    logger.warning(
+                        "Batch %s: setup attempt %d/%d failed: %s",
                         task.key,
+                        attempt,
                         settings.cbos_max_retries,
+                        exc,
                     )
-                    _fail_all_files(repo, files, task, exc)
-                    _set_batch_status(
-                        task, BatchStatus.FAILED, {"reason": f"CBOS setup exhausted retries: {exc}"}
-                    )
-                    return
+                    if attempt < settings.cbos_max_retries:
+                        time.sleep(settings.cbos_retry_delay_seconds)
+                    else:
+                        logger.error(
+                            "Batch %s: setup exhausted %d attempt(s) - routing files to uploadFailed",
+                            task.key,
+                            settings.cbos_max_retries,
+                        )
+                        _fail_all_files(repo, files, task, exc)
+                        _set_batch_status(
+                            task, BatchStatus.FAILED, {"reason": f"CBOS setup exhausted retries: {exc}"}
+                        )
+                        return
         process_id = reservation.process_id
 
         # ISRUNNABLE (Table1, Step 2) - CBOS's own signal for whether this
@@ -461,6 +491,29 @@ def _process_batch(task: SegmentBatchTask) -> None:
                 {"deferred": f"PROCESSID={process_id} not runnable (ISRUNNABLE=False)"},
             )
             return
+
+        # Table2's ISOPTIONAL readback names slots CBOS (or the Automation
+        # Agent's own supplied Table2) already excuses - for EVERY such slot,
+        # zero-UploadID (computation/posting steps) or not, call the Skip
+        # API (Step 8) right away rather than waiting until after the
+        # per-file upload loop. is_optional already keeps these out of
+        # upload matching (UploadCandidate.needs_upload), but that alone
+        # assumes Step 8 was already called for them - call it explicitly
+        # here instead of assuming, so a slot the Agent marked optional (but
+        # CBOS hasn't recorded Step 8 for yet) is actually skipped via the
+        # Skip API rather than silently left PENDING.
+        for candidate in reservation.candidates:
+            if not candidate.is_optional or candidate.step_no is None:
+                continue
+            try:
+                client.mark_step_optional(process_id, candidate.step_no)
+            except CBOSUploadError as exc:
+                logger.warning(
+                    "Batch %s: mark-optional STEPNO=%s failed (non-fatal): %s",
+                    task.key,
+                    candidate.step_no,
+                    exc,
+                )
 
         # Step 3: confirm the PROCESSID we just reserved is the one CBOS's
         # good-to-go side is tracking for this segment.
@@ -513,6 +566,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
         uploaded_candidates: list[tuple] = []  # (record, dest_file_path, request_log)
         filled_upload_ids: set[str] = set()  # UploadIDs that actually received a file (Steps 5+7)
         candidates_by_upload_id = {c.upload_id: c for c in reservation.candidates}
+
         # Step 5 done, Step 7 not yet - (record, file_path, rule, guid, request_log).
         # Every file's chunks must land before ANY file is registered: CBOS's
         # backend EXE (Step 7 = "the main process that makes the file entry")
@@ -745,35 +799,23 @@ def _process_batch(task: SegmentBatchTask) -> None:
             )
             return
 
-        # Step 8 (Skip Optional Subprocess in Template): the gate passed, so
-        # every remaining empty slot is either allowlisted (legitimately
-        # absent today) or a zero-UploadID computation/posting step that never
-        # takes a file - both get marked skippable so FILEUPLOAD can go TRUE.
-        # Already-resolved slots (needs_upload False - an earlier batch on
-        # this PROCESSID filled or skipped them) are left alone. Non-fatal per
-        # slot. NOTE: the trigger (Step 11 in V6; the new Step 10 is the
-        # engine's Insti Trade GTG) and every downstream step are
-        # owned by the cams-edp-billing-automation-agent-repo scheduler, not
-        # this repo - our job ends at
-        # "every manifest file is in CBOS and nothing is left blocking
-        # FILEUPLOAD". See docs/CBOS_HANDOFF_CONTRACT.md.
+        # Step 8 (Skip Optional Subprocess in Template) already ran, up front,
+        # for every candidate Table2 itself flags ISOPTIONAL=true (see the
+        # loop right after the reservation resolves, above) - that flag is
+        # now the ONLY signal that decides a Skip API call; the Uploader no
+        # longer blanket-marks every empty/zero-UploadID slot on its own.
+        # empty_slots below is diagnostics only: whatever is still empty and
+        # NOT flagged ISOPTIONAL after the gate passed is expected to have
+        # been (or still be) marked optional by whoever owns Table2's
+        # ISOPTIONAL - CBOS itself, or the Automation Agent's supplied
+        # Table2 - not by a heuristic here.
         #
-        # This used to read "our job ends at making FILEUPLOAD go TRUE". That is
-        # no longer achievable here: trigger-first ordering (SME ruling
-        # 2026-07-24, after this code was written) means FILEUPLOAD cannot go
-        # TRUE until the ENGINE triggers, which happens after we return. We do
-        # everything needed for it to go TRUE; observing that it did is the
-        # engine's job, in WAITING_FOR_FILE_UPLOAD.
-        for candidate in empty_slots:
-            try:
-                client.mark_step_optional(process_id, candidate.step_no)
-            except CBOSUploadError as exc:
-                logger.warning(
-                    "Batch %s: mark-optional STEPNO=%s failed (non-fatal): %s",
-                    task.key,
-                    candidate.step_no,
-                    exc,
-                )
+        # NOTE: the trigger (Step 11 in V6; the new Step 10 is the engine's
+        # Insti Trade GTG) and every downstream step are owned by the
+        # cams-edp-billing-automation-agent-repo scheduler, not this repo -
+        # our job ends at "every manifest file is in CBOS and nothing WE
+        # control is left blocking FILEUPLOAD". See
+        # docs/CBOS_HANDOFF_CONTRACT.md.
 
         # Step 9: our own confirmation that the files landed (cams-edp-billing-automation-agent-repo is the
         # authoritative FILEUPLOAD poller + the one that triggers). Per segment.
@@ -783,14 +825,20 @@ def _process_batch(task: SegmentBatchTask) -> None:
         # slots we believe we satisfied and how - without it, a stuck poll is
         # twenty identical MSG=FALSE lines and no way to tell whether a file was
         # missed, mis-matched, or genuinely still processing on CBOS's side.
-        marked_optional = [str(c.upload_id) for c in empty_slots]
+        # empty_slots already excludes is_optional=True candidates (see
+        # UploadCandidate.needs_upload) - pull those separately from the
+        # full candidate list so the log shows what was actually skipped
+        # via Step 8 versus what is still genuinely pending.
+        already_optional = [str(c.upload_id) for c in reservation.candidates if c.is_optional]
+        still_pending = [str(c.upload_id) for c in empty_slots]
         logger.info(
             "Batch %s: Step 9 gate - %d Table2 slot(s) considered: "
-            "filled=%s marked-optional/skipped=%s",
+            "filled=%s already-optional=%s still-pending=%s",
             task.key,
-            len(marked_optional) + len(filled_upload_ids),
+            len(reservation.candidates),
             sorted(filled_upload_ids) or "none",
-            marked_optional or "none",
+            already_optional or "none",
+            still_pending or "none",
         )
         # Guarded like every other CBOS call in this flow (Steps 1, 3, 6, 8), and for a
         # sharper reason than symmetry: Step 9 is DIAGNOSTICS, never the verdict.

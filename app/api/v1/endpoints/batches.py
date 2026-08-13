@@ -1,10 +1,17 @@
 """The batch intake API — a THIN router (ADR 3): sessions via the documented
 dependency, every decision in app/services/batch_service.py.
 
-POST /batches            {"manifest_path": ...}  -> 202 queued / 200 known
+POST /batches            {"manifest_path": ..., "process_id"?, "table1"?,
+                           "table2"?}              -> 202 queued / 200 known
 GET  /batches/{batch_id}                          -> status + per-file outcomes
 POST /batches/rescan                              -> queue unconsumed manifests
 POST /batches/{batch_id}/proceed {slots, reason}  -> audited force-proceed
+
+process_id/table1/table2 are optional: when the Automation Agent supplies
+them (it now resolves the PID at its INIT state), upload_service skips its
+own getNewTradeProcess reservation call and consumes this payload directly
+instead (see upload_service.py). Omitted entirely, intake behaves exactly
+as before - the uploader self-reserves.
 """
 
 import logging
@@ -27,6 +34,11 @@ router = APIRouter(prefix="/batches", tags=["batches"])
 
 class BatchSubmission(BaseModel):
     manifest_path: str
+    # Optional: the Automation Agent's INIT-resolved PID + CBOS Table1/
+    # Table2 (see module docstring). None -> upload_service self-reserves.
+    process_id: str | None = None
+    table1: list[dict] | None = None  # CBOS's Table1 shape: a one-row list
+    table2: list[dict] | None = None
 
 
 class ProceedRequest(BaseModel):
@@ -42,7 +54,12 @@ def submit_batch(
 ):
     try:
         result = batch_service.submit_manifest(
-            session, request.app.state.batch_queue, Path(submission.manifest_path)
+            session,
+            request.app.state.batch_queue,
+            Path(submission.manifest_path),
+            process_id=submission.process_id,
+            table1=submission.table1,
+            table2=submission.table2,
         )
     except ManifestError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

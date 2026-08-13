@@ -56,9 +56,12 @@ def test_full_mcx_batch_uploads_all_three(monkeypatch):
     finally:
         session.close()
 
-    # Boundary: the empty non-zero slot (320 = STEPNO 4, no file today) is marked
-    # optional via Step 8, so FILEUPLOAD can reach TRUE.
-    assert 4 in [stepno for _, stepno in client.marked_optional]
+    # Boundary: the empty non-zero slot (320 = STEPNO 4, no file today) is
+    # allowlisted (optional_slots.yaml), so it does not park the batch
+    # INCOMPLETE - but Step 8 is no longer auto-called for it. Skip is now
+    # driven ONLY by Table2's own ISOPTIONAL readback, and the mock's Table2
+    # does not flag slot 320 optional, so it stays unmarked here.
+    assert 4 not in [stepno for _, stepno in client.marked_optional]
 
 
 def test_uploader_does_not_trigger():

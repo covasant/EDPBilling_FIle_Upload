@@ -14,7 +14,7 @@ boundary so the two sides don't collide.
 
 | Step | Call | Owner |
 |------|------|-------|
-| 2 | `getNewTradeProcess(PROCESSID=0)` — reserve PID + read Table2 | **Uploader** |
+| 2 | `getNewTradeProcess(PROCESSID=0)` — reserve PID + read Table2 | **cams-edp-billing-automation-agent-repo** (moved from the uploader — see "One reserver" below); uploader consumes the process_id/Table1/Table2 handed to it on `POST /batches` |
 | 3 | `CheckProcessIDExist` | Uploader (sanity, non-fatal) |
 | 4 | `GetNewTradeProcessPromodalUploadSettings` — per-slot rules | **Uploader** |
 | 5 | `SaveTradePromodalUploadChunkFile` — upload bytes → GUID | **Uploader** |
@@ -48,11 +48,17 @@ reaching `UNCONFIRMED` and, with it, the engine's trigger — and was removed.)
 > Verified live end-to-end 2026-07-24 (MCX straight-through; EQ INCOMPLETE →
 > guard fails pre-trigger with zero trigger calls → ops proceed+retry → COMPLETED).
 
-## The two things that cross the boundary — both via CBOS
+## The two things that cross the boundary
 
-1. **PROCESSID** — the uploader reserves it (Step 2). `cams-edp-billing-automation-agent-repo` reads it back
-   with `getdropdown(EXISTINGPROCESSID)` for that segment/date and triggers *that*
-   PID. Never passed directly.
+1. **PROCESSID.** `cams-edp-billing-automation-agent-repo` now reserves it (Step 2), at its `INIT` state,
+   right after the holiday check passes — the engine is the **sole reserver**
+   (see "One reserver" below; this reverses the pre-2026-08-13 rule where the
+   uploader reserved). It's passed **directly** now: the engine hands
+   `process_id` + Table1 + Table2 to the uploader on `POST /batches`, which
+   consumes them instead of calling `getNewTradeProcess` itself. The engine's
+   `getdropdown(EXISTINGPROCESSID)` read-back (`_resolve_process_id`) remains
+   only as a defensive fallback for a segment that somehow reaches `TRIGGERED`
+   without a process_id already resolved.
 2. **`FILEUPLOAD` status flag** — flips `TRUE` once every expected slot is filled
    or marked optional. That flag *is* the "files are in" signal `cams-edp-billing-automation-agent-repo`
    waits on. There is no back-channel: if it doesn't flip within the segment's
@@ -61,18 +67,30 @@ reaching `UNCONFIRMED` and, with it, the engine's trigger — and was removed.)
 ## Rules that must hold (or the handoff breaks)
 
 1. **One reserver.** `getNewTradeProcess(PROCESSID=0)` mints a **new** PID every
-   call. If both repos reserve, there are two PIDs for one segment/date — the
-   uploader fills PID-A, `cams-edp-billing-automation-agent-repo` triggers PID-B (empty) → timeout. So the
-   **uploader is the sole reserver**, and **`cams-edp-billing-automation-agent-repo` reads-or-waits only**.
-   ✅ *Resolved 2026-07-23:* `cams-edp-billing-automation-agent-repo`'s "reserve if none exists" branch was
-   removed (`RealSegmentStateMachine._resolve_process_id` on `feat/edpb-alignment`
-   is read-only — `getdropdown(EXISTINGPROCESSID)` misses are a normal wait, and
-   the agent never calls reserve-mode `getNewTradeProcess`); the uploader side
-   reuses an existing PID before minting (`find_existing_process_id`,
-   `feat/existing-pid` line).
-2. **One PID per (segment, date).** The uploader must reserve exactly once per
-   segment/date — **not** per exchange folder — so `getdropdown` is unambiguous.
-   (Batch unit = `(segment, date)`; exchange is file metadata.)
+   call. If both repos reserve, there are two PIDs for one segment/date — one
+   side fills PID-A, the other triggers/expects PID-B (empty) → timeout or a
+   mismatch. This is exactly what happened on **2026-07-21** when both sides
+   reserved.
+   ✅ *2026-07-23 – 2026-08-13:* the uploader was the sole reserver;
+   `cams-edp-billing-automation-agent-repo`'s `_resolve_process_id` was read-only
+   (`getdropdown(EXISTINGPROCESSID)`).
+   🔁 **Changed 2026-08-13:** ownership moved to `cams-edp-billing-automation-agent-repo`.
+   Its `INIT` state is now the sole reserver: it reserves a fresh PID (or
+   reconciles an existing one already on the row — never both, never a
+   second mint for a segment/date that already has one) and hands
+   process_id/Table1/Table2 to the uploader on `POST /batches`. The uploader
+   no longer calls `getNewTradeProcess` for a batch that carries a supplied
+   process_id (`upload_service.py`'s `task.process_id` branch); it only falls
+   back to self-reserving (`reserve_process`/`find_existing_process_id`) for a
+   caller that hasn't adopted this field. The engine's own
+   `_resolve_process_id`/`getdropdown` read-back is now a defensive fallback,
+   not the primary path — kept in case a segment somehow reaches `TRIGGERED`
+   without a process_id already resolved. Whichever side reserves, the
+   invariant that matters is unchanged: **exactly one caller mints a PID for
+   a given segment/date, ever.**
+2. **One PID per (segment, date).** Whoever reserves must do so exactly once
+   per segment/date — **not** per exchange folder — so nothing downstream is
+   ambiguous. (Batch unit = `(segment, date)`; exchange is file metadata.)
 3. **Timing.** The uploader must finish (FILEUPLOAD=TRUE) before the segment's
    trigger window closes on the `cams-edp-billing-automation-agent-repo` side.
 

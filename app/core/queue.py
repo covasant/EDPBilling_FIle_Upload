@@ -35,7 +35,15 @@ class SegmentBatchTask:
     (docs/BATCH_HANDOFF_CONTRACT.md). mode="proceed" is the audited
     force-proceed path for an INCOMPLETE batch: no files to upload - just
     mark the named slots optional and re-confirm (see
-    upload_service.proceed_batch)."""
+    upload_service.proceed_batch).
+
+    process_id/table1/table2: the PID + CBOS Table1/Table2 the Automation
+    Agent already resolved at its INIT state, forwarded on POST /batches
+    (the engine is now the sole reserver — see that repo's
+    RealSegmentStateMachine module docstring). None (the default) means the
+    caller hasn't resolved one - upload_service falls back to its own
+    reserve_process call, unchanged, so nothing breaks for callers that
+    haven't adopted this field yet."""
 
     folder_date: str
     segment: str
@@ -45,6 +53,9 @@ class SegmentBatchTask:
     mode: Literal["upload", "proceed"] = "upload"
     proceed_slots: list[str] = field(default_factory=list)  # UploadIDs ops chose (mode="proceed")
     proceed_reason: str | None = None
+    process_id: str | None = None
+    table1: list[dict] | None = None
+    table2: list[dict] | None = None
 
     @property
     def key(self) -> str:

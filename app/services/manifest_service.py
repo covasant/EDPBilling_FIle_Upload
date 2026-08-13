@@ -159,13 +159,25 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def to_task(manifest: LoadedManifest) -> SegmentBatchTask:
+def to_task(
+    manifest: LoadedManifest,
+    process_id: str | None = None,
+    table1: list[dict] | None = None,
+    table2: list[dict] | None = None,
+) -> SegmentBatchTask:
+    """process_id/table1/table2: the PID + CBOS Table1/Table2 the
+    Automation Agent already resolved (see batch_service.submit_manifest).
+    Not part of the manifest schema itself — they ride alongside it as
+    separate POST /batches request fields."""
     return SegmentBatchTask(
         folder_date=manifest.folder_date,
         segment=manifest.segment,
         files=manifest.files,
         batch_id=manifest.batch_id,
         correlation_id=manifest.correlation_id,
+        process_id=process_id,
+        table1=table1,
+        table2=table2,
     )
 
 
