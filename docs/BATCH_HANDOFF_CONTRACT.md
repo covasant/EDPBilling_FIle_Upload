@@ -17,7 +17,7 @@ with an explicit, atomic, checksummed handoff. Companion to
 
 One per (segment, trade date): `{FILE_ROOT}/{DD-MM-YYYY}/{SEGMENT}/manifest.json`.
 Schema: `edpb_core/manifest.schema.json` (packaged in the shared `edpb-core`
-package under `cams-edp-billing-automation-agent-repo/packages/edpb-core` — THE canonical copy). Example:
+package, sourced from `cams-mosl-common-repo` — THE canonical copy). Example:
 
 ```json
 {

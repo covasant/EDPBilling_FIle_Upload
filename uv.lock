@@ -242,7 +242,7 @@ wheels = [
 [[package]]
 name = "edpb-core"
 version = "0.1.0"
-source = { editable = "../cams-edp-billing-automation-agent-repo/packages/edpb-core" }
+source = { git = "https://git-codecommit.ap-south-1.amazonaws.com/v1/repos/cams-mosl-common-repo?rev=ec96da4343791a2818d1442162eacc76d96d9ba5#ec96da4343791a2818d1442162eacc76d96d9ba5" }
 dependencies = [
     { name = "jsonschema" },
 ]
@@ -254,16 +254,6 @@ mock = [
     { name = "python-multipart" },
     { name = "uvicorn" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastapi", marker = "extra == 'mock'", specifier = ">=0.110" },
-    { name = "jsonschema", specifier = ">=4.21" },
-    { name = "pydantic", marker = "extra == 'mock'", specifier = ">=2.6" },
-    { name = "python-multipart", marker = "extra == 'mock'", specifier = ">=0.0.9" },
-    { name = "uvicorn", marker = "extra == 'mock'", specifier = ">=0.29" },
-]
-provides-extras = ["mock"]
 
 [[package]]
 name = "edpbilling-file-upload"
@@ -296,7 +286,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "edpb-core", extras = ["mock"], editable = "../cams-edp-billing-automation-agent-repo/packages/edpb-core" },
+    { name = "edpb-core", extras = ["mock"], git = "https://git-codecommit.ap-south-1.amazonaws.com/v1/repos/cams-mosl-common-repo?rev=ec96da4343791a2818d1442162eacc76d96d9ba5" },
     { name = "fastapi", specifier = "==0.115.0" },
     { name = "jsonschema", specifier = "==4.25.1" },
     { name = "psycopg2-binary", specifier = "==2.9.9" },
