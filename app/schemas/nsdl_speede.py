@@ -15,7 +15,8 @@ class NsdlSpeedeUploadRequest(BaseModel):
     """POST /settlement/nsdl_speede_upload body. No file bytes and no file
     names - the SPEED-e download bot has already placed the 12 reports on the
     shared folder (settings.nsdl_speede_shared_folder_path) under their
-    "NSDL <code> <label>.csv" names."""
+    "NSDL <code> <label> <n>.csv" names; the service picks whichever <n> is
+    highest for each report."""
 
     # Pattern-checked because this string does three jobs - call 1's DATE,
     # call 4's PARAM1 (what the stored procedure runs against), and the dated

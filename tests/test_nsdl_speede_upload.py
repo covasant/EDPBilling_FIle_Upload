@@ -62,13 +62,14 @@ def _folder() -> Path:
     return folder
 
 
-def _drop(account: str, report: str, rows: int = 2) -> Path:
-    """Write one report the way the download bot does, with no trailing
-    newline - exactly how every real SPEED-e export ends."""
+def _drop(account: str, report: str, rows: int = 2, n: int = 1) -> Path:
+    """Write one report the way the download bot does: "NSDL <code> <label>
+    <n>.csv", no trailing newline - exactly how every real SPEED-e export
+    ends. `n` defaults to 1 - the first (and usually only) run of the day."""
     header = _HEADERS[report]
     columns = len(header.split(","))
     body = [",".join(f"v{r}_{c}" for c in range(columns)) for r in range(rows)]
-    path = _folder() / f"NSDL {account} {report}.csv"
+    path = _folder() / f"NSDL {account} {report} {n}.csv"
     path.write_bytes("\n".join([header, *body]).encode())
     return path
 
@@ -115,6 +116,9 @@ def test_open_holding_has_a_category_per_account_but_the_rest_share_one():
 def test_file_names_match_the_download_bots_naming():
     from app.services.nsdl_speede_service import CATALOGUE
 
+    # The catalogue's own file_name is the generic (unnumbered) base - what
+    # actually gets read/reported is the highest "<n>" _locate() finds on disk
+    # (see test_the_highest_numbered_file_on_disk_is_uploaded below).
     names = {e.file_name for e in CATALOGUE}
     assert "NSDL CMPA OPEN HOLDING.csv" in names
     assert "NSDL NARNO confiscate.csv" in names
@@ -161,7 +165,7 @@ def test_transmitted_name_carries_the_apis_required_token(client):
     # The on-disk name cannot satisfy FILE NAME (CONTAINS); the transmitted one
     # is built from the live token instead, account-qualified so three accounts
     # feeding one category stay distinguishable in the history log.
-    assert file_result["file_name"] == "NSDL CMFA OPEN HOLDING.csv"
+    assert file_result["file_name"] == "NSDL CMFA OPEN HOLDING 1.csv"
     assert file_result["transmit_file_name"] == "View_Open_Holdings_CMFA.csv"
 
 
@@ -197,7 +201,7 @@ def test_a_closing_newline_is_added_so_the_last_row_is_not_dropped(client):
 
 
 def test_no_newline_is_added_when_the_file_already_ends_with_one(client):
-    path = _folder() / "NSDL CMPA OPEN HOLDING.csv"
+    path = _folder() / "NSDL CMPA OPEN HOLDING 1.csv"
     header = _HEADERS["OPEN HOLDING"]
     row = ",".join(f"v{c}" for c in range(18))
     path.write_bytes(f"{header}\n{row}\n".encode())  # already terminated
@@ -237,7 +241,7 @@ def test_strip_can_be_turned_off(client, monkeypatch):
 
 
 def test_wrong_column_count_is_rejected_before_a_tran_id_is_burned(client):
-    path = _folder() / "NSDL CMPA OPEN HOLDING.csv"
+    path = _folder() / "NSDL CMPA OPEN HOLDING 1.csv"
     path.write_bytes(b"only,three,columns\n1,2,3")
 
     resp = _post(client, files=[{"account": "CMPA", "report": "OPEN HOLDING"}])
@@ -251,7 +255,7 @@ def test_wrong_column_count_is_rejected_before_a_tran_id_is_burned(client):
 
 def test_missing_file_fails_only_that_file(client):
     _drop_all()
-    (_folder() / "NSDL CMFA pledge.csv").unlink()
+    (_folder() / "NSDL CMFA pledge 1.csv").unlink()
 
     body = _post(client).json()
 
@@ -276,7 +280,7 @@ def test_files_are_read_from_the_bots_dated_folder(client):
     root = Path(settings.nsdl_speede_shared_folder_path)
     # The configured path is the ROOT; the day's folder sits under it, named
     # exactly as the download bot names its run directory.
-    assert (root / "nsdl_speede_05082026" / "NSDL CMPA pledge.csv").is_file()
+    assert (root / "nsdl_speede_05082026" / "NSDL CMPA pledge 1.csv").is_file()
 
     assert _post(client).json()["summary"]["success"] >= 1
 
@@ -292,6 +296,24 @@ def test_a_day_with_no_download_folder_fails_with_a_pointed_message(client):
 def test_a_non_iso_trade_date_is_rejected(client):
     # DD-MM-YYYY would resolve to the wrong folder AND the wrong PARAM1.
     assert _post(client, trade_date="05-08-2026").status_code == 422
+
+
+# ---- picking the latest of several same-day runs ---------------------------
+
+
+def test_the_highest_numbered_file_on_disk_is_uploaded(client):
+    # The download bot never overwrites - a 3rd trigger for the same day
+    # leaves "... 1.csv", "... 2.csv" and "... 3.csv" all sitting in the
+    # folder together. The upload must pick "3" without being told it's the
+    # 3rd run - it just reads whatever's highest on disk.
+    _drop("CMPA", "confiscate", n=1)
+    _drop("CMPA", "confiscate", n=2)
+    latest = _drop("CMPA", "confiscate", n=3)
+
+    resp = _post(client, files=[{"account": "CMPA", "report": "confiscate"}])
+
+    file_result = resp.json()["files"][0]
+    assert file_result["file_name"] == latest.name == "NSDL CMPA confiscate 3.csv"
 
 
 # ---- idempotency: the rule that protects against duplicated rows -----------

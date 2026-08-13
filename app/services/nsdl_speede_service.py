@@ -34,6 +34,7 @@ that file loudly rather than guessing a number.
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -115,9 +116,13 @@ CATALOGUE: tuple[SpeedeFile, ...] = tuple(
         account=account,
         report=report,
         upload_name=_upload_name(account, report),
-        # The download bot's naming, from _report_path in
-        # src/portals/nsdl_speede/reports.py. Account-qualified because the
-        # portal's own names collide across logins.
+        # The catalogue's base name, e.g. "NSDL CMFA confiscate.csv" - a
+        # display default and the seed for _transmit_name's fallback token.
+        # It is NOT what's read from disk: the download bot numbers every
+        # file it writes ("NSDL <code> <label> <n>.csv", never overwriting -
+        # see _report_path in the download repo's
+        # src/portals/nsdl_speede/reports.py), so _locate() below always
+        # resolves to whichever "<n>" is highest on disk for this entry.
         file_name=f"NSDL {account} {report}.csv",
     )
     for account in ACCOUNTS
@@ -212,17 +217,35 @@ def day_folder(trade_date: str) -> Path:
 
 
 def _locate(entry: SpeedeFile, trade_date: str) -> Path:
+    """The highest-numbered "NSDL <code> <label> <n>.csv" for this entry.
+
+    The download bot never overwrites - each trigger writes its own numbered
+    copy (see _report_path in the download repo's
+    src/portals/nsdl_speede/reports.py). So "today's file" isn't a fixed name;
+    it's whichever "<n>" is highest on disk right now. This is re-derived from
+    the folder on every call - nothing here counts how many times the bot or
+    this upload endpoint has been triggered - so a caller never has to say
+    "this is the 3rd run"; the highest number already on disk says that for
+    them.
+    """
     folder = day_folder(trade_date)
-    file_path = folder / entry.file_name
-    if not file_path.is_file():
-        if not folder.is_dir():
-            raise FileNotFoundError(
-                f"{folder} does not exist - the download bot has not run for {trade_date}, "
-                f"or NSDL_SPEEDE_SHARED_FOLDER_PATH points at a day's folder rather than "
-                f"its parent"
-            )
-        raise FileNotFoundError(f"{entry.file_name} not found under {folder}")
-    return file_path
+    if not folder.is_dir():
+        raise FileNotFoundError(
+            f"{folder} does not exist - the download bot has not run for {trade_date}, "
+            f"or NSDL_SPEEDE_SHARED_FOLDER_PATH points at a day's folder rather than "
+            f"its parent"
+        )
+
+    stem = f"NSDL {entry.account} {entry.report}"
+    numbered = re.compile(rf"^{re.escape(stem)} (\d+)\.csv$", re.IGNORECASE)
+    candidates = [
+        (int(match.group(1)), path)
+        for path in folder.glob(f"{stem} *.csv")
+        if (match := numbered.match(path.name))
+    ]
+    if not candidates:
+        raise FileNotFoundError(f"no '{stem} <n>.csv' file found under {folder}")
+    return max(candidates, key=lambda pair: pair[0])[1]
 
 
 def _result(record: NsdlSpeedeUpload, entry: SpeedeFile, detail: str | None) -> dict:
@@ -281,6 +304,9 @@ def _upload_one(
     transmit_name = _transmit_name(entry, config)
     repo.update(
         record,
+        # Overwrite the catalogue's generic placeholder with the actual
+        # numbered file _locate() picked - the row should say which one it was.
+        file_name=file_path.name,
         upload_name=category.upload_name,
         upload_id=category.upload_id,
         transmit_file_name=transmit_name,
