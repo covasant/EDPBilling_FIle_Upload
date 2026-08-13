@@ -829,14 +829,23 @@ def _process_batch(task: SegmentBatchTask) -> None:
         # UploadCandidate.needs_upload) - pull those separately from the
         # full candidate list so the log shows what was actually skipped
         # via Step 8 versus what is still genuinely pending.
-        already_optional = [str(c.upload_id) for c in reservation.candidates if c.is_optional]
-        still_pending = [str(c.upload_id) for c in empty_slots]
+        #
+        # Logged as "STEPNO:UploadID" rather than a bare UploadID - many
+        # slots share UploadID "0" (every zero-UploadID computation/posting
+        # step), so a bare list of zeros says nothing about WHICH steps are
+        # still pending; the step number is what actually identifies them.
+        def _step_upload_pairs(candidates) -> list[str]:
+            return sorted(f"{c.step_no}:{c.upload_id}" for c in candidates)
+
+        filled_candidates = [c for c in reservation.candidates if str(c.upload_id) in filled_upload_ids]
+        already_optional = _step_upload_pairs(c for c in reservation.candidates if c.is_optional)
+        still_pending = _step_upload_pairs(empty_slots)
         logger.info(
             "Batch %s: Step 9 gate - %d Table2 slot(s) considered: "
             "filled=%s already-optional=%s still-pending=%s",
             task.key,
             len(reservation.candidates),
-            sorted(filled_upload_ids) or "none",
+            _step_upload_pairs(filled_candidates) or "none",
             already_optional or "none",
             still_pending or "none",
         )
