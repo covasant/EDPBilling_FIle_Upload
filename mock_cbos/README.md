@@ -1,7 +1,7 @@
 # Mock CBOS — moved to edpb-core
 
 The canonical v5 mock CBOS server now lives in the shared `edpb-core`
-package (`cams-edp-billing-automation-agent-repo/packages/edpb-core`, module `edpb_core.mock_cbos`) so
+package (sourced from `cams-mosl-common-repo`, module `edpb_core.mock_cbos`) so
 all three repos test against the SAME simulation. The modules here are thin
 import shims kept so existing imports (`mock_cbos.app:app`, `from
 mock_cbos.state import STATE`) keep working.

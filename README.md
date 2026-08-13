@@ -126,13 +126,11 @@ edpb/
 
 ## Setup
 
-> **Prerequisite — sibling checkout of `cams-edp-billing-automation-agent-repo`.** This repo depends on the
-> shared `edpb-core` package via `../cams-edp-billing-automation-agent-repo/packages/edpb-core` (see
-> `[tool.uv.sources]` in `pyproject.toml`). Before `uv sync`, clone `cams-edp-billing-automation-agent-repo`
-> into the **same parent directory** as this repo and make sure it's on a branch
-> that contains `packages/edpb-core`. Missing this gives a `uv sync`
-> path-resolution error for `edpb-core`. For the e2e / mock-CBOS stack you also
-> need the mock extra (`edpb-core[mock]`).
+> **Dependency — `edpb-core` from `cams-mosl-common-repo`.** This repo depends on the
+> shared `edpb-core` package, resolved via a git source pinned to a specific commit of
+> `cams-mosl-common-repo` (see `[tool.uv.sources]` in `pyproject.toml`). `uv sync` needs
+> read access (git credentials) to that CodeCommit repo. For the e2e / mock-CBOS stack you
+> also need the mock extra (`edpb-core[mock]`).
 
 The repo ships `pyproject.toml` + `uv.lock`, so uv is the primary path — it
 reads `.python-version` and builds the venv on 3.12 for you:
