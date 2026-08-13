@@ -19,7 +19,8 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-edpb-core = { git = "https://git-codecommit.ap-south-1.amazonaws.com/v1/repos/cams-mosl-common-repo", rev = "ec96da4343791a2818d1442162eacc76d96d9ba5" }
+# Sibling checkout (same parent dir on every machine incl. the VDI).
+edpb-core = { path = "../cams-edp-billing-automation-agent-repo/packages/edpb-core", editable = true }
 
 [dependency-groups]
 dev = [
