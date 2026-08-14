@@ -360,6 +360,63 @@ def test_only_the_first_few_lines_are_sniffed(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Fixed-width files (BSE's SCRIP master)
+# ---------------------------------------------------------------------------
+
+# BSE's scrip master, trade date 2026-08-11: fixed-width records, no separator
+# anywhere in the line. Counted on a comma, a pipe OR a tab every line is one
+# field, so the sniff reported [1, 1, 1, 1, 1] against rule 81's declared 30 and
+# the file was rejected before CBOS ever saw it.
+_SCRIP_CC_FIXED_WIDTH = "".join(
+    f"5000{n:02d}   RELIANCE   EQ  A  1  10.00  N  BSE  20260811  ACTIVE       \n"
+    for n in range(1, 6)
+)
+
+
+def test_fixed_width_file_is_not_rejected(tmp_path):
+    """No candidate delimiter finds a boundary, so the file's shape is UNKNOWN,
+    not wrong. Skip the check and let CBOS arbitrate - the same treatment a
+    .xlsx already gets. Observed live 2026-08-11: SCRIP_CC_110826.txt was
+    rejected for "has [1, 1, 1, 1, 1] column(s), expected 30"."""
+    rules = [_rule(81, "SCRIP", ext="TXT", cols=30, name="BSE SCRIP")]
+    f = _write(tmp_path, "SCRIP_CC_110826.txt", content=_SCRIP_CC_FIXED_WIDTH)
+
+    assert match_file(f, rules).upload_id == "81"
+
+
+def test_the_skip_needs_every_line_under_every_delimiter(tmp_path):
+    """The escape hatch is narrow on purpose. One delimiter that DOES find a
+    boundary means the format is understood, so a width disagreement is real
+    evidence and must still reject - even though the other two count 1."""
+    rules = [_rule(139, "CO_CONTRACT", ext="*", cols=70)]
+    f = _write(tmp_path, "co_contract", content=_CO_CONTRACT_REAL)  # pipe parses to 69
+
+    with pytest.raises(ColumnCountMismatch):
+        match_file(f, rules)
+
+
+def test_a_single_column_rule_still_matches_normally(tmp_path):
+    """A rule that genuinely declares 1 column matches on the width and never
+    reaches the skip - the skip must not be what makes these files pass."""
+    rules = [_rule(90, "ISIN_LIST", ext="TXT", cols=1)]
+    f = _write(tmp_path, "ISIN_LIST_110826.txt", content="INE002A01018\nINE009A01021\n")
+
+    assert match_file(f, rules).upload_id == "90"
+
+
+def test_an_empty_file_is_still_rejected_not_skipped(tmp_path):
+    """A blank placeholder has no widths at all, so it must land on EmptyFile
+    rather than slip through the "all widths are 1" hatch."""
+    from app.services.upload_matching import EmptyFile
+
+    rules = [_rule(81, "SCRIP", ext="TXT", cols=30, name="BSE SCRIP")]
+    f = _write(tmp_path, "SCRIP_CC_110826.txt", content="\n   \n\n")
+
+    with pytest.raises(EmptyFile):
+        match_file(f, rules)
+
+
+# ---------------------------------------------------------------------------
 # Step-40 fallback for a slot whose Step-4 pattern is blank
 # ---------------------------------------------------------------------------
 

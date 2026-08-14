@@ -245,7 +245,12 @@ def match_file(file_path: Path, rules: list[UploadRule], exchange: str | None = 
 
     Raises NoMatchingUploadRule if NO pattern matches, AmbiguousUploadRule if a
     tie can't be broken, ColumnCountMismatch if the matched rule's column count
-    is checked and doesn't fit."""
+    is checked and doesn't fit.
+
+    The column check only rejects on evidence. When no candidate delimiter finds
+    ANY column boundary the file's shape is unknown, not wrong, and the check is
+    skipped with a warning - exactly as it already is for formats _count_columns
+    cannot read at all."""
     name = file_path.stem.upper()
     extension = file_path.suffix.lstrip(".").upper()
     logger.info("File = %s (exchange=%s)", file_path.name, exchange)
@@ -309,6 +314,32 @@ def match_file(file_path: Path, rules: list[UploadRule], exchange: str | None = 
                 (d for d, widths in sniffed.items() if rule.column_count in widths), None
             )
             if matched_delimiter is None:
+                # Width 1 under EVERY candidate delimiter on EVERY sniffed line means
+                # the sniff never found a delimiter at all: the file is fixed-width, or
+                # uses a separator _candidate_delimiters() does not try. That is the
+                # SAME state of knowledge as the .xlsx case - where _count_columns
+                # returns None and the check is skipped - so the two must agree, or a
+                # file is refused for being unreadable by US rather than malformed.
+                #
+                # Observed live: BSE's SCRIP_CC (trade date 2026-08-11) sniffed
+                # [1, 1, 1, 1, 1] against rule 81's declared 30 and never reached CBOS.
+                # That is the third valid file this check has blocked (see
+                # _count_columns for the NCDEX and NSE ones), so close the class rather
+                # than add a fourth delimiter and wait for the fourth incident.
+                #
+                # Note this branch is unreachable when the rule declares 1 column - a
+                # genuine single-column file matches above and never gets here.
+                if all(width == 1 for widths in sniffed.values() for width in widths):
+                    logger.warning(
+                        "upload_matching: cannot see columns in %s under any of %s "
+                        "(fixed-width, or a delimiter we don't try) - skipping the "
+                        "column check, UploadID=%s declared %d; CBOS Step 5/7/9 arbitrates",
+                        file_path.name,
+                        ", ".join(repr(d) for d in sniffed),
+                        rule.upload_id,
+                        rule.column_count,
+                    )
+                    return rule
                 # Reported under the CONFIGURED delimiter, which is the estate's norm and
                 # what the reader will assume. The tried list is named so the next person
                 # to read this is not misled the way a bare "has 1 column(s)" misled us.
