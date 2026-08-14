@@ -248,19 +248,22 @@ def _raise_on_failed_status(path: str, body: dict) -> None:
 
 _UPLOAD_PENDING_DESC = "UPLOAD FILE PENDING"
 
-# Values accepted as "this slot IS optional" in Table2's ISOPTIONAL readback.
-# Deliberately a strict allowlist, NOT bool(): CBOS sends numbers and strings
-# interchangeably elsewhere (PROCESSID: 17658 vs "17658"), and bool("0") is
-# True in Python - which would silently mark EVERY slot optional, hollow out
-# the completeness gate, and let FILEUPLOAD go TRUE with mandatory files
-# missing. Mis-parsing in the other direction merely re-parks a batch ops
-# already approved (annoying, recoverable), so unknown values read as "not
-# optional" - the gate fails closed.
+# Values accepted as "this slot IS optional" in Table2's ISOPTIONALVISIBLE
+# readback. Deliberately a strict allowlist, NOT bool(): CBOS sends numbers
+# and strings interchangeably elsewhere (PROCESSID: 17658 vs "17658"), and
+# bool("0") is True in Python - which would silently mark EVERY slot
+# optional, hollow out the completeness gate, and let FILEUPLOAD go TRUE
+# with mandatory files missing. Mis-parsing in the other direction merely
+# re-parks a batch ops already approved (annoying, recoverable), so unknown
+# values read as "not optional" - the gate fails closed.
 #
-# KNOWN-UNKNOWN (CBOS_HANDOFF_CONTRACT.md): the API doc uses ISOPTIONAL="0"
-# in the *Step-8 request* to mean "make optional" - whether the *readback*
-# mirrors that inversion is unverified. The mock answers Python booleans.
-# Verify the real readback vocabulary in UAT before trusting "1" here.
+# RESOLVED (was a KNOWN-UNKNOWN in CBOS_HANDOFF_CONTRACT.md): a real
+# captured getNewTradeProcess response (2026-08-14) confirms Table2 carries
+# BOTH ISOPTIONAL and ISOPTIONALVISIBLE per step, and they can DISAGREE
+# (one sample had ISOPTIONAL=false, ISOPTIONALVISIBLE=true on the same
+# step). ISOPTIONALVISIBLE is the field CBOS actually uses to decide
+# skip/optional - ISOPTIONAL is read back but not authoritative. Use
+# ISOPTIONALVISIBLE here, never ISOPTIONAL.
 # (True covers the integer 1 too: set membership uses ==, and 1 == True.)
 _ISOPTIONAL_TRUE = {True, "1", "true", "TRUE", "True", "Y", "YES", "yes"}
 
@@ -284,10 +287,12 @@ class UploadCandidate:
     name: str
     status: str | None = None
     status_desc: str | None = None
-    # Table2's ISOPTIONAL readback: True once Step 8 marked the slot optional
-    # (this batch, an earlier one, or an ops force-proceed). Caught by live
-    # E2E: ignoring it made the completeness gate re-park a batch whose
-    # missing slots ops had ALREADY approved via POST /batches/{id}/proceed.
+    # Table2's ISOPTIONALVISIBLE readback (NOT ISOPTIONAL - the two can
+    # disagree, see _ISOPTIONAL_TRUE's comment): True once Step 8 marked the
+    # slot optional (this batch, an earlier one, or an ops force-proceed).
+    # Caught by live E2E: ignoring it made the completeness gate re-park a
+    # batch whose missing slots ops had ALREADY approved via
+    # POST /batches/{id}/proceed.
     is_optional: bool = False
 
     @property
@@ -396,7 +401,7 @@ def build_reservation(
             name=str(row.get("NAME") or ""),
             status=row.get("STATUS"),
             status_desc=row.get("STATUSDESC"),
-            is_optional=_parse_isoptional(row.get("ISOPTIONAL")),
+            is_optional=_parse_isoptional(row.get("ISOPTIONALVISIBLE")),
         )
         for row in table2
     ]
