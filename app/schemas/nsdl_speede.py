@@ -9,6 +9,15 @@ class NsdlSpeedeFileSelector(BaseModel):
     report: str = Field(
         description="Report label: 'OPEN HOLDING', 'pledge', 'unpledge' or 'confiscate'"
     )
+    version: int | None = Field(
+        default=None,
+        description=(
+            "Optional - the exact numbered file to upload (the '<n>' in "
+            "'NSDL <code> <label> <n>.csv'). Omit for the latest (highest) version "
+            "on disk. List the same (account, report) twice with two different "
+            "versions to upload both in one call."
+        ),
+    )
 
 
 class NsdlSpeedeUploadRequest(BaseModel):
@@ -51,6 +60,7 @@ class NsdlSpeedeFileResult(BaseModel):
     account: str
     report: str
     file_name: str
+    file_version: int | None  # the "<n>" from the file the download bot wrote
     upload_name: str | None
     upload_id: int | None
     transmit_file_name: str | None

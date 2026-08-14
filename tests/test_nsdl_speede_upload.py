@@ -293,6 +293,20 @@ def test_a_day_with_no_download_folder_fails_with_a_pointed_message(client):
     assert "nsdl_speede_04082026" in file_result["detail"]
 
 
+def test_repeated_calls_for_a_still_missing_file_reuse_one_placeholder_row(client):
+    # A file with no version yet (never located) shouldn't pile up a new row
+    # on every retry - there's nothing to key a "new" row on until it exists.
+    first = _post(client, trade_date="2026-08-04", files=[{"account": "CMPA", "report": "pledge"}])
+    second = _post(client, trade_date="2026-08-04", files=[{"account": "CMPA", "report": "pledge"}])
+
+    assert first.json()["files"][0]["status"] == "failed"
+    assert second.json()["files"][0]["status"] == "failed"
+    assert (
+        first.json()["files"][0]["settlement_upload_id"]
+        == second.json()["files"][0]["settlement_upload_id"]
+    )
+
+
 def test_a_non_iso_trade_date_is_rejected(client):
     # DD-MM-YYYY would resolve to the wrong folder AND the wrong PARAM1.
     assert _post(client, trade_date="05-08-2026").status_code == 422
@@ -316,6 +330,65 @@ def test_the_highest_numbered_file_on_disk_is_uploaded(client):
     assert file_result["file_name"] == latest.name == "NSDL CMPA confiscate 3.csv"
 
 
+# ---- pinning an explicit version instead of "always latest" ----------------
+
+
+def test_an_explicit_version_is_uploaded_even_though_a_newer_one_exists(client):
+    _drop("CMPA", "confiscate", n=1)
+    _drop("CMPA", "confiscate", n=2)
+    _drop("CMPA", "confiscate", n=3)  # the latest - NOT what's requested below
+
+    resp = _post(client, files=[{"account": "CMPA", "report": "confiscate", "version": 2}])
+
+    file_result = resp.json()["files"][0]
+    assert file_result["file_name"] == "NSDL CMPA confiscate 2.csv"
+    assert file_result["file_version"] == 2
+
+
+def test_two_versions_of_the_same_report_upload_together_in_one_call(client):
+    _drop("CMPA", "confiscate", n=2)
+    _drop("CMPA", "confiscate", n=3)
+
+    resp = _post(
+        client,
+        files=[
+            {"account": "CMPA", "report": "confiscate", "version": 2},
+            {"account": "CMPA", "report": "confiscate", "version": 3},
+        ],
+    )
+
+    body = resp.json()
+    assert body["summary"] == {"total": 2, "success": 2, "in_progress": 0, "failed": 0}
+    versions = sorted(f["file_version"] for f in body["files"])
+    assert versions == [2, 3]
+    tran_ids = {f["tran_id"] for f in body["files"]}
+    assert len(tran_ids) == 2  # two distinct uploads, not one deduped down to one
+
+
+def test_requesting_a_version_that_does_not_exist_fails_just_that_file(client):
+    _drop("CMPA", "confiscate", n=1)
+
+    resp = _post(client, files=[{"account": "CMPA", "report": "confiscate", "version": 5}])
+
+    file_result = resp.json()["files"][0]
+    assert file_result["status"] == "failed"
+    assert "confiscate 5.csv" in file_result["detail"]
+
+
+def test_a_pinned_version_already_uploaded_is_not_re_uploaded(client):
+    _drop("CMPA", "confiscate", n=2)
+    first = _post(
+        client, files=[{"account": "CMPA", "report": "confiscate", "version": 2}]
+    ).json()
+
+    second = _post(
+        client, files=[{"account": "CMPA", "report": "confiscate", "version": 2}]
+    ).json()
+
+    assert second["files"][0]["detail"] == "already uploaded"
+    assert second["files"][0]["tran_id"] == first["files"][0]["tran_id"]
+
+
 # ---- idempotency: the rule that protects against duplicated rows -----------
 
 
@@ -335,6 +408,37 @@ def test_a_completed_file_is_never_re_uploaded(client):
     # second upload would duplicate every row in the file.
     assert second["files"][0]["tran_id"] == first["files"][0]["tran_id"]
     assert len(get_nsdl_speede_client().chunk_calls) == chunks_after_first
+
+
+def test_a_newer_version_uploads_even_though_an_earlier_one_already_succeeded(client):
+    # Ops re-triggers download+upload many times a day. The 1st version of a
+    # report succeeding must not block the 3rd version (produced by a later
+    # download run) from uploading too - "already uploaded" only applies to
+    # the exact file version, not the (account, report) pair for the whole day.
+    _drop("CMPA", "confiscate", n=1)
+    first = _post(client, files=[{"account": "CMPA", "report": "confiscate"}]).json()
+    assert first["files"][0]["detail"] != "already uploaded"
+    assert first["files"][0]["file_version"] == 1
+
+    _drop("CMPA", "confiscate", n=2)  # never uploaded
+    latest = _drop("CMPA", "confiscate", n=3)  # a later download run
+
+    second = _post(client, files=[{"account": "CMPA", "report": "confiscate"}]).json()
+
+    file_result = second["files"][0]
+    assert file_result["detail"] != "already uploaded"
+    assert file_result["file_version"] == 3
+    assert file_result["file_name"] == latest.name
+    # A genuinely new row, not the version-1 row reused - distinct TranId,
+    # distinct settlement_upload_id, and version 1's own row is untouched.
+    assert file_result["tran_id"] != first["files"][0]["tran_id"]
+    assert file_result["settlement_upload_id"] != first["files"][0]["settlement_upload_id"]
+
+    # Calling again with nothing new on disk re-hits version 3's own row and
+    # is skipped exactly like the single-version case above.
+    third = _post(client, files=[{"account": "CMPA", "report": "confiscate"}]).json()
+    assert third["files"][0]["detail"] == "already uploaded"
+    assert third["files"][0]["tran_id"] == file_result["tran_id"]
 
 
 def test_a_retry_of_an_in_progress_file_re_polls_instead_of_re_uploading(client, monkeypatch):
