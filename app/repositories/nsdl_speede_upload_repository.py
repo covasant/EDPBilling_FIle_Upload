@@ -20,15 +20,22 @@ class NsdlSpeedeUploadRepository:
     def __init__(self, session: Session):
         self.session = session
 
-    def find(self, trade_date: str, account: str, report: str) -> NsdlSpeedeUpload | None:
-        """The row for one file on one day, if it exists - the answer to "has
-        this already been sent?"."""
+    def find(
+        self, trade_date: str, account: str, report: str, file_version: int | None
+    ) -> NsdlSpeedeUpload | None:
+        """The row for one exact file version on one day, if it exists - the
+        answer to "has THIS file already been sent?". A newer version of the
+        same (trade_date, account, report) is a different row - see
+        NsdlSpeedeUpload's docstring. `file_version is None` correctly matches
+        NULL (SQLAlchemy turns `== None` into `IS NULL`), which is what a row
+        gets when the file couldn't be located at all."""
         return (
             self.session.query(NsdlSpeedeUpload)
             .filter(
                 NsdlSpeedeUpload.trade_date == trade_date,
                 NsdlSpeedeUpload.account == account,
                 NsdlSpeedeUpload.report == report,
+                NsdlSpeedeUpload.file_version == file_version,
             )
             .one_or_none()
         )

@@ -24,15 +24,26 @@ class NsdlSpeedeUpload(Base):
     and the service consults it before every upload - a workflow retry re-polls
     the stored tran_id instead of chunking the file again.
 
-    One row per (trade_date, account, report), reused across attempts, with
-    retry_count carrying how many times it took. Three accounts' pledge files
-    share one UPLOADID, which is exactly why the key is the (account, report)
-    pair and not the upload_id.
+    One row per (trade_date, account, report, file_version) - the download bot
+    never overwrites a same-day report, it numbers each trigger's file instead
+    ("NSDL <code> <label> <n>.csv", see the download repo's
+    src/portals/nsdl_speede/reports.py), and operations re-triggers this portal
+    many times a day. So "already uploaded" has to mean "this exact numbered
+    file", not "something for this (account, report) today": a later trigger
+    that produced a NEW version must still upload, even though an earlier
+    version of the same report already succeeded today. file_version is NULL
+    on rows predating this column, and on a row created for a file that
+    couldn't be located at all (there's no version to key on yet - see
+    _process_entry). retry_count carries how many attempts one exact version
+    took. Three accounts' pledge files share one UPLOADID, which is exactly
+    why the key is the (account, report) pair and not the upload_id.
     """
 
     __tablename__ = "nsdl_speede_uploads"
     __table_args__ = (
-        UniqueConstraint("trade_date", "account", "report", name="uq_nsdl_speede_file_per_day"),
+        UniqueConstraint(
+            "trade_date", "account", "report", "file_version", name="uq_nsdl_speede_file_per_day"
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -42,6 +53,10 @@ class NsdlSpeedeUpload(Base):
     report: Mapped[str] = mapped_column(
         String, nullable=False
     )  # OPEN HOLDING | pledge | unpledge | confiscate
+    # The "<n>" from the file the download bot wrote - see _locate() in
+    # nsdl_speede_service.py. NULL for pre-versioning rows and for a row
+    # created because the file couldn't be located at all.
+    file_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     upload_name: Mapped[str | None] = mapped_column(
         String, nullable=True

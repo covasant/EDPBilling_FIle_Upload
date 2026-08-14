@@ -493,17 +493,15 @@ def _process_batch(task: SegmentBatchTask) -> None:
             return
 
         # Table2's ISOPTIONAL readback names slots CBOS (or the Automation
-        # Agent's own supplied Table2) already excuses - for EVERY such slot,
-        # zero-UploadID (computation/posting steps) or not, call the Skip
-        # API (Step 8) right away rather than waiting until after the
-        # per-file upload loop. is_optional already keeps these out of
-        # upload matching (UploadCandidate.needs_upload), but that alone
-        # assumes Step 8 was already called for them - call it explicitly
-        # here instead of assuming, so a slot the Agent marked optional (but
-        # CBOS hasn't recorded Step 8 for yet) is actually skipped via the
-        # Skip API rather than silently left PENDING.
+        # Agent's own supplied Table2) already excuses. Only the
+        # zero-UploadID (computation/posting) ones get the Skip API called
+        # right away here - there is never a file for those, so nothing to
+        # wait for. A NON-zero-UploadID slot flagged optional may still have
+        # a real file in THIS batch - that must be uploaded normally rather
+        # than skipped, so its Skip-or-upload decision waits until after the
+        # per-file loop below, once filled_upload_ids is known (see there).
         for candidate in reservation.candidates:
-            if not candidate.is_optional or candidate.step_no is None:
+            if not candidate.is_optional or candidate.expects_a_file or candidate.step_no is None:
                 continue
             try:
                 client.mark_step_optional(process_id, candidate.step_no)
@@ -616,7 +614,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
             # already reports as done must not receive another file - move
             # it out of the source without re-uploading.
             candidate = candidates_by_upload_id.get(str(rule.upload_id))
-            if candidate is not None and not candidate.needs_upload:
+            if candidate is not None and candidate.already_in_cbos:
                 logger.info(
                     "Idempotent skip: %s already accepted by CBOS "
                     "(UploadID=%s, ProcessID=%s, STATUS=%s)",
@@ -750,6 +748,32 @@ def _process_batch(task: SegmentBatchTask) -> None:
             logger.warning(
                 "Batch %s: getdropdown(EXISTINGPROCESSID) failed (non-fatal): %s", task.key, exc
             )
+
+        # A non-zero-UploadID slot flagged ISOPTIONAL=true may still have a
+        # real file for it in THIS batch - the per-file loop above uploads
+        # it normally (already_in_cbos, not is_optional, gates the
+        # idempotent-skip check), so filled_upload_ids is now the true
+        # answer to "did a file show up". Only once that's known do we call
+        # Skip for the ones that didn't: no file in this batch AND CBOS
+        # doesn't already have one from an earlier attempt either.
+        for candidate in reservation.candidates:
+            if (
+                not candidate.is_optional
+                or not candidate.expects_a_file
+                or candidate.step_no is None
+                or candidate.upload_id in filled_upload_ids
+                or candidate.already_in_cbos
+            ):
+                continue
+            try:
+                client.mark_step_optional(process_id, candidate.step_no)
+            except CBOSUploadError as exc:
+                logger.warning(
+                    "Batch %s: mark-optional STEPNO=%s failed (non-fatal): %s",
+                    task.key,
+                    candidate.step_no,
+                    exc,
+                )
 
         # ------------------------------------------------------------------
         # COMPLETENESS GATE (docs/BATCH_HANDOFF_CONTRACT.md). The required

@@ -248,19 +248,22 @@ def _raise_on_failed_status(path: str, body: dict) -> None:
 
 _UPLOAD_PENDING_DESC = "UPLOAD FILE PENDING"
 
-# Values accepted as "this slot IS optional" in Table2's ISOPTIONAL readback.
-# Deliberately a strict allowlist, NOT bool(): CBOS sends numbers and strings
-# interchangeably elsewhere (PROCESSID: 17658 vs "17658"), and bool("0") is
-# True in Python - which would silently mark EVERY slot optional, hollow out
-# the completeness gate, and let FILEUPLOAD go TRUE with mandatory files
-# missing. Mis-parsing in the other direction merely re-parks a batch ops
-# already approved (annoying, recoverable), so unknown values read as "not
-# optional" - the gate fails closed.
+# Values accepted as "this slot IS optional" in Table2's ISOPTIONALVISIBLE
+# readback. Deliberately a strict allowlist, NOT bool(): CBOS sends numbers
+# and strings interchangeably elsewhere (PROCESSID: 17658 vs "17658"), and
+# bool("0") is True in Python - which would silently mark EVERY slot
+# optional, hollow out the completeness gate, and let FILEUPLOAD go TRUE
+# with mandatory files missing. Mis-parsing in the other direction merely
+# re-parks a batch ops already approved (annoying, recoverable), so unknown
+# values read as "not optional" - the gate fails closed.
 #
-# KNOWN-UNKNOWN (CBOS_HANDOFF_CONTRACT.md): the API doc uses ISOPTIONAL="0"
-# in the *Step-8 request* to mean "make optional" - whether the *readback*
-# mirrors that inversion is unverified. The mock answers Python booleans.
-# Verify the real readback vocabulary in UAT before trusting "1" here.
+# RESOLVED (was a KNOWN-UNKNOWN in CBOS_HANDOFF_CONTRACT.md): a real
+# captured getNewTradeProcess response (2026-08-14) confirms Table2 carries
+# BOTH ISOPTIONAL and ISOPTIONALVISIBLE per step, and they can DISAGREE
+# (one sample had ISOPTIONAL=false, ISOPTIONALVISIBLE=true on the same
+# step). ISOPTIONALVISIBLE is the field CBOS actually uses to decide
+# skip/optional - ISOPTIONAL is read back but not authoritative. Use
+# ISOPTIONALVISIBLE here, never ISOPTIONAL.
 # (True covers the integer 1 too: set membership uses ==, and 1 == True.)
 _ISOPTIONAL_TRUE = {True, "1", "true", "TRUE", "True", "Y", "YES", "yes"}
 
@@ -284,10 +287,12 @@ class UploadCandidate:
     name: str
     status: str | None = None
     status_desc: str | None = None
-    # Table2's ISOPTIONAL readback: True once Step 8 marked the slot optional
-    # (this batch, an earlier one, or an ops force-proceed). Caught by live
-    # E2E: ignoring it made the completeness gate re-park a batch whose
-    # missing slots ops had ALREADY approved via POST /batches/{id}/proceed.
+    # Table2's ISOPTIONALVISIBLE readback (NOT ISOPTIONAL - the two can
+    # disagree, see _ISOPTIONAL_TRUE's comment): True once Step 8 marked the
+    # slot optional (this batch, an earlier one, or an ops force-proceed).
+    # Caught by live E2E: ignoring it made the completeness gate re-park a
+    # batch whose missing slots ops had ALREADY approved via
+    # POST /batches/{id}/proceed.
     is_optional: bool = False
 
     @property
@@ -295,29 +300,45 @@ class UploadCandidate:
         return self.upload_id not in ("0", "")
 
     @property
-    def needs_upload(self) -> bool:
-        """False once this slot already has a file for the reserved
+    def already_in_cbos(self) -> bool:
+        """True once this slot already has a file for the reserved
         PROCESSID - re-uploading would duplicate a file CBOS already
-        accepted.
+        accepted. Deliberately IGNORES is_optional: that flag is a policy
+        decision (this slot may be skipped if empty), not a fact about
+        whether a file already landed. A file present in THIS batch for an
+        is_optional slot must still be uploaded normally - only re-sending
+        into a slot CBOS already has a file for is what this guards
+        against (see upload_service.py's per-file loop).
 
         STATUS alone is enough for the zero-UploadID steps (computation/
         posting - there's no "file" for STATUSDESC to describe). For a
         file-expecting slot, only trust STATUS=PENDING once STATUSDESC also
         confirms it's specifically the file upload that's pending
-        ("UPLOAD FILE PENDING") - a missing STATUSDESC is treated as "needs
-        upload" rather than silently skipping a file CBOS is still waiting on.
+        ("UPLOAD FILE PENDING") - a missing STATUSDESC is treated as "not
+        yet in CBOS" rather than silently skipping a file CBOS is still
+        waiting on.
         """
-        if self.is_optional:
-            # CBOS already excuses this slot - uploading into it is neither
-            # required nor expected.
-            return False
         if self.status is None:
-            return True
-        if self.status.strip().upper() != "PENDING":
             return False
+        if self.status.strip().upper() != "PENDING":
+            return True
         if self.expects_a_file and self.status_desc is not None:
-            return _UPLOAD_PENDING_DESC in self.status_desc.strip().upper()
-        return True
+            return _UPLOAD_PENDING_DESC not in self.status_desc.strip().upper()
+        return False
+
+    @property
+    def needs_upload(self) -> bool:
+        """False once this slot is EXCUSED from the completeness gate -
+        either CBOS already has a file for it (already_in_cbos) or it's
+        flagged optional (is_optional). Used ONLY to decide whether a
+        slot may legitimately stay empty (completeness gate / Step 8
+        candidates) - NOT for the per-file loop's real idempotency check,
+        which uses already_in_cbos directly so an is_optional slot with a
+        file actually present in this batch still gets uploaded rather
+        than silently idempotent-skipped."""
+        if self.is_optional:
+            return False
+        return not self.already_in_cbos
 
 
 @dataclass(frozen=True)
@@ -380,7 +401,7 @@ def build_reservation(
             name=str(row.get("NAME") or ""),
             status=row.get("STATUS"),
             status_desc=row.get("STATUSDESC"),
-            is_optional=_parse_isoptional(row.get("ISOPTIONAL")),
+            is_optional=_parse_isoptional(row.get("ISOPTIONALVISIBLE")),
         )
         for row in table2
     ]
