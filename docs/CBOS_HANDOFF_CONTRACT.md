@@ -94,8 +94,73 @@ reaching `UNCONFIRMED` and, with it, the engine's trigger — and was removed.)
 3. **Timing.** The uploader must finish (FILEUPLOAD=TRUE) before the segment's
    trigger window closes on the `cams-edp-billing-automation-agent-repo` side.
 
+## Corporate Actions — the `FOPositionChange` lane (V6 Steps 34–35)
+
+An **event-driven** lane, not a fourth branch of the daily pipeline. It runs only on
+dates a corporate action occurs (three dates in seven weeks, for member 10412), and it
+reuses this repo's upload lane unchanged.
+
+`FOPositionChange` is a **pseudo-segment**: it goes in `getNewTradeProcess`'s
+`GROUPNAME` field where a real segment code goes, reserves its own PROCESSID with its
+own Table2, and is uploaded to through the identical Steps 4/5/7/8. It is a legal
+manifest `segment` value (`edpb_core.segments.CORP_ACTION_SEGMENT`) so no special-casing
+is needed at intake.
+
+| Step | Call | Owner |
+|------|------|-------|
+| — | Fetch `<SYMBOL>_<member>_(EXISTING\|ADJUSTED)_POSITIONS.CSV` from NSE Extranet `FO/Reports` (member tree) | **cams-edp-file-download-rpa-bot-repo** — `POST /edpb/corpaction/nse/positions/download` |
+| 34 | `file_process_status(Segment=DR, ProcessName=BILLPOSTING)` — the gate | **cams-edp-billing-automation-agent-repo** — `corpaction.check_fo_billposting` |
+| 35 ph.1 | `getNewTradeProcess(GROUPNAME=FOPositionChange, PROCESSID=0)` — reserve | **cams-edp-billing-automation-agent-repo** — `corpaction.reserve_position_change` |
+| 4/5/7/8 | match → chunk-upload → register → mark empty slots optional | **Uploader** (this repo), unchanged |
+| 35 ph.2 | `getNewTradeProcess(GROUPNAME=FOPositionChange, PROCESSID=<real>)` — trigger | **cams-edp-billing-automation-agent-repo** — `corpaction.trigger_position_change` |
+
+**Two files, always.** `EXISTING` is the position book before NSE applies the corporate
+action ratio, `ADJUSTED` the same book after; CBOS needs both to compute the delta.
+They are published as a pair, sub-second apart, on every observed date. A run that
+fetches only one silently halves the input, which is why the bot reports `unpaired`.
+
+**The sequencer** is `corpaction.run_position_change` in the engine. It drives the
+lane as far as it can go in one cycle and returns, rather than blocking on the upload:
+a run that stops at `AWAITING_UPLOAD` carries `process_id` + `batch_id`, and the caller
+**must** re-enter with both. Re-entering without them reserves a SECOND process for the
+same date, because Phase 1 mints a fresh PID on every call — so the reserved process
+would hold the files while a different, empty one gets triggered. When the handle is
+absent the sequencer asks CBOS for an existing PID first and refuses to reserve if that
+lookup could not answer.
+
+**Rules specific to this lane:**
+
+1. **Phase 2 must not fire until the files are registered.** Both phases are the same
+   endpoint with the same GROUPNAME, differing only in whether `PROCESSID` is `"0"`, so
+   an early trigger is one argument away — and CBOS would restate the F&O position book
+   against no input rather than refuse. `trigger_position_change` requires an explicit
+   `files_registered` assertion and refuses `PROCESSID="0"` outright.
+2. **The uploader skips its Step 1 holiday check for this segment.** `BeginFileUpload`
+   takes a *Segment*, and `FOPositionChange` is a *GROUPNAME*. This lane's
+   "should today run" gate is Step 34, checked upstream. See
+   `upload_service.process_batch`.
+3. **Timing.** NSE publishes at ~19:45 IST on every observed date. The V6 doc's
+   "10 PM–11:59 PM" ops window is conservative, not wrong.
+
 ## Known unknowns (verify against real CBOS)
 
+- **What does `getNewTradeProcess(GROUPNAME="FOPositionChange", PROCESSID="0")`
+  return in Table2?** Nothing in this lane has been run against real CBOS. That
+  response is the authoritative answer to how many upload slots the process
+  expects — i.e. whether it wants both position CSVs or only one — and to what
+  `GetNewTradeProcessPromodalUploadSettings` will declare for each slot's
+  filename pattern and column count. The V6 doc names two files; the ops
+  instruction named one. **One call in UAT settles it**, and it is the first
+  thing to run when a corporate action date is available.
+- **Do the segment-scoped status calls accept `FOPositionChange`?** Almost
+  certainly not — CBOS answered `INVALID SEGMENT` for the post-trade
+  pseudo-segments put through segment-scoped calls (the engine's
+  `docs/CBOS-CLIENT-ASKS.md`, item (d)). `BeginFileUpload` is already skipped
+  for this segment (rule 2 above). `CheckProcessIDExist` and the Step 9
+  `FILEUPLOAD` poll are **not** skipped: both are non-fatal by construction, so
+  an `INVALID SEGMENT` reply costs a log line, and leaving them in place means
+  the answer gets *observed* rather than assumed. If UAT shows they answer
+  usefully, keep them; if they answer `INVALID SEGMENT`, skip them the same way.
 - **Does `getNewTradeProcess(PROCESSID=<real>)` TRIGGER once all slots are
   satisfied, regardless of caller?** The engine's Step-11 trigger IS that
   call, so presumably yes — but the uploader also re-fetches with the real

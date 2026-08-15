@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from edpb_core.batch_api import BatchStatus
+from edpb_core.segments import CORP_ACTION_SEGMENT
 
 from app.clients import cbos_client
 from app.clients.cbos_client import CBOSUploadError
@@ -363,8 +364,30 @@ def _process_batch(task: SegmentBatchTask) -> None:
     # except SKIP means holiday" comes from a single line of the API doc, and
     # acting on it would be a new way for the uploader to refuse to upload -
     # silently, and looking just like a day with no files.
+    #
+    # SKIPPED ENTIRELY for the corporate action pseudo-segment. BeginFileUpload
+    # takes a Segment, and FOPositionChange is not one - it is a GROUPNAME. CBOS
+    # answered INVALID SEGMENT for the post-trade pseudo-segments put through
+    # segment-scoped calls (see the engine's docs/CBOS-CLIENT-ASKS.md item (d)),
+    # and there is no reason to expect different here. Today that would only log;
+    # the day CBOS_HOLIDAY_CHECK_ENFORCED is turned on it would defer every
+    # corporate action batch forever, on an answer that was never about a holiday.
+    #
+    # Nothing is lost by skipping: this batch's "should today run at all" gate is
+    # V6 Step 34 (DR BILLPOSTING), which the engine checks before it reserves the
+    # PROCESSID this batch arrives with - a stricter gate than the holiday check,
+    # and one asked with a Segment that CBOS recognises.
+    if task.segment == CORP_ACTION_SEGMENT:
+        logger.info(
+            "Batch %s: skipping the Step 1 holiday check - %s is a GROUPNAME, not a "
+            "Segment; its gate is Step 34 (DR BILLPOSTING), checked upstream",
+            task.key,
+            task.segment,
+        )
     try:
-        if not client.may_begin_upload(task.segment, trade_date):
+        if task.segment != CORP_ACTION_SEGMENT and not client.may_begin_upload(
+            task.segment, trade_date
+        ):
             if settings.cbos_holiday_check_enforced:
                 logger.warning(
                     "Batch %s: CBOS reports today is not a processing day for segment %s - "
