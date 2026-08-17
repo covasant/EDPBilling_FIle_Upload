@@ -805,6 +805,7 @@ class BaseCBOSClient(ABC):
         upload_id: str,
         guid: str,
         progress_cb: Callable[[int, int], None] | None = None,
+        file_name: str | None = None,
     ) -> None:
         """Step 5. Stream the file to CBOS in chunk_size_kb-sized chunks
         (0-indexed CurrentChunk, TotalChunks=N, one GUID for the whole file), so
@@ -820,6 +821,12 @@ class BaseCBOSClient(ABC):
         it's the only heartbeat that moves while a single file streams, so a
         stalled link is distinguishable from a slow one.
         """
+        # The name CBOS is TOLD, which is not always the name on disk: CBOS validates the
+        # date inside it against a date of its own and rejects a mismatch. Passing it here
+        # rather than renaming the file keeps the exchange's own name on disk, so which
+        # day's data this actually was stays recoverable. See services/cbos_filename.py.
+        # Step 7 must be given the SAME name — CBOS binds the two by GUID.
+        file_name = file_name or file_path.name
         chunk_size = max(1, settings.chunk_size_kb) * 1024
         retries = max(1, settings.cbos_chunk_retry_attempts)
         file_size = file_path.stat().st_size
@@ -827,7 +834,7 @@ class BaseCBOSClient(ABC):
         logger.info(
             "Step 5 - SaveTradePromodalUploadChunkFile: %s (%d bytes) in %d chunk(s) of <=%d KB, "
             "upload_id=%s guid=%s",
-            file_path.name,
+            file_name,
             file_size,
             total_chunks,
             settings.chunk_size_kb,
@@ -851,12 +858,12 @@ class BaseCBOSClient(ABC):
                             5,
                             "SaveTradePromodalUploadChunkFile",
                             lambda _bytes=chunk_bytes, _chunk=current_chunk: self._upload_chunk(
-                                upload_id, guid, file_path.name, _bytes, _chunk, total_chunks
+                                upload_id, guid, file_name, _bytes, _chunk, total_chunks
                             ),
                             level=logging.DEBUG,
                             upload_id=upload_id,
                             guid=guid,
-                            file_name=file_path.name,
+                            file_name=file_name,
                             current_chunk=current_chunk,
                             total_chunks=total_chunks,
                             chunk_bytes=len(chunk_bytes),
@@ -867,7 +874,7 @@ class BaseCBOSClient(ABC):
                             "Step 5: chunk %d/%d of %s failed (attempt %d/%d): %s",
                             current_chunk + 1,
                             total_chunks,
-                            file_path.name,
+                            file_name,
                             attempt,
                             retries,
                             exc,
@@ -882,7 +889,7 @@ class BaseCBOSClient(ABC):
                 if progress_cb is not None:
                     progress_cb(current_chunk + 1, total_chunks)
 
-        logger.info("Step 5 complete: %s uploaded in %d chunk(s)", file_path.name, total_chunks)
+        logger.info("Step 5 complete: %s uploaded in %d chunk(s)", file_name, total_chunks)
 
     def existing_process(self, segment: str, trade_date: str) -> None:
         """Step 6. Confirmation lookup, not on the critical path - it also

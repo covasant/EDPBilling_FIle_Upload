@@ -137,6 +137,14 @@ class Settings(BaseSettings):
     upload_match_validate_columns: bool = True
     upload_match_delimiter: str = ","
 
+    # Send CBOS the filename DATE it asks for (Step 40's DateBasis), when the exchange
+    # stamped the file a different day. Default ON because without it those uploads are
+    # rejected outright — "FILE NAME TRADE DATE(T-1) MISMATCH". A kill switch rather than
+    # an opt-in: the rewrite asserts something about the file's CONTENTS that cannot be
+    # checked here (see app/services/cbos_filename.py), so there has to be a way to stop
+    # it without a deploy. The file on disk is never renamed either way.
+    cbos_rewrite_upload_filename_date: bool = True
+
     database_url: str
 
     # ---- Settlement segment (DP File Upload API) --------------------------

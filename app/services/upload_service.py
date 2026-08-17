@@ -45,7 +45,13 @@ from app.core.database import get_sessionmaker
 from app.core.queue import SegmentBatchTask
 from app.repositories.batch_repository import BatchRepository
 from app.repositories.uploaded_file_repository import UploadedFileRepository
-from app.services import file_service, optional_slots, upload_matching, upload_outcome
+from app.services import (
+    cbos_filename,
+    file_service,
+    optional_slots,
+    upload_matching,
+    upload_outcome,
+)
 from app.services.upload_matching import FileRejected
 from app.services.upload_outcome import Destination, FileOutcome, Outcome
 
@@ -683,6 +689,15 @@ def _process_batch(task: SegmentBatchTask) -> None:
                 guid = str(uuid.uuid4())
                 repo.update(record, guid=guid)
                 repo.commit()
+                # The name CBOS is TOLD, which is not always the name on disk — it checks
+                # the date inside it against one of its own and rejects a mismatch. Almost
+                # always identical; see services/cbos_filename.py for the day it is not,
+                # and for what a rewrite asserts about the file's contents.
+                send_name, rename_note = cbos_filename.resolve_upload_name(
+                    client, task.segment, rule.upload_id, file_path.name, trade_date
+                )
+                if rename_note is not None:
+                    request_log.append(rename_note)
                 logger.info(
                     "Upload started = %s (UploadID=%s, GUID=%s)",
                     file_path.name,
@@ -696,6 +711,7 @@ def _process_batch(task: SegmentBatchTask) -> None:
                     file_path,
                     rule.upload_id,
                     guid,
+                    file_name=send_name,
                     progress_cb=lambda done, total, _f=file_path.name, _i=idx: (
                         _emit_progress(_i - 1, _f, done, total)
                         if done == total or done % 10 == 0
@@ -709,7 +725,9 @@ def _process_batch(task: SegmentBatchTask) -> None:
                         "guid": guid,
                     }
                 )
-                pending_registration.append((record, file_path, rule, guid, request_log))
+                pending_registration.append(
+                    (record, file_path, rule, guid, request_log, send_name)
+                )
             except CBOSUploadError as exc:
                 # Narrowed from `except Exception`. A blanket catch recorded an
                 # AttributeError or TypeError in our own code as an ordinary "CBOS call
@@ -726,9 +744,11 @@ def _process_batch(task: SegmentBatchTask) -> None:
         # Step 7: register every uploaded file - once every Step 5 in the batch
         # has completed, not interleaved with them (see pending_registration's
         # comment above).
-        for record, file_path, rule, guid, request_log in pending_registration:
+        for record, file_path, rule, guid, request_log, send_name in pending_registration:
             try:
-                client.register_file(rule.upload_id, guid, file_path.name, process_id, trade_date)
+                # The SAME name Step 5 sent. CBOS binds the chunks to this entry by GUID,
+                # so registering a different name than was uploaded strands the drop folder.
+                client.register_file(rule.upload_id, guid, send_name, process_id, trade_date)
                 request_log.append(
                     {"step": "SaveNewTradeProcessPromodalUploadFile", "upload_id": rule.upload_id}
                 )
