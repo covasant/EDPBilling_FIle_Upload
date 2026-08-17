@@ -310,6 +310,15 @@ class UploadCandidate:
         into a slot CBOS already has a file for is what this guards
         against (see upload_service.py's per-file loop).
 
+        FAILED is explicitly NOT "already in CBOS" - it means CBOS rejected
+        (or never received) the file, the exact opposite of already
+        resolved. Treating it as already-in-CBOS would idempotent-skip a
+        slot on every retry, permanently blocking the automation agent's
+        own bounded retry (INIT's file-slot-failure handling routes an
+        existing PID with a FAILED non-zero-UploadID slot back through
+        DOWNLOADING/UPLOADING to re-send it) - the retry would never
+        actually re-upload anything.
+
         STATUS alone is enough for the zero-UploadID steps (computation/
         posting - there's no "file" for STATUSDESC to describe). For a
         file-expecting slot, only trust STATUS=PENDING once STATUSDESC also
@@ -320,7 +329,10 @@ class UploadCandidate:
         """
         if self.status is None:
             return False
-        if self.status.strip().upper() != "PENDING":
+        status = self.status.strip().upper()
+        if status == "FAILED":
+            return False
+        if status != "PENDING":
             return True
         if self.expects_a_file and self.status_desc is not None:
             return _UPLOAD_PENDING_DESC not in self.status_desc.strip().upper()
