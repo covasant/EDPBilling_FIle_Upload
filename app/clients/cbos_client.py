@@ -1173,7 +1173,7 @@ class CBOSClient(BaseCBOSClient):
         #
         # step_no is guaranteed non-None here: mark_step_optional refuses it on the base
         # class, so str() can never produce the literal "None".
-        payload = {"PROCESSID": str(process_id), "STEPNO": str(step_no), "ISOPTIONAL": "0"}
+        payload = {"PROCESSID": str(process_id), "STEPNO": str(step_no), "ISOPTIONAL": "1"}
         return self._post(self._core_url(UPDATE_IS_MANDATORY_PATH), payload)
 
     def _file_upload_status(self, segment: str, trade_date: str) -> dict:
