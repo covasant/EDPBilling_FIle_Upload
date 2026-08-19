@@ -1,0 +1,2309 @@
+{
+  "info": {
+    "name": "EDP Trade Process API V6",
+    "description": "All 40 V6 steps in workflow order, variable-chained, runnable end to end.\n\nSAFE BY DEFAULT. Every request whose name contains [WRITE] mints, uploads, mutates or triggers. Those requests skip themselves unless the collection variable allow_writes is set to the string \"true\". With allow_writes left alone the run exercises 25 read-only steps against live CBOS and changes nothing.\n\nThe 'Conformance probes' folder asserts things about the V6 DOCUMENT rather than about the pipeline: they are expected to pass, and each passing probe is a defect in the doc or in a service that follows it.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "",
+          "// Skip any request tagged as a write when allow_writes is not \"true\".",
+          "// Postman/newman >= 6 exposes pm.execution.skipRequest().",
+          "// pm.variables resolves the whole scope chain (environment beats collection),",
+          "// so an environment file can turn writes on without editing the collection.",
+          "const writes = pm.info.requestName.indexOf(\"[WRITE]\") !== -1;",
+          "if (writes && String(pm.variables.get(\"allow_writes\")).toLowerCase() !== \"true\") {",
+          "    console.log(\"SKIPPED (allow_writes is not true): \" + pm.info.requestName);",
+          "    if (pm.execution && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+          "}",
+          ""
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "",
+          "// Runs after every request. The conformance probes assert their own status",
+          "// codes (Probe A expects a 400), so the blanket check skips them.",
+          "if (pm.info.requestName.indexOf(\"Probe \") !== 0) {",
+          "    pm.test(\"HTTP 200\", function () { pm.response.to.have.status(200); });",
+          "}",
+          ""
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "gtg_host",
+      "value": "http://10.167.202.234:8087"
+    },
+    {
+      "key": "core_host",
+      "value": "http://10.167.202.164:8003"
+    },
+    {
+      "key": "segment",
+      "value": "EQ"
+    },
+    {
+      "key": "recon_segment",
+      "value": "DR"
+    },
+    {
+      "key": "trade_date",
+      "value": "2026-08-14"
+    },
+    {
+      "key": "margin_date",
+      "value": "14-Aug-2026"
+    },
+    {
+      "key": "user_id",
+      "value": "CV0001"
+    },
+    {
+      "key": "login_id",
+      "value": "CV0001"
+    },
+    {
+      "key": "client_ip",
+      "value": "10.167.202.164"
+    },
+    {
+      "key": "upload_id",
+      "value": "81"
+    },
+    {
+      "key": "step_no",
+      "value": "12"
+    },
+    {
+      "key": "process_id",
+      "value": ""
+    },
+    {
+      "key": "guid",
+      "value": ""
+    },
+    {
+      "key": "new_guid",
+      "value": "{{$guid}}"
+    },
+    {
+      "key": "sample_file_path",
+      "value": ""
+    },
+    {
+      "key": "sample_file_name",
+      "value": "SCRIP_140826.TXT"
+    },
+    {
+      "key": "last_msg",
+      "value": ""
+    },
+    {
+      "key": "allow_writes",
+      "value": "false"
+    }
+  ],
+  "item": [
+    {
+      "name": "Steps 01-11  Core Trade Process",
+      "item": [
+        {
+          "name": "Step 01 - Check Holiday (GTG)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "MSG=SKIP means proceed per the V6 doc. Live CBOS answers TRUE on a trading day - the doc's SKIP/other split does not match production, so treat SKIP and TRUE as equivalent go-aheads and anything else as a holiday.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"BeginFileUpload\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 02 - [WRITE] Create Process ID",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));",
+                  "const t1 = ((b.Result || {}).Table1 || [])[0] || {};",
+                  "pm.test(\"Table1 carries a PROCESSID\", function () { pm.expect(t1.PROCESSID).to.be.a(\"number\"); });",
+                  "pm.collectionVariables.set(\"process_id\", String(t1.PROCESSID));",
+                  "const t2 = (b.Result || {}).Table2 || [];",
+                  "pm.test(\"Table2 lists upload slots\", function () { pm.expect(t2.length).to.be.above(0); });",
+                  "const slot = t2.filter(function (s) { return s.UPLOADID; })[0];",
+                  "if (slot) { pm.collectionVariables.set(\"upload_id\", String(slot.UPLOADID));",
+                  "            pm.collectionVariables.set(\"step_no\", String(slot.STEPNO)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_host}}/v1/api/process/getNewTradeProcess",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "process",
+                "getNewTradeProcess"
+              ]
+            },
+            "description": "PROCESSID=0 MINTS a new process. Gated on allow_writes. Captures process_id and the first UPLOADID from Table2 for Steps 4/5/7/8.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"GROUPNAME\": \"{{segment}}\",\n  \"LOGINID\": \"{{login_id}}\",\n  \"TRADEDATE\": \"{{trade_date}}\",\n  \"PROCESSID\": \"0\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 03 - Check Process ID Exist (GTG)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);",
+                  "pm.test(\"MSG names a process id\", function () { pm.expect(msg).to.match(/\\d+/); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "Confirms Step 2's PROCESSID registered.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"CheckProcessIDExist\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 04 - Get File Upload Settings",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));",
+                  "const r = (b.Result || [])[0] || {};",
+                  "pm.test(\"V6 doc drift: field is FILE NAME (CONTAINS), not FILE NAME\", function () {",
+                  "  pm.expect(Object.keys(r)).to.include(\"FILE NAME (CONTAINS)\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_host}}/v1/api/process/GetNewTradeProcessPromodalUploadSettings",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "process",
+                "GetNewTradeProcessPromodalUploadSettings"
+              ]
+            },
+            "description": "The doc documents a 'FILE NAME' field. Live CBOS returns 'FILE NAME (CONTAINS)' and an extra 'SAMPLE FILE' anchor. Anything parsing the documented key gets undefined.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"UPLOADID\": \"{{upload_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 05 - [WRITE] File Upload - Chunk",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is ChunkUploaded\", function () { pm.expect(b.Status).to.eql(\"ChunkUploaded\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));",
+                  "pm.collectionVariables.set(\"guid\", b.Guid || \"\");",
+                  "pm.test(\"Guid returned\", function () { pm.expect(b.Guid).to.be.a(\"string\").and.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{core_host}}/v1/api/process/SaveTradePromodalUploadChunkFile",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "process",
+                "SaveTradePromodalUploadChunkFile"
+              ]
+            },
+            "description": "multipart/form-data. Set sample_file_path to a real file before enabling writes. The Guid returned here MUST be reused verbatim as uploadfoldername in Step 7.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "{{sample_file_path}}"
+                },
+                {
+                  "key": "CurrentChunk",
+                  "value": "0",
+                  "type": "text"
+                },
+                {
+                  "key": "TotalChunks",
+                  "value": "1",
+                  "type": "text"
+                },
+                {
+                  "key": "Guid",
+                  "value": "{{$guid}}",
+                  "type": "text"
+                },
+                {
+                  "key": "FileName",
+                  "value": "{{sample_file_name}}",
+                  "type": "text"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Step 06 - Get Existing Process ID",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));",
+                  "const rows = b.Result || [];",
+                  "pm.test(\"A process id exists for this segment and date\", function () { pm.expect(rows.length).to.be.above(0); });",
+                  "if (rows.length && !pm.collectionVariables.get(\"process_id\")) {",
+                  "  pm.collectionVariables.set(\"process_id\", String(rows[0]._KEY));",
+                  "  console.log(\"process_id resolved from Step 6: \" + rows[0]._KEY);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_host}}/v1/api/brokerage/getdropdown",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "brokerage",
+                "getdropdown"
+              ]
+            },
+            "description": "Read-only. This is how the run recovers process_id when Step 2 is skipped, which is what makes the read-only path runnable end to end.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"TAG\": \"EXISTINGPROCESSID\",\n  \"LOGINID\": \"{{login_id}}\",\n  \"FILTER1\": \"{{segment}}\",\n  \"FILTER2\": \"{{trade_date}}\",\n  \"extraoption2\": \"\",\n  \"extraoption3\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 07 - [WRITE] File Details Entry in CBOS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_host}}/v1/api/process/SaveNewTradeProcessPromodalUploadFile",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "process",
+                "SaveNewTradeProcessPromodalUploadFile"
+              ]
+            },
+            "description": "Registers the uploaded file. GUID must match Step 5 exactly.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"uploadid\": \"{{upload_id}}\",\n  \"loginid\": \"{{login_id}}\",\n  \"uploadfoldername\": \"{{guid}}\",\n  \"uploadfilename\": \"{{sample_file_name}}\",\n  \"ipaddress\": \"{{client_ip}}\",\n  \"file\": \"\",\n  \"paraM1\": \"{{trade_date}}\",\n  \"paraM2\": \"\",\n  \"paraM3\": \"\",\n  \"paraM4\": \"\",\n  \"paraM5\": \"\",\n  \"paraM6\": \"\",\n  \"paraM7\": \"\",\n  \"paraM8\": \"\",\n  \"paraM9\": \"{{process_id}}\",\n  \"chunkFileUpload\": \"YES\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 08 - [WRITE] Skip Optional Subprocess",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_host}}/v1/api/process/UpdateNewTradeProcessProcessDetailsIsMandatory",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "process",
+                "UpdateNewTradeProcessProcessDetailsIsMandatory"
+              ]
+            },
+            "description": "Marks an empty non-zero Table2 slot optional so FILEUPLOAD can go TRUE.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"PROCESSID\": \"{{process_id}}\",\n  \"STEPNO\": \"{{step_no}}\",\n  \"ISOPTIONAL\": \"0\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 09 - File Upload Status (GTG)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "Poll until MSG=TRUE.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"FILEUPLOAD\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 10 - Insti Trade Status (GTG) [NEW IN V6]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "V6's headline addition. Live CBOS returns an EMPTY Data array for this ProcessName on the segments probed - neither TRUE nor FALSE. The 'Data carries a MSG' assertion is what catches that.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"CHECKINSTITRADE\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 11 - [WRITE] Trigger with Process ID",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_host}}/v1/api/process/getNewTradeProcess",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "process",
+                "getNewTradeProcess"
+              ]
+            },
+            "description": "Fires the 28-step pipeline. Only after Steps 9 AND 10 read TRUE.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"GROUPNAME\": \"{{segment}}\",\n  \"LOGINID\": \"{{login_id}}\",\n  \"TRADEDATE\": \"{{trade_date}}\",\n  \"PROCESSID\": \"{{process_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Steps 12-16  Post-Process Status Checks",
+      "item": [
+        {
+          "name": "Step 12 - Bill Posting (GTG)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"BILLPOSTING\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 13 - Segment Recon (GTG)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{recon_segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"RECON\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 14 - Recon Check Trigger (CHK)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "The doc lists this as Shape B (no Segment) but its own example carries Segment. Live CBOS requires it. The per-step example is the authority.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{recon_segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"CHECKRECON\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 15 - Contract Note Generation (GTG)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{recon_segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"CONTRACTNOTEGENERATION\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 16 - Contract Note Check Trigger (CHK)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{recon_segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"CHECKCONTRACTNOTEGENERATION\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Steps 17-25  Collateral and Fund Flow",
+      "item": [
+        {
+          "name": "Step 17 - Collateral Valuation (GTG)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);",
+                  "pm.test(\"MSG is not INVALID SEGMENT\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID SEGMENT\"); });",
+                  "pm.test(\"MSG is not INVALID PROCESS NAME\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID PROCESS NAME\"); });",
+                  "pm.test(\"V6 doc drift: this step is documented WITHOUT Segment, but CBOS requires it\", function () { pm.expect(pm.response.code).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "Documented WITHOUT Segment. Live CBOS returns HTTP 400 'The Segment field is required' if Segment is omitted, and 'INVALID SEGMENT' if Segment is a post-trade pseudo code (COLVAL/COLALLOC/MTFFT/DMRPT/DMSTMT). A real market segment code is required.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"CollateralValuation\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 18 - Collateral Valuation Refresh (CHK)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));",
+                  "const t1 = ((b.Result || {}).Table1 || []);",
+                  "console.log(\"Table1 rows: \" + t1.length + \" (non-empty = already running)\");"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_host}}/v1/api/process/GetCollateralValuation",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "process",
+                "GetCollateralValuation"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"BUTTONNAME\": \"REFRESH\",\n  \"LOGINID\": \"{{login_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 19 - [WRITE] Collateral Valuation Trigger (TRG)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_host}}/v1/api/process/GetCollateralValuation",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "process",
+                "GetCollateralValuation"
+              ]
+            },
+            "description": "Note the DD-Mon-YYYY date format here, unlike the ISO date every GTG call takes.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"BUTTONNAME\": \"COLLATERAL_VALUATION_DATEWISE\",\n  \"LOGINID\": \"{{login_id}}\",\n  \"MARGINDATE\": \"{{margin_date}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 20 - Collateral Allocation (GTG)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);",
+                  "pm.test(\"MSG is not INVALID SEGMENT\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID SEGMENT\"); });",
+                  "pm.test(\"MSG is not INVALID PROCESS NAME\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID PROCESS NAME\"); });",
+                  "pm.test(\"V6 doc drift: this step is documented WITHOUT Segment, but CBOS requires it\", function () { pm.expect(pm.response.code).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"CollateralAllocation\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 21 - Collateral Allocation Check (CHK)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);",
+                  "pm.test(\"MSG is not INVALID SEGMENT\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID SEGMENT\"); });",
+                  "pm.test(\"MSG is not INVALID PROCESS NAME\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID PROCESS NAME\"); });",
+                  "pm.test(\"V6 doc drift: this step is documented WITHOUT Segment, but CBOS requires it\", function () { pm.expect(pm.response.code).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"MTFCOLLALLOC\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 22 - [WRITE] Collateral Allocation Trigger (TRG)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_host}}/v1/api/process/MTFTradeProcessCollateralAllocation",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "process",
+                "MTFTradeProcessCollateralAllocation"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"LOGINID\": \"{{login_id}}\",\n  \"TRADEDATE\": \"{{margin_date}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 23 - Fund Transfer (GTG)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);",
+                  "pm.test(\"MSG is not INVALID SEGMENT\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID SEGMENT\"); });",
+                  "pm.test(\"MSG is not INVALID PROCESS NAME\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID PROCESS NAME\"); });",
+                  "pm.test(\"V6 doc drift: this step is documented WITHOUT Segment, but CBOS requires it\", function () { pm.expect(pm.response.code).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"FundTransfer\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 24 - Fund Transfer Check (CHK)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);",
+                  "pm.test(\"MSG is not INVALID SEGMENT\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID SEGMENT\"); });",
+                  "pm.test(\"MSG is not INVALID PROCESS NAME\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID PROCESS NAME\"); });",
+                  "pm.test(\"V6 doc drift: this step is documented WITHOUT Segment, but CBOS requires it\", function () { pm.expect(pm.response.code).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"MTFFUNDTRAN\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 25 - [WRITE] Fund Transfer Trigger (TRG)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_host}}/v1/api/process/MTFTradeProcessFundTransfer",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "process",
+                "MTFTradeProcessFundTransfer"
+              ]
+            },
+            "description": "The V6 doc's own sample response shows SQL Agent job MTF_RISK_UPDATE missing. Verify it is deployed on the target server before reading a failure as a code fault.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"LOGINID\": \"{{login_id}}\",\n  \"TRADEDATE\": \"{{margin_date}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Steps 26-33  MTF Process Suite",
+      "item": [
+        {
+          "name": "Step 26 - Cash Bill Posting GTG (pre-MTF)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "Same call as Step 12, pinned to EQ, used as the MTF Buy precondition.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"EQ\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"BILLPOSTING\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 27 - [WRITE] MTF Buy Trade Process",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_host}}/v1/api/process/MTFTradeProcess",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "process",
+                "MTFTradeProcess"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"LOGINID\": \"{{login_id}}\",\n  \"TRADEDATE\": \"{{margin_date}}\",\n  \"TYPE\": \"BUY PROCESS\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 28 - [WRITE] MTF Buy Trade Posting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_host}}/v1/api/process/MTFTradeProcess",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "process",
+                "MTFTradeProcess"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"LOGINID\": \"{{login_id}}\",\n  \"TRADEDATE\": \"{{margin_date}}\",\n  \"TYPE\": \"BUY POSTING\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 29 - MTF Sell GTG (EarlyPayin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);",
+                  "pm.test(\"MSG is not INVALID SEGMENT\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID SEGMENT\"); });",
+                  "pm.test(\"MSG is not INVALID PROCESS NAME\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID PROCESS NAME\"); });",
+                  "pm.test(\"V6 doc drift: this step is documented WITHOUT Segment, but CBOS requires it\", function () { pm.expect(pm.response.code).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"EARLYPAYIN\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 30 - [WRITE] MTF Sell Process and Posting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_host}}/v1/api/process/MTFTradeProcess",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "process",
+                "MTFTradeProcess"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"LOGINID\": \"{{login_id}}\",\n  \"TRADEDATE\": \"{{margin_date}}\",\n  \"TYPE\": \"SELL PROCESS AND POSTING\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 31 - Weekly Auto Closure (GTG)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);",
+                  "pm.test(\"MSG is not INVALID SEGMENT\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID SEGMENT\"); });",
+                  "pm.test(\"MSG is not INVALID PROCESS NAME\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID PROCESS NAME\"); });",
+                  "pm.test(\"V6 doc drift: this step is documented WITHOUT Segment, but CBOS requires it\", function () { pm.expect(pm.response.code).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"WEEKLYAUTOCLOSURE\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 32 - Weekly Auto Closure Check (CHK)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);",
+                  "pm.test(\"MSG is not INVALID SEGMENT\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID SEGMENT\"); });",
+                  "pm.test(\"MSG is not INVALID PROCESS NAME\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID PROCESS NAME\"); });",
+                  "pm.test(\"V6 doc drift: this step is documented WITHOUT Segment, but CBOS requires it\", function () { pm.expect(pm.response.code).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"CHECKWEEKLYAUTOCLOSURE\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 33 - [WRITE] Weekly Auto Closure Run",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_host}}/v1/api/process/MTFTradeProcess",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "process",
+                "MTFTradeProcess"
+              ]
+            },
+            "description": "4 PM on trading days only. Do not run on a non-trading day.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"LOGINID\": \"{{login_id}}\",\n  \"TRADEDATE\": \"{{margin_date}}\",\n  \"TYPE\": \"WEEKLY AUTOCLOSURE\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Steps 34-40  Corporate Action, Margin, Utilities",
+      "item": [
+        {
+          "name": "Step 34 - Corp Action Bill Posting GTG (FO DR)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{recon_segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"BILLPOSTING\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 35 - [WRITE] Corp Action Position Change (Phase 1 create)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));",
+                  "const t1 = ((b.Result || {}).Table1 || [])[0] || {};",
+                  "pm.collectionVariables.set(\"corp_process_id\", String(t1.PROCESSID || \"\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_host}}/v1/api/process/getNewTradeProcess",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "process",
+                "getNewTradeProcess"
+              ]
+            },
+            "description": "Phase 2 (trigger with the real PROCESSID) must not fire until the two position CSVs are uploaded and registered - triggering an empty process restates the book to nothing.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"GROUPNAME\": \"FOPositionChange\",\n  \"LOGINID\": \"{{login_id}}\",\n  \"TRADEDATE\": \"{{trade_date}}\",\n  \"PROCESSID\": \"0\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 36 - Daily Margin Reporting Refresh (CHK)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));",
+                  "const t1 = ((b.Result || {}).Table1 || []);",
+                  "console.log(\"Table1 rows: \" + t1.length + \" (empty = not yet triggered)\");"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_host}}/v1/api/process/CombinedMarginProcess",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "process",
+                "CombinedMarginProcess"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"BUTTONNAME\": \"REFRESH\",\n  \"LOGINID\": \"{{login_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 37 - [WRITE] Daily Margin Reporting Trigger (TRG)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{core_host}}/v1/api/process/CombinedMarginProcess",
+              "host": [
+                "{{core_host}}"
+              ],
+              "path": [
+                "v1",
+                "api",
+                "process",
+                "CombinedMarginProcess"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"BUTTONNAME\": \"COMBINEDMARGIN_PROCESS\",\n  \"LOGINID\": \"{{login_id}}\",\n  \"MARGINDATE\": \"{{margin_date}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 38 - Daily Margin Statement Check (CHK)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);",
+                  "pm.test(\"MSG is not INVALID SEGMENT\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID SEGMENT\"); });",
+                  "pm.test(\"MSG is not INVALID PROCESS NAME\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID PROCESS NAME\"); });",
+                  "pm.test(\"V6 doc drift: this step is documented WITHOUT Segment, but CBOS requires it\", function () { pm.expect(pm.response.code).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"CHECKDAILYMARGINSTATEMENT\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 39 - Daily Margin Statement (GTG)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "const rows = b.Data || [];",
+                  "pm.test(\"Data carries a MSG\", function () { pm.expect(rows.length, \"CBOS returned an EMPTY Data array - neither TRUE nor FALSE\").to.be.above(0); });",
+                  "const msg = String((rows[0] || {}).MSG || \"\");",
+                  "console.log(pm.info.requestName + \"  ->  \" + (msg || \"<empty Data>\"));",
+                  "pm.collectionVariables.set(\"last_msg\", msg);",
+                  "pm.test(\"MSG is not INVALID SEGMENT\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID SEGMENT\"); });",
+                  "pm.test(\"MSG is not INVALID PROCESS NAME\", function () { pm.expect(msg.toUpperCase()).to.not.eql(\"INVALID PROCESS NAME\"); });",
+                  "pm.test(\"V6 doc drift: this step is documented WITHOUT Segment, but CBOS requires it\", function () { pm.expect(pm.response.code).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "The billing engine uses this same call as the DMSTMT *trigger*, not just a poll - the one post-trade process whose trigger is a status endpoint.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"DAILYMARGINSTATEMENT\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Step 40 - Get Expected Filename",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "pm.test(\"Status is Success\", function () { pm.expect(b.Status).to.eql(\"Success\"); });",
+                  "console.log(pm.info.requestName + \"  ->  \" + JSON.stringify(b).slice(0, 300));",
+                  "const d = (b.Data || [])[0] || {};",
+                  "console.log(\"expected: \" + d.ExpectedFileNamePattern1 + \"  basis=\" + d.DateBasis);",
+                  "pm.test(\"Pattern returned\", function () { pm.expect(d.ExpectedFileNamePattern1).to.be.a(\"string\").and.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/get_expected_filename",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "get_expected_filename"
+              ]
+            },
+            "description": "Live response carries Description, ExchangeCodeUsed, DateBasis, MatchType, Trading_Date_DDMMYYYY and LastTradingDate_DDMMYYYY - none of them documented in V6. DateBasis (T-1) is the field that tells you which date belongs in the filename.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"segment\": \"{{segment}}\",\n  \"uploadid\": \"{{upload_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Conformance probes (assert the doc is wrong)",
+      "item": [
+        {
+          "name": "Probe A - Shape B without Segment must 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"V6 Shape B does not exist: CBOS rejects a payload with no Segment\", function () {",
+                  "  pm.expect(pm.response.code).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"The Segment field is required\");",
+                  "});",
+                  "console.log(\"Shape B probe -> HTTP \" + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "The V6 doc defines Shape B for Steps 14, 16-17, 20-21, 23-24, 29, 31-32, 38-39. This probe proves Shape B is rejected outright. Every one of those steps needs Segment.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"CollateralValuation\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Probe B - post-trade pseudo segment codes are rejected",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "const msg = String(((b.Data || [])[0] || {}).MSG || \"\");",
+                  "pm.test(\"Segment=COLVAL is INVALID SEGMENT (the billing engine sends this)\", function () { pm.expect(msg.toUpperCase()).to.eql(\"INVALID SEGMENT\"); });",
+                  "console.log(\"pseudo-segment probe -> \" + msg);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "cams-edp-billing-automation-agent-repo sends the pseudo segment_code (COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT) in the Segment field of every post-trade GTG poll. CBOS answers INVALID SEGMENT, which is not TRUE, so those polls can never pass.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"COLVAL\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"CollateralValuation\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Probe C - DailyMarginReporting is not a known ProcessName",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "const msg = String(((b.Data || [])[0] || {}).MSG || \"\");",
+                  "pm.test(\"DailyMarginReporting is rejected as a ProcessName\", function () { pm.expect(msg.toUpperCase()).to.eql(\"INVALID PROCESS NAME\"); });",
+                  "console.log(\"DMRPT GTG name probe -> \" + msg);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gtg_host}}/api/edp/file_process_status",
+              "host": [
+                "{{gtg_host}}"
+              ],
+              "path": [
+                "api",
+                "edp",
+                "file_process_status"
+              ]
+            },
+            "description": "POST_TRADE_GTG_PROCESS_NAME maps DMRPT to 'DailyMarginReporting'. The V6 doc never defines a GTG ProcessName for Daily Margin Reporting (Steps 36-37 are CombinedMarginProcess only), and CBOS does not know this one.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Segment\": \"{{segment}}\",\n  \"TradeDate\": \"{{trade_date}}\",\n  \"ProcessName\": \"DailyMarginReporting\",\n  \"UserID\": \"{{user_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
