@@ -92,6 +92,18 @@ class AmbiguousUploadRule(FileRejected):
     couldn't single one out - reject loudly rather than silently pick wrong."""
 
 
+def matches_rule(rule: UploadRule, file_name: str) -> bool:
+    """Does this filename satisfy ONE known rule?
+
+    `match_file` below answers a different question — *which* of many rules a file belongs to —
+    and carries the tie-breaking and column-count machinery that goes with it. A caller that
+    already knows the UploadID wants only the name check, and reaching into `_pattern_matches`
+    from outside this module to get it would leave the operator semantics duplicated in two
+    places. Added for the post-trade lane, where the slot names its own UploadID.
+    """
+    return _pattern_matches(rule.file_name_pattern, rule.compare_operator, file_name)
+
+
 def fetch_upload_rules(candidates, client, segment: str = "") -> list[UploadRule]:
     """Step 4: fetch upload settings for every distinct UploadID a batch's
     reservation offers (not just the first one), so every candidate's matching
