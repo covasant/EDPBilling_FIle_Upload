@@ -72,6 +72,10 @@ GET_NEW_TRADE_PROCESS_PATH = "/v1/api/process/getNewTradeProcess"
 GET_UPLOAD_SETTINGS_PATH = "/v1/api/process/GetNewTradeProcessPromodalUploadSettings"
 UPLOAD_CHUNK_PATH = "/v1/api/process/SaveTradePromodalUploadChunkFile"
 SAVE_UPLOAD_FILE_PATH = "/v1/api/process/SaveNewTradeProcessPromodalUploadFile"
+# Step 41 (V6.1). The same registration, for a file that belongs to no trade process.
+# Note the name is SaveTrade..., not SaveNewTradeProcess... — one word shorter, and the
+# difference is the whole point: no PROCESSID is involved.
+SAVE_POST_TRADE_UPLOAD_FILE_PATH = "/v1/api/process/SaveTradePromodalUploadFile"
 GET_EXISTING_PROCESS_ID_PATH = "/v1/api/brokerage/getdropdown"
 UPDATE_IS_MANDATORY_PATH = "/v1/api/process/UpdateNewTradeProcessProcessDetailsIsMandatory"
 
@@ -639,6 +643,12 @@ class BaseCBOSClient(ABC):
         """Step 7 raw call."""
 
     @abstractmethod
+    def _create_post_trade_file_entry(
+        self, upload_id: str, guid: str, file_name: str, trade_date: str
+    ) -> dict:
+        """Step 41 raw call — Step 7 without a PROCESSID."""
+
+    @abstractmethod
     def _update_step_optional(self, process_id: str, step_no) -> dict:
         """Step 8 raw call, one per empty slot."""
 
@@ -945,6 +955,39 @@ class BaseCBOSClient(ABC):
             trade_date=trade_date,
         )
 
+    def register_post_trade_file(
+        self, upload_id: str, guid: str, file_name: str, trade_date: str
+    ) -> None:
+        """Step 41. Register an uploaded file that belongs to NO trade process.
+
+        The post-trade inputs — collateral valuations, margin files, bond rates — are uploaded
+        through EDP > EDP REQUEST > UPLOAD rather than a segment's trade-process screen, so they
+        never appear in a Table2 slot list and there is no PROCESSID to bind them to. V6.1 added
+        this endpoint for exactly that: identical to Step 7 except `paraM9` is blank.
+
+        **Step 5 is unchanged and is shared with the segment lane.** The chunk upload carries
+        neither PROCESSID nor UploadID (see `_upload_chunk`) — it keys off the GUID alone — so
+        the transfer is already process-free and only this registration differs. That is what
+        made the uploader the right home for the post-trade lane rather than a second client
+        somewhere else.
+
+        The UploadID still matters and is still per-file: 706 is the ICRA bond valuation, 338 the
+        CB Rate file, 547 CASH MG02 in its UDIFF form. It selects the parser and the destination
+        table, so passing the wrong one is not a naming error — it files the data somewhere else.
+        Callers get theirs from configuration, and should validate it against Step 4 first: CBOS
+        answers an unavailable UploadID with `{"Status":"Success","Result":[]}` rather than an
+        error, so a dead id fails at upload time looking exactly like a pattern mismatch.
+        """
+        self._call(
+            41,
+            "SaveTradePromodalUploadFile",
+            lambda: self._create_post_trade_file_entry(upload_id, guid, file_name, trade_date),
+            upload_id=upload_id,
+            guid=guid,
+            file_name=file_name,
+            trade_date=trade_date,
+        )
+
     def mark_step_optional(self, process_id: str, step_no) -> None:
         """Step 8. Mark an empty slot optional so it doesn't hold FILEUPLOAD at
         FALSE. One call per empty non-zero slot, after Steps 5+7.
@@ -1181,6 +1224,34 @@ class CBOSClient(BaseCBOSClient):
         }
         return self._post(self._core_url(SAVE_UPLOAD_FILE_PATH), payload)
 
+    def _create_post_trade_file_entry(
+        self, upload_id: str, guid: str, file_name: str, trade_date: str
+    ) -> dict:
+        # Step 41. Byte-identical to Step 7 above except paraM9 — which the V6.1 doc annotates
+        # in place as "It is common upload no process id is rerquired" [sic]. Kept as a separate
+        # method rather than an optional argument to Step 7: an empty PROCESSID reaching the
+        # segment lane would be a defect there, and a shared method with a nullable field is how
+        # that happens by accident.
+        payload = {
+            "uploadid": upload_id,
+            "loginid": settings.cbos_login_id,
+            "uploadfoldername": guid,
+            "uploadfilename": file_name,
+            "ipaddress": _upload_ip_address(),
+            "file": "",
+            "paraM1": _to_cbos_date(trade_date),
+            "paraM2": "",
+            "paraM3": "",
+            "paraM4": "",
+            "paraM5": "",
+            "paraM6": "",
+            "paraM7": "",
+            "paraM8": "",
+            "paraM9": "",
+            "chunkFileUpload": "YES",
+        }
+        return self._post(self._core_url(SAVE_POST_TRADE_UPLOAD_FILE_PATH), payload)
+
     def _update_step_optional(self, process_id: str, step_no) -> dict:
         # ISOPTIONAL="0" is the doc's (counter-intuitive) value for "make this
         # step optional / not mandatory". Unverified against real CBOS - if it
@@ -1240,6 +1311,9 @@ class MockCBOSClient(BaseCBOSClient):
             tuple
         ] = []  # (upload_id, file_name) per Step-5 chunk, for assertions
         self.reserve_calls = 0  # count of Step-2 reservations, for assertions
+        self.post_trade_file_entries: list[
+            tuple
+        ] = []  # (upload_id, file_name, trade_date) per Step-41 call, for assertions
         self._reserved_process_ids: dict[
             tuple, str
         ] = {}  # (segment, trade_date) -> PROCESSID reserved so far
@@ -1354,6 +1428,21 @@ class MockCBOSClient(BaseCBOSClient):
         )
         self._segment_file_names.setdefault(trade_date, []).append(file_name)
         self._filled_upload_ids.setdefault(str(process_id), set()).add(str(upload_id))
+        return {"Status": "Success", "Result": "File entry saved successfully"}
+
+    def _create_post_trade_file_entry(
+        self, upload_id: str, guid: str, file_name: str, trade_date: str
+    ) -> dict:
+        # Step 41. Recorded on its OWN list, not `_segment_file_names`: a post-trade file belongs
+        # to no PROCESSID and must not appear in a segment's Table2 view, or a test asserting a
+        # segment's completeness would silently count it.
+        logger.debug(
+            "[MOCK] Post-trade file entry created: %s (upload_id=%s, guid=%s)",
+            file_name,
+            upload_id,
+            guid,
+        )
+        self.post_trade_file_entries.append((str(upload_id), file_name, trade_date))
         return {"Status": "Success", "Result": "File entry saved successfully"}
 
     def _update_step_optional(self, process_id: str, step_no) -> dict:
