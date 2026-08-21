@@ -22,6 +22,25 @@ class PostTradeUploadRequest(BaseModel):
     trade_date: str = Field(
         description="The FOLDER date, %d-%m-%Y (e.g. 18-08-2026) — not ISO. Names the folder."
     )
+    segment: str = Field(
+        default="",
+        description=(
+            "The file's own segment, as CBOS reports it in steps 41/42 (EQ, MF, DR, CUR, "
+            "MCX, NCDEX, NSECOM). Only used for the Step 40 lookup behind translate_name; "
+            "defaults to EQ."
+        ),
+    )
+    translate_name: bool = Field(
+        default=False,
+        description=(
+            "Declare a DIFFERENT name to CBOS from the one on disk, derived from CBOS's own "
+            "Step 40 patterns. For files where CBOS's expected name cannot match what the "
+            "exchange publishes — the two UDIFF bhavcopies, where CBOS wants DDMMYYYY and "
+            "the exchange publishes YYYYMMDD. **Opt in per file, never globally**: for the "
+            "files whose pattern matches several real files a rename would let the wrong "
+            "one through. Bytes and the on-disk name are untouched; both names are logged."
+        ),
+    )
 
 
 class PostTradeUploadResponse(BaseModel):
@@ -29,5 +48,14 @@ class PostTradeUploadResponse(BaseModel):
     file_name: str
     trade_date: str
     guid: str = Field(description="The upload folder GUID CBOS binds the chunks and the entry by")
+    declared_name: str = Field(
+        default="",
+        description=(
+            "The name DECLARED to CBOS, when translate_name changed it. Empty when it "
+            "equals file_name. Reported rather than only logged: this is the one point "
+            "where what CBOS holds stops matching what is on disk, and a caller "
+            "reconciling the two needs to see both."
+        ),
+    )
     rule_name: str = Field(description="CBOS's own name for this UploadID, echoed for the log")
     status: str = "uploaded"

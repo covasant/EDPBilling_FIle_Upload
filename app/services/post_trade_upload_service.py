@@ -74,6 +74,7 @@ class PostTradeUploadResult:
     guid: str
     trade_date: str
     rule_name: str
+    declared_name: str = ""
 
 
 def _locate(file_name: str, trade_date: str) -> Path:
@@ -105,11 +106,45 @@ def _rule_for(client: BaseCBOSClient, upload_id: str) -> UploadRule:
     return rule
 
 
+def _name_cbos_will_accept(rule: UploadRule, actual: str) -> str | None:
+    """A name satisfying CBOS's Step 4 rule, built by PREFIXING the real one — or None if
+    the file already passes.
+
+    **Step 4 is the gate, not Step 40.** Step 40 returns a canonical-looking name with a
+    date token and reads like the authority, but it is a diagnostic: proved on 2026-08-21
+    by uploading ``BhavCopy_NSE_CM_0_0_0_20260820_F_0000.csv`` under UploadID 518 and
+    having CBOS accept it, TRANID and all, while Step 40 for that id demanded a DDMMYYYY
+    date the file does not carry. Step 4's rule is a plain substring plus an extension and
+    carries **no date at all**, which is why the bhavcopies were never actually broken.
+
+    Only two of the twenty genuinely fail it, and both are a token the published name has
+    never contained::
+
+        345  MOSL VAR   wants 'MOSLVar file'   file is  MOSLVarfile -20082026.xlsx
+        276  MCX EOD    wants 'MCX_MARGIN'     MCX serves Margin_MCXCCL_... and MCX_MRG_...
+
+    **PREFIXED, not replaced.** ``<token>_<original name>`` keeps the whole published name
+    visible inside the declared one, so anyone reading CBOS can still see which file this
+    really was. Synthesising a bare name from the rule would satisfy the gate and destroy
+    that, and this is the one point where a file stops being self-describing.
+
+    Nothing here decides WHICH file this is — the caller named the UploadID, and the check
+    below is on a name that has already been rejected. Identification never depends on the
+    name being replaced, which is what stops this being a check that can only pass.
+    """
+    token = (rule.file_name_pattern or "").strip()
+    if not token or token.lower() in actual.lower():
+        return None  # no rule to satisfy, or already satisfied
+    return f"{token}_{actual}"
+
+
 def upload_one(
     *,
     upload_id: str,
     file_name: str,
     trade_date: str,
+    segment: str = "",  # accepted for the wire; the Step 4 rule needs no segment
+    translate_name: bool = False,
     client: BaseCBOSClient | None = None,
 ) -> PostTradeUploadResult:
     """Put one post-trade file into CBOS. Raises rather than returning a status.
@@ -128,25 +163,47 @@ def upload_one(
 
     # The pattern check that upload_matching does for a batch, applied to one known id. Not a
     # search — the caller has already said which id this file is for, and this only confirms it.
-    if not upload_matching.matches_rule(rule, path.name):
+    if not upload_matching.matches_rule(rule, path.name) and not translate_name:
         raise FileNameRejected(
             f"{path.name!r} does not match the pattern CBOS holds for UPLOADID={upload_id} "
             f"({rule.name!r}: {rule.compare_operator} {rule.file_name_pattern!r}). Either the "
             f"file is for a different UploadID, or the exchange has changed the name."
         )
 
+    # The name DECLARED to CBOS, which is not necessarily the name on disk. Opt-in per
+    # request: a blanket switch would quietly license this for the files where CBOS's
+    # pattern matches SEVERAL real files (NSE VAR's six snapshots, ICCL's three variants),
+    # and there a rename would let the wrong artefact through under a name CBOS accepts.
+    declared = path.name
+    if translate_name:
+        derived = _name_cbos_will_accept(rule, path.name)
+        if derived:
+            # Both names, always. A log line saying only that something was renamed cannot
+            # be audited, and this is the one point where the file stops being
+            # self-describing.
+            logger.warning(
+                "post-trade upload: declaring %r to CBOS for UPLOADID=%s; the file on disk "
+                "is %r. CBOS's Step 40 pattern cannot match the published name — see "
+                "_cbos_expected_name. Bytes and the on-disk name are unchanged.",
+                derived,
+                upload_id,
+                path.name,
+            )
+            declared = derived
+
     guid = str(uuid.uuid4())
     logger.info(
-        "post-trade upload starting: file=%s upload_id=%s (%s) trade_date=%s guid=%s",
+        "post-trade upload starting: file=%s upload_id=%s (%s) trade_date=%s guid=%s declared=%s",
         path.name,
         upload_id,
         rule.name,
         trade_date,
         guid,
+        declared,
     )
 
-    client.upload_file(path, upload_id, guid, file_name=path.name)
-    client.register_post_trade_file(upload_id, guid, path.name, trade_date)
+    client.upload_file(path, upload_id, guid, file_name=declared)
+    client.register_post_trade_file(upload_id, guid, declared, trade_date)
 
     logger.info(
         "post-trade upload done: file=%s upload_id=%s trade_date=%s", path.name, upload_id, trade_date
@@ -157,6 +214,7 @@ def upload_one(
         guid=guid,
         trade_date=trade_date,
         rule_name=rule.name,
+        declared_name="" if declared == path.name else declared,
     )
 
 

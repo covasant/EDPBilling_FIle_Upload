@@ -39,6 +39,8 @@ def upload_post_trade_file(body: PostTradeUploadRequest) -> PostTradeUploadRespo
             upload_id=body.upload_id,
             file_name=body.file_name,
             trade_date=body.trade_date,
+            segment=body.segment,
+            translate_name=body.translate_name,
         )
     except service.PostTradeFileNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -54,4 +56,5 @@ def upload_post_trade_file(body: PostTradeUploadRequest) -> PostTradeUploadRespo
         trade_date=result.trade_date,
         guid=result.guid,
         rule_name=result.rule_name,
+            declared_name=result.declared_name,
     )
