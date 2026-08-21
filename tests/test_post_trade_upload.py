@@ -259,3 +259,68 @@ def test_segment_reaches_upload_settings_for_the_step40_fallback():
 
     assert seen["segment"] == "MF", "segment must reach upload_settings or the fallback is dead"
     assert seen["trade_date"] == "21-08-2026", "Step 40 takes the trade date as a parameter"
+
+
+def test_locate_finds_a_file_in_its_process_folder(tmp_path, monkeypatch):
+    """The bot MOVES a required file into POSTTRADE/<PROCESS>/, so that is where the uploader
+    has to look. Before this it only ever read the flat root, and every required file would
+    have 404'd as "not fetched yet" the moment filing by process turned on."""
+    from app.core.config import settings
+    from app.services import post_trade_upload_service as svc
+
+    monkeypatch.setattr(settings, "file_root_path", str(tmp_path))
+    d = tmp_path / "17-08-2026" / "POSTTRADE" / "COLVAL"
+    d.mkdir(parents=True)
+    (d / "CB_Bhavcopy17082026.CSV").write_bytes(b"x")
+
+    got = svc._locate("CB_Bhavcopy17082026.CSV", "17-08-2026", "COLVAL")
+    assert got == d / "CB_Bhavcopy17082026.CSV"
+
+
+def test_locate_falls_back_to_the_flat_root(tmp_path, monkeypatch):
+    """Older dates, and anything placed by hand, still live in the root. A caller naming a
+    folder must not be worse off than one that does not."""
+    from app.core.config import settings
+    from app.services import post_trade_upload_service as svc
+
+    monkeypatch.setattr(settings, "file_root_path", str(tmp_path))
+    root = tmp_path / "17-08-2026" / "POSTTRADE"
+    root.mkdir(parents=True)
+    (root / "loose.csv").write_bytes(b"x")
+
+    assert svc._locate("loose.csv", "17-08-2026", "COLVAL") == root / "loose.csv"
+    assert svc._locate("loose.csv", "17-08-2026") == root / "loose.csv"
+
+
+def test_locate_names_both_places_it_tried(tmp_path, monkeypatch):
+    """A 404 that names only one of two folders sends someone looking in the wrong place."""
+    from app.core.config import settings
+    from app.services import post_trade_upload_service as svc
+
+    monkeypatch.setattr(settings, "file_root_path", str(tmp_path))
+    (tmp_path / "17-08-2026" / "POSTTRADE" / "COLVAL").mkdir(parents=True)
+
+    try:
+        svc._locate("nope.csv", "17-08-2026", "COLVAL")
+    except svc.PostTradeFileNotFound as exc:
+        assert "COLVAL" in str(exc) and "POSTTRADE" in str(exc)
+    else:
+        raise AssertionError("should not have found it")
+
+
+def test_a_traversing_folder_is_refused(tmp_path, monkeypatch):
+    """`folder` arrives over HTTP just like `file_name`, so it gets the same guard. Without it
+    a folder of '../../..' reaches anywhere the process can read."""
+    from app.core.config import settings
+    from app.services import post_trade_upload_service as svc
+
+    monkeypatch.setattr(settings, "file_root_path", str(tmp_path))
+    (tmp_path / "17-08-2026" / "POSTTRADE").mkdir(parents=True)
+
+    for bad in ("../..", "../../etc", "/etc"):
+        try:
+            svc._locate("passwd", "17-08-2026", bad)
+        except svc.PostTradeFileNotFound:
+            pass  # refused, by either the folder guard or the name guard
+        else:
+            raise AssertionError(f"{bad!r} should not resolve")

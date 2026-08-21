@@ -77,22 +77,45 @@ class PostTradeUploadResult:
     declared_name: str = ""
 
 
-def _locate(file_name: str, trade_date: str) -> Path:
+def _locate(file_name: str, trade_date: str, folder: str = "") -> Path:
     """The file, under this trade date's POSTTRADE folder and nowhere else.
 
-    `resolve_within` is the same guard the settlement path uses: a caller-supplied name must not
-    be able to reach outside the folder it names, and these names come over HTTP.
+    `folder` names the process subfolder the download bot filed this file into — `COLVAL`,
+    `COLALLOC`, or `COMMON` for one both processes need. Empty means the flat POSTTRADE root,
+    which is where files landed before the bot started filing them and where a bundle route's
+    uninvited extras still sit.
+
+    **Falls back to the root when the named folder does not have it.** The bot MOVES a required
+    file into its process folder, so the root is where older dates' files still are and where
+    anything filed by hand would go. Trying both means a caller that does not know about
+    folders, or a folder that has not been populated for that date, still works.
+
+    `resolve_within` is the same guard the settlement path uses, and `folder` is checked against
+    it too: both come over HTTP, and a folder of `../..` would otherwise reach anywhere on disk.
     """
-    folder = Path(settings.file_root_path) / trade_date / "POSTTRADE"
-    try:
-        path = resolve_within(folder, file_name)
-    except UnsafePathError as exc:
-        raise PostTradeFileNotFound(f"{file_name!r} is not a name inside {folder}") from exc
-    if not path.is_file():
-        raise PostTradeFileNotFound(
-            f"{file_name!r} is not in {folder} — the bot may not have fetched it yet"
-        )
-    return path
+    base = Path(settings.file_root_path) / trade_date / "POSTTRADE"
+    candidates: list[Path] = []
+    if folder:
+        try:
+            candidates.append(resolve_within(base, folder))
+        except UnsafePathError as exc:
+            raise PostTradeFileNotFound(f"{folder!r} is not a folder inside {base}") from exc
+    candidates.append(base)
+
+    tried: list[Path] = []
+    for parent in candidates:
+        try:
+            path = resolve_within(parent, file_name)
+        except UnsafePathError as exc:
+            raise PostTradeFileNotFound(f"{file_name!r} is not a name inside {parent}") from exc
+        tried.append(parent)
+        if path.is_file():
+            return path
+
+    where = " or ".join(str(t) for t in tried)
+    raise PostTradeFileNotFound(
+        f"{file_name!r} is not in {where} — the bot may not have fetched it yet"
+    )
 
 
 def _rule_for(
@@ -164,6 +187,7 @@ def upload_one(
     file_name: str,
     trade_date: str,
     segment: str = "",  # CBOS's own Segment tag for this file; enables the Step-40 fallback
+    folder: str = "",  # the process subfolder the bot filed it into: COLVAL / COLALLOC / COMMON
     translate_name: bool = False,
     client: BaseCBOSClient | None = None,
 ) -> PostTradeUploadResult:
@@ -178,7 +202,7 @@ def upload_one(
     different destination.
     """
     client = client or get_cbos_client()
-    path = _locate(file_name, trade_date)
+    path = _locate(file_name, trade_date, folder)
     rule = _rule_for(client, upload_id, segment=segment, trade_date=trade_date)
 
     # The pattern check that upload_matching does for a batch, applied to one known id. Not a

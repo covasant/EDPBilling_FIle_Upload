@@ -40,6 +40,7 @@ def upload_post_trade_file(body: PostTradeUploadRequest) -> PostTradeUploadRespo
             file_name=body.file_name,
             trade_date=body.trade_date,
             segment=body.segment,
+            folder=body.folder,
             translate_name=body.translate_name,
         )
     except service.PostTradeFileNotFound as exc:

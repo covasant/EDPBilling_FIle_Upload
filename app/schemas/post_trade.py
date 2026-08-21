@@ -17,7 +17,18 @@ class PostTradeUploadRequest(BaseModel):
         )
     )
     file_name: str = Field(
-        description="Name of the file already under <root>/<trade_date>/POSTTRADE/"
+        description="Name of the file already under <root>/<trade_date>/POSTTRADE/[<folder>/]"
+    )
+    folder: str = Field(
+        default="",
+        description=(
+            "The process subfolder the download bot filed this file into — `COLVAL`, "
+            "`COLALLOC`, or `COMMON` for a file both processes need. The bot MOVES a required "
+            "file there, so the flat POSTTRADE root holds only what belongs to no process.\n\n"
+            "Optional: omit it and the root is searched, which is what older dates and "
+            "hand-placed files need. Naming it searches the folder first and the root second, "
+            "so a caller is never worse off for passing it."
+        ),
     )
     trade_date: str = Field(
         description="The FOLDER date, %d-%m-%Y (e.g. 18-08-2026) — not ISO. Names the folder."
