@@ -95,13 +95,33 @@ def _locate(file_name: str, trade_date: str) -> Path:
     return path
 
 
-def _rule_for(client: BaseCBOSClient, upload_id: str) -> UploadRule:
-    """Step 4, with the empty answer turned into a named failure rather than a None."""
-    rule = client.upload_settings(upload_id)
+def _rule_for(
+    client: BaseCBOSClient, upload_id: str, segment: str = "", trade_date: str = ""
+) -> UploadRule:
+    """Step 4, with the empty answer turned into a named failure rather than a None.
+
+    `segment` and `trade_date` enable `upload_settings`' Step-40 fallback, and passing them is
+    the whole point of accepting them: a slot whose Step-4 pattern is BLANK produces no usable
+    rule and is dropped, so without the fallback its file can never be uploaded at all.
+
+    Found live on 2026-08-22 with UploadID 490 (NSE NAV): CBOS's Step 4 row exists but its
+    `FILE NAME (CONTAINS)` is an empty string, so this raised UnknownUploadId — a 422, which the
+    billing engine treats as permanent and fails the process on — for a slot that is configured,
+    just loosely. The segment lane already met this on NCDEXPHY/482 and built the fallback for
+    it; the post-trade lane accepted a `segment` argument and then dropped it on the floor.
+
+    NOT a complete fix for 490. Step 40 can answer with a concrete filename rather than a
+    pattern, and that shape is refused deliberately (see `_expected_name_pattern`). The real
+    resolution is CBOS giving 490 a pattern — raised with MOFSL — because a blank rule also
+    means any .TXT with 6 columns is accepted under that id, which is the more dangerous half.
+    """
+    rule = client.upload_settings(upload_id, segment=segment, trade_date=trade_date)
     if rule is None:
         raise UnknownUploadId(
-            f"CBOS returned no settings for UPLOADID={upload_id}. It is either wrong or "
-            f"deactivated — CBOS answers both the same way, with Success and an empty Result."
+            f"CBOS returned no settings for UPLOADID={upload_id} (segment={segment!r}). Either "
+            f"the id is wrong or deactivated — CBOS answers both the same way, with Success and "
+            f"an empty Result — or its Step-4 filename pattern is blank AND Step 40 offered no "
+            f"usable pattern either."
         )
     return rule
 
@@ -143,7 +163,7 @@ def upload_one(
     upload_id: str,
     file_name: str,
     trade_date: str,
-    segment: str = "",  # accepted for the wire; the Step 4 rule needs no segment
+    segment: str = "",  # CBOS's own Segment tag for this file; enables the Step-40 fallback
     translate_name: bool = False,
     client: BaseCBOSClient | None = None,
 ) -> PostTradeUploadResult:
@@ -159,7 +179,7 @@ def upload_one(
     """
     client = client or get_cbos_client()
     path = _locate(file_name, trade_date)
-    rule = _rule_for(client, upload_id)
+    rule = _rule_for(client, upload_id, segment=segment, trade_date=trade_date)
 
     # The pattern check that upload_matching does for a batch, applied to one known id. Not a
     # search — the caller has already said which id this file is for, and this only confirms it.

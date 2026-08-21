@@ -193,3 +193,69 @@ def test_each_failure_gets_its_own_status_code(monkeypatch, raises, expected_sta
             json={"upload_id": "547", "file_name": FILE_NAME, "trade_date": TRADE_DATE},
         )
     assert resp.status_code == expected_status, resp.text
+
+
+def test_segment_reaches_upload_settings_for_the_step40_fallback():
+    """A slot whose Step-4 pattern is BLANK produces no usable rule and is dropped, so without
+    the Step-40 fallback its file can never be uploaded at all.
+
+    Found live on 2026-08-22 with UploadID 490 (NSE NAV): the Step-4 row exists but its
+    `FILE NAME (CONTAINS)` is an empty string, so `upload_one` raised UnknownUploadId - a 422,
+    which the billing engine treats as PERMANENT and fails the process on - for a slot that is
+    configured, just loosely. The segment lane met this on NCDEXPHY/482 and built the fallback;
+    the post-trade lane accepted a `segment` argument and dropped it on the floor.
+    """
+    from app.services import post_trade_upload_service as svc
+
+    seen = {}
+
+    class _Client:
+        def upload_settings(self, upload_id, segment="", trade_date="", **_):
+            seen["upload_id"] = upload_id
+            seen["segment"] = segment
+            seen["trade_date"] = trade_date
+            return None  # what a blank Step-4 pattern produces
+
+    try:
+        svc._rule_for(_Client(), "490", segment="MF", trade_date="21-08-2026")
+    except svc.UnknownUploadId as exc:
+        assert "490" in str(exc)
+        assert "MF" in str(exc), "the error should name the segment it tried"
+    else:
+        raise AssertionError("a None rule must still raise")
+
+    assert seen["segment"] == "MF", "segment must reach upload_settings or the fallback is dead"
+    assert seen["trade_date"] == "21-08-2026", "Step 40 takes the trade date as a parameter"
+
+
+def test_segment_reaches_upload_settings_for_the_step40_fallback():
+    """A slot whose Step-4 pattern is BLANK produces no usable rule and is dropped, so without
+    the Step-40 fallback its file can never be uploaded at all.
+
+    Found live on 2026-08-22 with UploadID 490 (NSE NAV): the Step-4 row exists but its
+    `FILE NAME (CONTAINS)` is an empty string, so `upload_one` raised UnknownUploadId - a 422,
+    which the billing engine treats as PERMANENT and fails the process on - for a slot that is
+    configured, just loosely. The segment lane met the same thing on NCDEXPHY/482 and built the
+    fallback for it; the post-trade lane accepted a `segment` argument and dropped it.
+    """
+    from app.services import post_trade_upload_service as svc
+
+    seen = {}
+
+    class _Client:
+        def upload_settings(self, upload_id, segment="", trade_date="", **_):
+            seen["upload_id"] = upload_id
+            seen["segment"] = segment
+            seen["trade_date"] = trade_date
+            return None  # what a blank Step-4 pattern produces
+
+    try:
+        svc._rule_for(_Client(), "490", segment="MF", trade_date="21-08-2026")
+    except svc.UnknownUploadId as exc:
+        assert "490" in str(exc)
+        assert "MF" in str(exc), "the error should name the segment it tried"
+    else:
+        raise AssertionError("a None rule must still raise")
+
+    assert seen["segment"] == "MF", "segment must reach upload_settings or the fallback is dead"
+    assert seen["trade_date"] == "21-08-2026", "Step 40 takes the trade date as a parameter"
