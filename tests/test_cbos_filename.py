@@ -59,7 +59,7 @@ class _Client:
         self._data, self._raises = data, raises
         self.calls = 0
 
-    def get_expected_filename(self, segment, upload_id):
+    def get_expected_filename(self, segment, upload_id, trade_date=""):
         self.calls += 1
         if self._raises:
             raise RuntimeError("CBOS said no")

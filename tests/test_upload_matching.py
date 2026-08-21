@@ -233,7 +233,7 @@ def test_processing_steps_are_never_asked_for_upload_settings():
     asked: list[str] = []
 
     class _Client:
-        def upload_settings(self, upload_id, fallback_name="", segment=""):
+        def upload_settings(self, upload_id, fallback_name="", segment="", trade_date=""):
             asked.append(upload_id)
             return _rule(535, "MCX_CO_0_CM", ext="csv", name="MCX COM TRADE FILE")
 
@@ -473,7 +473,7 @@ def test_step40_concrete_filename_is_refused(monkeypatch):
         def __init__(self):
             pass
 
-        def get_expected_filename(self, segment, upload_id):
+        def get_expected_filename(self, segment, upload_id, trade_date=""):
             captured["asked"] = (segment, upload_id)
             return {"Status": "Success", "Data": [{"ExpectedFileNamePattern1": "SCRIP_030826.TXT"}]}
 
@@ -489,7 +489,7 @@ def test_step40_wildcard_shapes_are_stripped(monkeypatch):
         def __init__(self, value):
             self._value = value
 
-        def get_expected_filename(self, segment, upload_id):
+        def get_expected_filename(self, segment, upload_id, trade_date=""):
             return {"Status": "Success", "Data": [{"ExpectedFileNamePattern1": self._value}]}
 
     assert (
@@ -507,7 +507,7 @@ def test_step40_failure_never_breaks_the_batch(monkeypatch):
         def __init__(self):
             pass
 
-        def get_expected_filename(self, segment, upload_id):
+        def get_expected_filename(self, segment, upload_id, trade_date=""):
             raise RuntimeError("CBOS down")
 
     assert _Boom()._expected_name_pattern("NCDEXPHY", "482") is None

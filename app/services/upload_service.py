@@ -383,6 +383,15 @@ def _process_batch(task: SegmentBatchTask) -> None:
     # V6 Step 34 (DR BILLPOSTING), which the engine checks before it reserves the
     # PROCESSID this batch arrives with - a stricter gate than the holiday check,
     # and one asked with a Segment that CBOS recognises.
+    #
+    # ALSO SKIPPED whenever the engine already supplied a process_id. A supplied
+    # process_id only ever reaches UPLOADING after the engine's own INIT state ran
+    # this exact BeginFileUpload check and reserved the PID on the strength of it
+    # (see RealSegmentStateMachine.handle_init / CBOS_HANDOFF_CONTRACT.md's "One
+    # reserver" section) - a holiday would have completed the segment before it
+    # ever got here. Repeating the check on every batch (and, before this, every
+    # rescan) is a second GTG call this handoff makes redundant; only a caller
+    # that hasn't adopted process_id (self-reserving, below) still needs it.
     if task.segment == CORP_ACTION_SEGMENT:
         logger.info(
             "Batch %s: skipping the Step 1 holiday check - %s is a GROUPNAME, not a "
@@ -390,40 +399,47 @@ def _process_batch(task: SegmentBatchTask) -> None:
             task.key,
             task.segment,
         )
-    try:
-        if task.segment != CORP_ACTION_SEGMENT and not client.may_begin_upload(
-            task.segment, trade_date
-        ):
-            if settings.cbos_holiday_check_enforced:
+    elif task.process_id:
+        logger.info(
+            "Batch %s: skipping the Step 1 holiday check - process_id=%s was supplied, "
+            "meaning the engine's INIT state already passed BeginFileUpload before "
+            "reserving it",
+            task.key,
+            task.process_id,
+        )
+    else:
+        try:
+            if not client.may_begin_upload(task.segment, trade_date):
+                if settings.cbos_holiday_check_enforced:
+                    logger.warning(
+                        "Batch %s: CBOS reports today is not a processing day for segment %s - "
+                        "leaving files in place for the next submission/rescan",
+                        task.key,
+                        task.segment,
+                    )
+                    _set_batch_status(
+                        task, BatchStatus.QUEUED, {"deferred": "holiday check - not a processing day"}
+                    )
+                    return
                 logger.warning(
-                    "Batch %s: CBOS reports today is not a processing day for segment %s - "
-                    "leaving files in place for the next submission/rescan",
+                    "Batch %s: Step 1 did not answer %s for segment %s. Not a processing day, IF the "
+                    "doc's rule holds - but the holiday check is observe-only "
+                    "(CBOS_HOLIDAY_CHECK_ENFORCED=false), so the batch continues. Confirm this "
+                    "message with the CBOS team before enforcing it.",
                     task.key,
+                    cbos_client.BEGIN_UPLOAD_PROCEED,
                     task.segment,
                 )
-                _set_batch_status(
-                    task, BatchStatus.QUEUED, {"deferred": "holiday check - not a processing day"}
-                )
-                return
+        except CBOSUploadError as exc:
+            # Unreachable/erroring GTG host is not proof of a holiday. Uploading on a
+            # holiday is recoverable; refusing to upload on a working day because a
+            # status endpoint blipped silently stalls the whole day's billing.
             logger.warning(
-                "Batch %s: Step 1 did not answer %s for segment %s. Not a processing day, IF the "
-                "doc's rule holds - but the holiday check is observe-only "
-                "(CBOS_HOLIDAY_CHECK_ENFORCED=false), so the batch continues. Confirm this "
-                "message with the CBOS team before enforcing it.",
+                "Batch %s: BeginFileUpload check failed (%s) - proceeding anyway; "
+                "an unanswered holiday check is not a holiday",
                 task.key,
-                cbos_client.BEGIN_UPLOAD_PROCEED,
-                task.segment,
+                exc,
             )
-    except CBOSUploadError as exc:
-        # Unreachable/erroring GTG host is not proof of a holiday. Uploading on a
-        # holiday is recoverable; refusing to upload on a working day because a
-        # status endpoint blipped silently stalls the whole day's billing.
-        logger.warning(
-            "Batch %s: BeginFileUpload check failed (%s) - proceeding anyway; "
-            "an unanswered holiday check is not a holiday",
-            task.key,
-            exc,
-        )
 
     session = get_sessionmaker()()
     try:
@@ -453,7 +469,9 @@ def _process_batch(task: SegmentBatchTask) -> None:
                 reservation = cbos_client.build_reservation(
                     task.table1 or [], task.table2 or [], task.segment, process_id=task.process_id
                 )
-                rules = upload_matching.fetch_upload_rules(reservation.candidates, client, task.segment)
+                rules = upload_matching.fetch_upload_rules(
+                    reservation.candidates, client, task.segment, trade_date
+                )
             except CBOSUploadError as exc:
                 logger.error(
                     "Batch %s: supplied process_id=%s reservation payload invalid: %s",
@@ -474,7 +492,9 @@ def _process_batch(task: SegmentBatchTask) -> None:
             for attempt in range(1, settings.cbos_max_retries + 1):
                 try:
                     reservation = client.reserve_process(task.segment, trade_date, existing_process_id)
-                    rules = upload_matching.fetch_upload_rules(reservation.candidates, client, task.segment)
+                    rules = upload_matching.fetch_upload_rules(
+                    reservation.candidates, client, task.segment, trade_date
+                )
                     break
                 except CBOSUploadError as exc:
                     logger.warning(
