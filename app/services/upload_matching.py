@@ -104,7 +104,9 @@ def matches_rule(rule: UploadRule, file_name: str) -> bool:
     return _pattern_matches(rule.file_name_pattern, rule.compare_operator, file_name)
 
 
-def fetch_upload_rules(candidates, client, segment: str = "") -> list[UploadRule]:
+def fetch_upload_rules(
+    candidates, client, segment: str = "", trade_date: str = ""
+) -> list[UploadRule]:
     """Step 4: fetch upload settings for every distinct UploadID a batch's
     reservation offers (not just the first one), so every candidate's matching
     rule is known before any file is matched.
@@ -115,7 +117,9 @@ def fetch_upload_rules(candidates, client, segment: str = "") -> list[UploadRule
 
     `segment` lets the client fall back to Step 40 for a slot whose Step-4
     pattern is blank - without it such a slot is dropped and its mandatory file
-    can never be uploaded (see CBOSClient.upload_settings)."""
+    can never be uploaded (see CBOSClient.upload_settings). `trade_date` is
+    that same fallback's request parameter - pass it whenever `segment` is
+    passed."""
     rules: list[UploadRule] = []
     seen_ids: set[str] = set()
 
@@ -135,7 +139,9 @@ def fetch_upload_rules(candidates, client, segment: str = "") -> list[UploadRule
             continue
         seen_ids.add(upload_id)
 
-        rule = client.upload_settings(upload_id, fallback_name=candidate.name, segment=segment)
+        rule = client.upload_settings(
+            upload_id, fallback_name=candidate.name, segment=segment, trade_date=trade_date
+        )
         if rule is not None:
             rules.append(rule)
 

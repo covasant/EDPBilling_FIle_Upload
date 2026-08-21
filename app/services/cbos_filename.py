@@ -104,7 +104,7 @@ def resolve_upload_name(
     try:
         from app.clients.cbos_client import _decode_body
 
-        raw = client.get_expected_filename(segment, upload_id)
+        raw = client.get_expected_filename(segment, upload_id, trade_date)
         data = (_decode_body(raw, "get_expected_filename").get("Data") or [{}])[0]
     except Exception as exc:  # a cross-check must never cost the batch a file
         logger.warning(

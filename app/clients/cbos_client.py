@@ -730,14 +730,16 @@ class BaseCBOSClient(ABC):
         )
 
     def upload_settings(
-        self, upload_id: str, fallback_name: str = "", segment: str = ""
+        self, upload_id: str, fallback_name: str = "", segment: str = "", trade_date: str = ""
     ) -> UploadRule | None:
         """Step 4. This UploadID's matching rule, decoded. Returns None if CBOS
         offered no settings for it, or the row can't produce a usable rule.
 
         fallback_name is used when the settings row carries no NAME - pass the
         Table2 slot's label. `segment` enables the Step-40 fallback below; omit
-        it and behaviour is exactly as before.
+        it and behaviour is exactly as before. `trade_date` is required to reach
+        that fallback (Step 40 - get_expected_filename - takes it as a request
+        parameter); omit it only where segment is also omitted.
         """
         raw = self._call(
             4,
@@ -759,7 +761,7 @@ class BaseCBOSClient(ABC):
         # actually unconfigured and dropping it here strands a mandatory file.
         # Observed live on NCDEXPHY/482 ("NCDEX DELIVERY FILE - SS06"): Step 4
         # returns 'FILE NAME (CONTAINS)': '' while Step 40 returns '%%'.
-        pattern = self._expected_name_pattern(segment, upload_id)
+        pattern = self._expected_name_pattern(segment, upload_id, trade_date)
         if pattern is None:
             return None
         logger.info(
@@ -770,7 +772,9 @@ class BaseCBOSClient(ABC):
         )
         return _parse_upload_rule(upload_id, result[0], fallback_name, override_pattern=pattern)
 
-    def _expected_name_pattern(self, segment: str, upload_id: str) -> str | None:
+    def _expected_name_pattern(
+        self, segment: str, upload_id: str, trade_date: str = ""
+    ) -> str | None:
         """Step 40's filename pattern for a slot, as a CONTAINS fragment, or
         None when it can't be used.
 
@@ -793,7 +797,7 @@ class BaseCBOSClient(ABC):
         scores zero and can only ever take a file that matched nothing else.
         """
         try:
-            raw = self.get_expected_filename(segment, upload_id)
+            raw = self.get_expected_filename(segment, upload_id, trade_date)
         except Exception as exc:  # never let an optional cross-check fail a batch
             logger.warning("Step 40 lookup failed for UPLOADID=%s: %s", upload_id, exc)
             return None
@@ -1276,12 +1280,20 @@ class CBOSClient(BaseCBOSClient):
         }
         return self._post(self._gtg_url(FILE_PROCESS_STATUS_PATH), payload)
 
-    def get_expected_filename(self, segment: str, upload_id: str) -> dict:
-        """Step 39 - optional cross-check against upload_matching's own pattern
-        engine. Not on the critical path, so not part of the interface."""
-        return self._post(
-            self._gtg_url(GET_EXPECTED_FILENAME_PATH), {"segment": segment, "uploadid": upload_id}
-        )
+    def get_expected_filename(self, segment: str, upload_id: str, trade_date: str = "") -> dict:
+        """Step 39/40 - optional cross-check against upload_matching's own pattern
+        engine. Not on the critical path, so not part of the interface.
+
+        `tradedate` is a required request parameter for this endpoint - it does not
+        change which day CBOS answers for (see app/services/cbos_filename.py's
+        "Today only" guard: CBOS was observed to keep returning its own server day
+        even when a different tradedate was passed), but omitting it risks the call
+        being rejected outright. Sent only when the caller has one.
+        """
+        payload = {"segment": segment, "uploadid": upload_id}
+        if trade_date:
+            payload["tradedate"] = _to_cbos_date(trade_date)
+        return self._post(self._gtg_url(GET_EXPECTED_FILENAME_PATH), payload)
 
 
 # --------------------------------------------------------------------------
@@ -1482,7 +1494,7 @@ class MockCBOSClient(BaseCBOSClient):
         logger.debug("[MOCK] FILEUPLOAD %s (segment=%s)", state["outcome"], segment)
         return {"Status": "Success", "Data": [{"MSG": state["outcome"]}]}
 
-    def get_expected_filename(self, segment: str, upload_id: str) -> dict:
+    def get_expected_filename(self, segment: str, upload_id: str, trade_date: str = "") -> dict:
         from mock_cbos import data
 
         return {
