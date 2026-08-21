@@ -511,3 +511,38 @@ def test_step40_failure_never_breaks_the_batch(monkeypatch):
             raise RuntimeError("CBOS down")
 
     assert _Boom()._expected_name_pattern("NCDEXPHY", "482") is None
+
+
+def test_pattern_matching_is_case_insensitive_because_cbos_is():
+    """Proved live on 2026-08-22 against CBOS UAT.
+
+    CBOS holds `ICCLFINAL_VARELMAM_` for UploadID 681 while BSE publishes
+    `ICCLFinal_VARELMAM_170826.csv`. A case-SENSITIVE contains rejects that file; CBOS accepts
+    it under its real name. CBOS runs SQL Server, whose default collation is case-insensitive,
+    so the strict comparison was ours alone and stricter than the system it models.
+
+    It failed in the worst available way: a name mismatch is a 422, which the billing engine
+    treats as PERMANENT and fails the whole process on rather than retrying. One file CBOS
+    would have taken could kill a Collateral Valuation run every night, reporting a
+    configuration error that did not exist.
+    """
+    assert _pattern_matches("ICCLFINAL_VARELMAM_", "CONTAINS", "ICCLFinal_VARELMAM_170826.csv")
+    # ...and the other direction, since either side can carry the odd casing.
+    assert _pattern_matches("iccl", "CONTAINS", "ICCLFinal_VARELMAM_170826.csv")
+    assert _pattern_matches("BSE_CM", "LIKE", "bhavcopy_bse_cm_0_0_0_20260817_f_0000.csv")
+
+
+def test_case_insensitivity_applies_to_every_operator():
+    """The collation is a property of CBOS's database, not of one comparison, so a rule that
+    happens to use EQUALS or STARTS WITH must behave the same way."""
+    assert _pattern_matches("NNF_SECURITY", "EQUAL", "nnf_security")
+    assert _pattern_matches("br", "STARTSWITH", "BR220626")
+    assert _pattern_matches(".CSV", "ENDSWITH", "somefile.csv")
+
+
+def test_case_insensitivity_does_not_make_everything_match():
+    """It loosens the comparison; it must not empty it. A genuinely different name still fails,
+    which is what keeps a slot pointed at the wrong UploadID from uploading cleanly."""
+    assert not _pattern_matches("ICCLFINAL_VARELMAM_", "CONTAINS", "CB_Haircut_17082026.CSV")
+    assert not _pattern_matches("nnf_security", "EQUAL", "nnf_security_1")
+    assert not _pattern_matches("BR", "STARTSWITH", "XBR220626")

@@ -49,8 +49,27 @@ def _pattern_matches(pattern: str, operator: str, name: str) -> bool:
 
     Spaces and underscores are ignored when reading the operator, so "STARTS
     WITH", "STARTS_WITH" and "STARTSWITH" are the same thing. Real CBOS spells
-    it with a space (see _extract_pattern)."""
+    it with a space (see _extract_pattern).
+
+    **CASE-INSENSITIVE, because CBOS is.** This compared case-sensitively until
+    2026-08-22, when a live upload of the BSE ICCL VAR file proved otherwise:
+    CBOS holds the pattern `ICCLFINAL_VARELMAM_` while the exchange publishes
+    `ICCLFinal_VARELMAM_170826.csv`, and CBOS accepts that file under its real
+    name (verified against UAT, UploadID 681, GUID recorded in the commit).
+    CBOS runs SQL Server, whose default collation is case-insensitive, so the
+    strict comparison here was ours alone and stricter than the system it is
+    modelling.
+
+    It failed in the worst available way: a name mismatch is a 422, which the
+    billing engine treats as PERMANENT and fails the whole process on, rather
+    than retrying. So one file CBOS would have taken happily could kill a
+    Collateral Valuation run every night, reporting a configuration error that
+    was not one.
+
+    `_name_cbos_will_accept` in post_trade_upload_service already lowercased
+    both sides. The two disagreed, and this one was wrong."""
     op = operator.strip().upper().replace(" ", "").replace("_", "")
+    pattern, name = pattern.lower(), name.lower()
     if op in ("LIKE", "CONTAINS", ""):
         return pattern in name
     if op in ("EQUALS", "EQUAL", "="):
